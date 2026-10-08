@@ -100,7 +100,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     stickerToggle.disabled = !usable;
     stickerSend.disabled = !idle;
     panel.dataset.busy = String(!idle);
-    draft.placeholder = usable ? "輸入訊息（Enter 送出，Shift+Enter 換行；可直接貼上圖片或影片）" : connected ? "選擇聊天室後即可發送訊息" : "與本機服務連線中斷…";
+    draft.placeholder = usable ? "輸入訊息" : connected ? "選擇聊天室後即可發送訊息" : "與本機服務連線中斷…";
     if (!usable) panel.hidden = true;
     stickerToggle.ariaExpanded = String(!panel.hidden);
   }
