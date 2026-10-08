@@ -205,6 +205,15 @@ function messageBody(message: Message): HTMLElement {
   if (message.decryptFailed) {
     const body = document.createElement("p");
     body.className = "placeholder";
+// Sending is the one moment the reader certainly wants the newest line, wherever they had scrolled
+// to and whoever's id the echo carries (communities use another sender id): jump there and stay
+// pinned while pictures and stickers finish loading.
+function scrollToLatest(): void {
+  pinnedToBottom = true;
+  messageList.scrollTop = messageList.scrollHeight;
+  requestAnimationFrame(keepPinned);
+}
+
     body.textContent = "無法解密此訊息";
     return body;
   }
@@ -220,6 +229,7 @@ function messageBody(message: Message): HTMLElement {
       // The CDN may not have this sticker (or is unreachable): fall back to the type label.
       const fallback = document.createElement("p");
       fallback.className = "placeholder";
+    image.addEventListener("load", keepPinned);
       fallback.textContent = "［貼圖］";
       image.replaceWith(fallback);
     });
@@ -479,6 +489,8 @@ async function handle(frame: ServerFrame): Promise<void> {
       readPositions = {};
       unreadFrom = undefined;
       messages = {};
+      halted = !notice.hello(frame);
+      if (halted) return;
       unread = {};
       opened = new Set();
       liveCounted = new Set();
