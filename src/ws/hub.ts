@@ -1,11 +1,13 @@
 import type { IncomingMessage, Server } from "node:http";
-import { WebSocket, WebSocketServer } from "ws";
+import type { Duplex } from "node:stream";
+import { WebSocket, WebSocketServer, type RawData } from "ws";
 import type { Config } from "../config.js";
 import type { LoginController } from "../line/login.js";
 import type { LineProvider } from "../line/provider.js";
+import type { ApiTokenStore } from "../http/apiToken.js";
 import { SlidingWindowLimiter } from "../limit.js";
 import type { MediaService } from "../media/service.js";
-import type { ChannelKind, Message, ReadPosition } from "../model/dto.js";
+import type { Channel, ChannelKind, Message, ReadPosition } from "../model/dto.js";
 import type { UpdateInfo } from "../update/checker.js";
 import type { ChatStore } from "../model/store.js";
 import { PROTOCOL_VERSION, type ClientFrame, type ListenState, type ServerFrame } from "./protocol.js";
@@ -14,6 +16,7 @@ import { parseChatRead, parseHistory, parseSend, requestIdOf } from "./requests.
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const HISTORY_PER_SECOND = 10;
 const NEW_CHANNEL_REFRESH_MS = 1000;
+const MAX_BOT_CONNECTIONS = 4;
 
 export interface HubOptions {
   server: Server;
@@ -24,6 +27,9 @@ export interface HubOptions {
   store: ChatStore;
   media: MediaService;
   serverVersion: string;
+  /** Bot endpoint (/api/ws): Host, no Origin and a valid bearer token. */
+  authorizeApiUpgrade: (request: IncomingMessage) => boolean;
+  apiTokens: ApiTokenStore;
 }
 
 export interface Hub {
@@ -49,6 +55,8 @@ const GENERIC = {
   UNKNOWN_CHAT: "找不到這個聊天室。",
   UPLOAD_EXPIRED: "媒體已過期，請重新選擇。",
   STICKERS_FAILED: "無法載入貼圖清單，請稍後重試。",
+  API_UNAVAILABLE: "機器人 API 未啟用。",
+  API_FAILED: "無法更新 API Token，請稍後重試。",
 } as const;
 
 function updateFrame(info: UpdateInfo): ServerFrame {
@@ -56,8 +64,11 @@ function updateFrame(info: UpdateInfo): ServerFrame {
 }
 
 export function createHub(options: HubOptions): Hub {
-  const { server, authorizeUpgrade, config, login, provider, store, media, serverVersion } = options;
+  const { server, authorizeUpgrade, authorizeApiUpgrade, config, login, provider, store, media, serverVersion, apiTokens } = options;
   const wss = new WebSocketServer({ noServer: true, maxPayload: config.limits.frameMaxBytes });
+  const botWss = new WebSocketServer({ noServer: true, maxPayload: config.limits.frameMaxBytes });
+  const botScope: ReadonlySet<string> = new Set(config.api.chats);
+  const botSendLimiter = new SlidingWindowLimiter(config.api.sendsPerMinute, 60_000);
   let status: ListenState = "starting";
   let refreshing: Promise<void> | undefined;
   let update: UpdateInfo | undefined;
@@ -81,6 +92,59 @@ export function createHub(options: HubOptions): Hub {
     for (const socket of wss.clients) send(socket, frame);
   }
 
+  /** Frames every kind of client may see: sign-in state and LINE connection state, never secrets. */
+  function broadcastAll(frame: ServerFrame): void {
+    broadcast(frame);
+    broadcastBots(frame);
+  }
+
+  function broadcastBots(frame: ServerFrame): void {
+    for (const socket of botWss.clients) send(socket, frame);
+  }
+
+  /** A bot sees only the chats listed in `api.chats`. */
+  function botChannels(): Channel[] {
+    return store.snapshotChannels().filter((channel) => botScope.has(channel.channelId));
+  }
+
+  function broadcastChannels(): void {
+    broadcast({ type: "channels", channels: store.snapshotChannels() });
+    broadcastBots({ type: "channels", channels: botChannels() });
+  }
+
+  function apiState(): ServerFrame {
+    return { type: "api:state", enabled: config.api.enabled, chats: config.api.chats, ...(apiTokens.createdAt !== undefined ? { createdAt: apiTokens.createdAt } : {}) };
+  }
+
+  function readFrame(socket: WebSocket, data: RawData, isBinary: boolean): Partial<ClientFrame> | undefined {
+    try {
+      if (isBinary) throw new Error("binary");
+      const parsed: unknown = JSON.parse(data.toString());
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("shape");
+      return parsed as Partial<ClientFrame>;
+    } catch {
+      fail(socket, "INVALID_REQUEST");
+      return undefined;
+    }
+  }
+
+  /** Only a page signed in with the browser cookie reaches this; the new token goes to that socket alone. */
+  async function handleApiToken(socket: WebSocket, frame: Record<string, unknown>, create: boolean): Promise<void> {
+    const requestId = requestIdOf(frame);
+    if (!config.api.enabled) return fail(socket, "API_UNAVAILABLE", requestId);
+    try {
+      const token = create ? await apiTokens.create() : undefined;
+      if (!create) await apiTokens.revoke();
+      // Whoever held the old token is cut off at once.
+      for (const bot of botWss.clients) bot.close(1008);
+      if (token) send(socket, { type: "api:token", token });
+      broadcast(apiState());
+    } catch (error) {
+      logFailure("API_TOKEN_FAILED", error);
+      fail(socket, "API_FAILED", requestId);
+    }
+  }
+
   function fail(socket: WebSocket, code: keyof typeof GENERIC, requestId?: string): void {
     send(socket, { type: "error", ...(requestId ? { requestId } : {}), code, message: GENERIC[code] });
   }
@@ -90,12 +154,12 @@ export function createHub(options: HubOptions): Hub {
     console.error(code, error instanceof Error ? `${error.name}: ${error.message}`.slice(0, 200) : "unknown");
   }
 
-  async function handleHistory(socket: WebSocket, frame: Record<string, unknown>): Promise<void> {
+  async function handleHistory(socket: WebSocket, frame: Record<string, unknown>, scope?: ReadonlySet<string>): Promise<void> {
     const parsed = parseHistory(frame, config.history.defaultLimit);
     if (!parsed.ok) return fail(socket, "INVALID_REQUEST", parsed.requestId);
     const { requestId, chatId, limit, before } = parsed.value;
     const channel = store.channelOf(chatId);
-    if (login.state !== "ready" || !channel) return fail(socket, "UNKNOWN_CHAT", requestId);
+    if (login.state !== "ready" || !channel || (scope && !scope.has(chatId))) return fail(socket, "UNKNOWN_CHAT", requestId);
     try {
       const page = await provider.fetchHistory({ channelId: chatId, kind: channel.kind }, limit, before);
       // The account may have logged out while LINE was answering.
@@ -103,8 +167,8 @@ export function createHub(options: HubOptions): Hub {
       for (const message of page.messages) store.upsert(message, false);
       const messages = page.messages.map((message) => store.get(message.messageId, message.channelId) ?? message);
       send(socket, { type: "history", requestId, chatId, messages, hasMore: page.hasMore, ...(page.cursor ? { cursor: page.cursor } : {}) });
-      // Receipts are an extra: a failure here must not turn a good history page into an error.
-      if (!before) void sendReadSnapshot(socket, chatId, channel.kind);
+      // Receipts are an extra: a failure here must not turn a good history page into an error. Bots get none.
+      if (!before && !scope) void sendReadSnapshot(socket, chatId, channel.kind);
     } catch (error) {
       logFailure("HISTORY_FAILED", error);
       fail(socket, "HISTORY_FAILED", requestId);
@@ -129,12 +193,14 @@ export function createHub(options: HubOptions): Hub {
     if (positions.length > 0 && login.state === "ready") send(socket, { type: "read", chatId, positions });
   }
 
-  async function handleSend(socket: WebSocket, frame: Record<string, unknown>): Promise<void> {
+  async function handleSend(socket: WebSocket, frame: Record<string, unknown>, scope?: ReadonlySet<string>): Promise<void> {
     const parsed = parseSend(frame, config.limits.textMaxLength);
     if (!parsed.ok) return fail(socket, "INVALID_REQUEST", parsed.requestId);
     const request = parsed.value;
     const channel = store.channelOf(request.chatId);
-    if (login.state !== "ready" || !channel) return fail(socket, "UNKNOWN_CHAT", request.requestId);
+    if (login.state !== "ready" || !channel || (scope && !scope.has(request.chatId))) return fail(socket, "UNKNOWN_CHAT", request.requestId);
+    // Bots send text only: media goes through the browser upload, and stickers are outside their scope.
+    if (scope && request.kind !== "text") return fail(socket, "INVALID_REQUEST", request.requestId);
     const target = { channelId: request.chatId, kind: channel.kind };
     if (request.kind === "text") {
       // Only people who have spoken in this chat can be tagged, and 1:1 chats have nobody to tag.
@@ -172,11 +238,12 @@ export function createHub(options: HubOptions): Hub {
     const stored = store.get(message.messageId, message.channelId) ?? message;
     if (!known) {
       // The channel list is fetched lazily; show the chat now, name it after a refresh.
-      broadcast({ type: "channels", channels: store.snapshotChannels() });
+      broadcastChannels();
       clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => { void refreshChannels(); }, NEW_CHANNEL_REFRESH_MS);
     }
     broadcast({ type: kind === "edit" ? "message:edit" : "message", message: stored });
+    if (botScope.has(message.channelId)) broadcastBots({ type: kind === "edit" ? "message:edit" : "message", message: stored });
   }
 
   // The browser reports "I read this chat up to here" and gets no answer: a bad or refused frame is dropped.
@@ -226,7 +293,7 @@ export function createHub(options: HubOptions): Hub {
         // A logout while LINE was answering must not repopulate the cleared cache.
         if (login.state !== "ready") return;
         store.setChannels(channels);
-        broadcast({ type: "channels", channels: store.snapshotChannels() });
+        broadcastChannels();
       } catch (error) {
         logFailure("CHANNELS_FAILED", error);
         broadcast({ type: "error", code: "CHANNELS_FAILED", message: GENERIC.CHANNELS_FAILED });
@@ -253,20 +320,60 @@ export function createHub(options: HubOptions): Hub {
       seenReads.clear();
       status = "starting";
     }
-    broadcast({ type: "auth:state", state });
+    broadcastAll({ type: "auth:state", state });
     if (state !== "ready") return;
     const profile = provider.getProfile();
-    broadcast({ type: "auth:ready", profile });
+    broadcastAll({ type: "auth:ready", profile });
     void refreshChannels();
   });
 
+  function refuse(socket: Duplex, status: string): void {
+    socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    socket.destroy();
+  }
+
   server.on("upgrade", (request, socket, head) => {
-    if (new URL(request.url ?? "/", "http://localhost").pathname !== "/ws" || !authorizeUpgrade(request)) {
-      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-      socket.destroy();
+    const path = new URL(request.url ?? "/", "http://localhost").pathname;
+    if (path === "/api/ws" && authorizeApiUpgrade(request)) {
+      if (botWss.clients.size >= MAX_BOT_CONNECTIONS) return refuse(socket, "429 Too Many Requests");
+      botWss.handleUpgrade(request, socket, head, (ws) => botWss.emit("connection", ws, request));
       return;
     }
+    if (path !== "/ws" || !authorizeUpgrade(request)) return refuse(socket, "403 Forbidden");
     wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws, request));
+  });
+
+  botWss.on("connection", (socket) => {
+    socket.on("error", () => {});
+    const sendLimiter = new SlidingWindowLimiter(config.limits.sendsPerSecond, 1000);
+    const historyLimiter = new SlidingWindowLimiter(HISTORY_PER_SECOND, 1000);
+    send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion });
+    send(socket, { type: "auth:state", state: login.state });
+    send(socket, { type: "status", state: status });
+    if (login.state === "ready") {
+      send(socket, { type: "auth:ready", profile: provider.getProfile() });
+      send(socket, { type: "channels", channels: botChannels() });
+    }
+    // Bots start from "now": the connect-time message replay is for pages, and a bot must not re-answer old messages.
+    socket.on("message", (data, isBinary) => {
+      const frame = readFrame(socket, data, isBinary);
+      if (!frame) return;
+      switch (frame.type) {
+        case "ping":
+          return;
+        case "history:fetch":
+          if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else void handleHistory(socket, frame as Record<string, unknown>, botScope);
+          return;
+        case "message:send":
+          // Both budgets: this connection's per-second one, and the all-bots per-minute one.
+          if (!sendLimiter.allow() || !botSendLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else void handleSend(socket, frame as Record<string, unknown>, botScope);
+          return;
+        default:
+          fail(socket, "UNKNOWN_TYPE");
+      }
+    });
   });
 
   wss.on("connection", (socket) => {
@@ -280,21 +387,20 @@ export function createHub(options: HubOptions): Hub {
     if (update) send(socket, updateFrame(update));
     send(socket, { type: "auth:state", state: login.state });
     send(socket, { type: "status", state: status });
+    send(socket, apiState());
     if (login.state === "ready") sendReady(socket);
 
     socket.on("message", (data, isBinary) => {
-      let frame: Partial<ClientFrame> | undefined;
-      try {
-        if (isBinary) throw new Error("binary");
-        const parsed: unknown = JSON.parse(data.toString());
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("shape");
-        frame = parsed as Partial<ClientFrame>;
-      } catch {
-        fail(socket, "INVALID_REQUEST");
-        return;
-      }
+      const frame = readFrame(socket, data, isBinary);
+      if (!frame) return;
       switch (frame.type) {
         case "ping":
+          return;
+        case "api:token:create":
+        case "api:token:revoke":
+          // Rare and sensitive: share the history budget so a script cannot churn tokens.
+          if (historyLimiter.allow()) void handleApiToken(socket, frame as Record<string, unknown>, frame.type === "api:token:create");
+          else fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
           return;
         case "channels:refresh":
           if (login.state === "ready") void refreshChannels();
@@ -346,7 +452,7 @@ export function createHub(options: HubOptions): Hub {
   return {
     setStatus(state) {
       status = state;
-      broadcast({ type: "status", state });
+      broadcastAll({ type: "status", state });
     },
     handleMessage: ingest,
     handleRead(chatId, position) {
@@ -360,7 +466,8 @@ export function createHub(options: HubOptions): Hub {
     },
     close() {
       clearTimeout(refreshTimer);
-      for (const socket of wss.clients) socket.close(1001);
+      for (const socket of [...wss.clients, ...botWss.clients]) socket.close(1001);
+      botWss.close();
       wss.close();
     },
   };

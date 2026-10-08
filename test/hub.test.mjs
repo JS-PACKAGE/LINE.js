@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { createWebServer } from "../dist/http/server.js";
 import { createHub } from "../dist/ws/hub.js";
+import { ApiTokenStore } from "../dist/http/apiToken.js";
 import { LoginController } from "../dist/line/login.js";
 import { ChatStore } from "../dist/model/store.js";
 import { MediaService } from "../dist/media/service.js";
@@ -101,7 +102,7 @@ async function freePort() {
   return port;
 }
 
-async function start(t, { restore = true, readReceipts = true } = {}) {
+async function start(t, { restore = true, readReceipts = true, api = {} } = {}) {
   const port = await freePort();
   const root = await mkdtemp(join(tmpdir(), "linejs-hub-"));
   await writeFile(join(root, "index.html"), "<!doctype html><title>test</title>");
@@ -109,6 +110,7 @@ async function start(t, { restore = true, readReceipts = true } = {}) {
     server: { host: "127.0.0.1", port },
     history: { defaultLimit: 50 },
     chat: { sendReadReceipts: readReceipts },
+    api: { enabled: false, chats: [], sendsPerMinute: 20, ...api },
     limits: { frameMaxBytes: 1024, textMaxLength: 20, sendsPerSecond: 5, uploadMaxBytes: 2048, uploadVideoMaxBytes: 8192, uploadsPerMinute: 3 },
   };
   const provider = new FakeProvider();
@@ -116,8 +118,9 @@ async function start(t, { restore = true, readReceipts = true } = {}) {
   const login = new LoginController(provider);
   const store = new ChatStore(500);
   const media = new MediaService(1024, provider);
-  const web = createWebServer(config, root, media);
-  const hub = createHub({ server: web.server, authorizeUpgrade: web.authorizeUpgrade, config, login, provider, store, media, serverVersion: "test" });
+  const apiTokens = new ApiTokenStore(join(root, "api-token.json"));
+  const web = createWebServer(config, root, media, apiTokens);
+  const hub = createHub({ server: web.server, authorizeUpgrade: web.authorizeUpgrade, authorizeApiUpgrade: web.authorizeApiUpgrade, apiTokens, config, login, provider, store, media, serverVersion: "test" });
   await new Promise((resolve) => web.server.listen(port, "127.0.0.1", resolve));
   t.after(async () => {
     hub.close();
@@ -126,11 +129,11 @@ async function start(t, { restore = true, readReceipts = true } = {}) {
     await rm(root, { recursive: true, force: true });
   });
   const cookie = (await fetch(`http://127.0.0.1:${port}/`)).headers.get("set-cookie").split(";")[0];
-  return { port, cookie, login, hub, provider, media, store };
+  return { port, cookie, login, hub, provider, media, store, apiTokens, root };
 }
 
-function connect(port, headers) {
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers });
+function connect(port, headers, path = "/ws") {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}${path}`, { headers });
   const frames = [];
   const waiters = [];
   socket.on("message", (data) => {
@@ -758,3 +761,183 @@ test("a newer release is announced to every client, including ones that connect 
   assert.deepEqual(late.frames.slice(0, 2).map((frame) => frame.type), ["hello", "update:available"], "right after hello, before any account state");
   assert.equal(late.frames.some((frame) => frame.type === "auth:qr" || frame.type === "auth:pin"), false);
 });
+
+// ---- Bot API (/api/ws) ----
+
+const OTHER = `c${"b".repeat(32)}`;
+
+async function botEnv(t, options = {}) {
+  const env = await start(t, { api: { enabled: true, chats: [CHAT], ...options } });
+  await env.login.restore();
+  const page = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => page.socket.close());
+  await page.opened;
+  await page.until((frame) => frame.type === "api:state");
+  page.socket.send(JSON.stringify({ type: "api:token:create" }));
+  const { token } = await page.until((frame) => frame.type === "api:token");
+  const bot = () => connect(env.port, { Authorization: `Bearer ${token}` }, "/api/ws");
+  const open = async () => {
+    const client = bot();
+    t.after(() => client.socket.close());
+    await client.opened;
+    await client.until((frame) => frame.type === "channels");
+    return client;
+  };
+  return { ...env, page, token, bot, open };
+}
+
+test("the bot endpoint stays closed unless the config enables it", async (t) => {
+  const env = await start(t);
+  await env.login.restore();
+  await assert.rejects(connect(env.port, { Authorization: `Bearer linejs_${"A".repeat(43)}` }, "/api/ws").opened, (error) => error.status === 403);
+  const page = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => page.socket.close());
+  await page.opened;
+  assert.deepEqual(await page.until((frame) => frame.type === "api:state"), { type: "api:state", enabled: false, chats: [] });
+  page.socket.send(JSON.stringify({ type: "api:token:create", requestId: "k1" }));
+  const refused = await page.until((frame) => frame.type === "error");
+  assert.equal(refused.code, "API_UNAVAILABLE");
+  assert.equal(page.frames.some((frame) => frame.type === "api:token"), false);
+});
+
+test("a token is created from the page, shown once and kept only as a hash", async (t) => {
+  const env = await botEnv(t);
+  assert.match(env.token, /^linejs_[A-Za-z0-9_-]{43}$/);
+  const state = env.page.frames.findLast((frame) => frame.type === "api:state");
+  assert.deepEqual(state.chats, [CHAT]);
+  assert.ok(Number.isSafeInteger(state.createdAt));
+  const stored = await readFile(join(env.root, "api-token.json"), "utf8");
+  assert.equal(stored.includes(env.token), false);
+  assert.equal((await stat(join(env.root, "api-token.json"))).mode & 0o777, 0o600);
+  // A later connection of the page learns that a token exists, never what it is.
+  const later = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => later.socket.close());
+  await later.opened;
+  await later.until((frame) => frame.type === "api:state" && frame.createdAt === state.createdAt);
+  assert.equal(JSON.stringify(later.frames).includes(env.token), false);
+  // And it survives a restart through the stored hash alone.
+  const reloaded = new ApiTokenStore(join(env.root, "api-token.json"));
+  await reloaded.load();
+  assert.equal(reloaded.verify(env.token), true);
+  assert.equal(reloaded.verify(`linejs_${"A".repeat(43)}`), false);
+});
+
+test("only a loopback Host, no Origin and the exact token get through /api/ws", async (t) => {
+  const env = await botEnv(t);
+  const wrong = `linejs_${"A".repeat(43)}`;
+  for (const headers of [
+    {},
+    { Authorization: `Bearer ${wrong}` },
+    { Authorization: env.token },
+    { Authorization: `Basic ${env.token}` },
+    { Authorization: `Bearer ${env.token}x` },
+    { Authorization: `Bearer ${env.token}`, Origin: `http://127.0.0.1:${env.port}` },
+    { Authorization: `Bearer ${env.token}`, Origin: "http://evil.example" },
+    { Authorization: `Bearer ${env.token}`, Host: "evil.example" },
+  ]) {
+    await assert.rejects(connect(env.port, headers, "/api/ws").opened, (error) => error.status === 403, JSON.stringify(Object.keys(headers)));
+  }
+  // The page's cookie is no substitute for the token, and the token does not open the page endpoint.
+  await assert.rejects(connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie }, "/api/ws").opened, (error) => error.status === 403);
+  await assert.rejects(connect(env.port, { Authorization: `Bearer ${env.token}` }, "/ws").opened, (error) => error.status === 403);
+  await env.open();
+});
+
+test("a bot sees its sign-in state and only the chats it is allowed, with no replay of old messages", async (t) => {
+  const env = await botEnv(t);
+  env.hub.handleMessage({ messageId: "9", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "舊訊息", contentType: "NONE", createdAt: 1 }, "new");
+  const bot = await env.open();
+  assert.deepEqual(bot.frames.slice(0, 3).map((frame) => frame.type), ["hello", "auth:state", "status"]);
+  assert.deepEqual(bot.frames.find((frame) => frame.type === "auth:ready").profile, { userId: "u-me", displayName: "測試帳號" });
+  assert.deepEqual(bot.frames.findLast((frame) => frame.type === "channels").channels.map((channel) => channel.channelId), [CHAT]);
+  assert.equal(bot.frames.some((frame) => frame.type === "message" || frame.type === "api:state" || frame.type === "update:available"), false);
+  env.hub.handleMessage({ messageId: "10", channelId: "c1", channelKind: "group", senderId: "u1", senderName: "小明", text: "別的群組", contentType: "NONE", createdAt: 2 }, "new");
+  env.hub.handleMessage({ messageId: "11", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "指令", contentType: "NONE", createdAt: 3 }, "new");
+  env.hub.handleMessage({ messageId: "11", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "指令（改）", contentType: "NONE", createdAt: 3 }, "edit");
+  assert.equal((await bot.until((frame) => frame.type === "message")).message.text, "指令");
+  assert.equal((await bot.until((frame) => frame.type === "message:edit")).message.text, "指令（改）");
+  assert.deepEqual(bot.frames.filter((frame) => frame.type === "message").map((frame) => frame.message.messageId), ["11"]);
+});
+
+test("a bot can send text and read history in an allowed chat only", async (t) => {
+  const env = await botEnv(t);
+  const bot = await env.open();
+  const ask = async (frame, match) => {
+    bot.socket.send(JSON.stringify(frame));
+    return bot.until((reply) => reply.requestId === frame.requestId && match(reply));
+  };
+  assert.equal((await ask({ type: "message:send", requestId: "a1", chatId: CHAT, text: "你好" }, (f) => f.type === "sent")).type, "sent");
+  assert.deepEqual(env.provider.calls.find((call) => call[0] === "text").slice(1), [{ channelId: CHAT, kind: "group" }, "你好"]);
+  // A chat this server knows well, but that the bot was not given.
+  env.hub.handleMessage({ messageId: "40", channelId: OTHER, channelKind: "group", senderId: "u1", senderName: "小明", text: "別群", contentType: "NONE", createdAt: 4 }, "new");
+  assert.ok(env.store.channelOf(OTHER));
+  assert.equal((await ask({ type: "message:send", requestId: "a2", chatId: OTHER, text: "x" }, (f) => f.type === "error")).code, "UNKNOWN_CHAT");
+  for (const [id, extra] of [["a4", { sticker: { packageId: 1, stickerId: 2 } }], ["a5", { mediaId: "upload-aaaaaaaaaaaaaaaaaaaaaaaa" }]]) {
+    assert.equal((await ask({ type: "message:send", requestId: id, chatId: CHAT, ...extra }, (f) => f.type === "error")).code, "INVALID_REQUEST");
+  }
+  assert.equal(env.provider.calls.filter((call) => call[0] !== "history" && call[0] !== "text").length, 0, "nothing but the one text reached LINE");
+  env.provider.history = { messages: [{ messageId: "5", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "歷史", contentType: "NONE", createdAt: 5 }], hasMore: false };
+  const page = await ask({ type: "history:fetch", requestId: "h1", chatId: CHAT }, (f) => f.type === "history");
+  assert.equal(page.messages[0].text, "歷史");
+  assert.equal((await ask({ type: "history:fetch", requestId: "h2", chatId: OTHER }, (f) => f.type === "error")).code, "UNKNOWN_CHAT");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(bot.frames.some((frame) => frame.type === "read"), false, "bots get no read receipts");
+  assert.equal(env.provider.calls.some((call) => call[0] === "read-range"), false);
+});
+
+test("everything outside send, history and ping is unknown to a bot", async (t) => {
+  const env = await botEnv(t);
+  const bot = await env.open();
+  const frames = [
+    { type: "auth:start" }, { type: "auth:logout" }, { type: "chat:read", chatId: CHAT, messageId: "11" },
+    { type: "stickers:list", requestId: "s1" }, { type: "channels:refresh" }, { type: "api:token:create" }, { type: "api:token:revoke" },
+  ];
+  for (const frame of frames) bot.socket.send(JSON.stringify(frame));
+  await bot.until(() => bot.frames.filter((frame) => frame.type === "error").length === frames.length);
+  assert.deepEqual([...new Set(bot.frames.filter((frame) => frame.type === "error").map((frame) => frame.code))], ["UNKNOWN_TYPE"]);
+  assert.equal(env.login.state, "ready");
+  assert.equal(env.apiTokens.verify(env.token), true);
+  assert.equal(env.provider.calls.some((call) => call[0] === "read" || call[0] === "stickers"), false);
+  bot.socket.send(JSON.stringify({ type: "ping" }));
+});
+
+test("bots share one send budget per minute across connections, on top of the per-connection limit", async (t) => {
+  const env = await botEnv(t, { sendsPerMinute: 2 });
+  const first = await env.open();
+  const second = await env.open();
+  first.socket.send(JSON.stringify({ type: "message:send", requestId: "b1", chatId: CHAT, text: "1" }));
+  second.socket.send(JSON.stringify({ type: "message:send", requestId: "b2", chatId: CHAT, text: "2" }));
+  await first.until((frame) => frame.type === "sent");
+  await second.until((frame) => frame.type === "sent");
+  second.socket.send(JSON.stringify({ type: "message:send", requestId: "b3", chatId: CHAT, text: "3" }));
+  assert.equal((await second.until((frame) => frame.requestId === "b3")).code, "RATE_LIMITED");
+  first.socket.send(JSON.stringify({ type: "message:send", requestId: "b4", chatId: CHAT, text: "4" }));
+  assert.equal((await first.until((frame) => frame.requestId === "b4")).code, "RATE_LIMITED");
+  assert.equal(env.provider.calls.filter((call) => call[0] === "text").length, 2);
+});
+
+test("regenerating or revoking the token disconnects bots at once and invalidates the old one", async (t) => {
+  const env = await botEnv(t);
+  const bot = await env.open();
+  const closed = new Promise((resolve) => bot.socket.once("close", resolve));
+  env.page.socket.send(JSON.stringify({ type: "api:token:create" }));
+  const next = await env.page.until((frame) => frame.type === "api:token" && frame.token !== env.token);
+  assert.equal(await closed, 1008);
+  await assert.rejects(env.bot().opened, (error) => error.status === 403);
+  const fresh = connect(env.port, { Authorization: `Bearer ${next.token}` }, "/api/ws");
+  t.after(() => fresh.socket.close());
+  await fresh.opened;
+  const freshClosed = new Promise((resolve) => fresh.socket.once("close", resolve));
+  env.page.socket.send(JSON.stringify({ type: "api:token:revoke" }));
+  assert.equal(await freshClosed, 1008);
+  await env.page.until((frame) => frame.type === "api:state" && frame.createdAt === undefined);
+  await assert.rejects(connect(env.port, { Authorization: `Bearer ${next.token}` }, "/api/ws").opened, (error) => error.status === 403);
+  await assert.rejects(readFile(join(env.root, "api-token.json"), "utf8"), /ENOENT/);
+});
+
+test("at most four bots stay connected at once", async (t) => {
+  const env = await botEnv(t);
+  for (let i = 0; i < 4; i += 1) await env.open();
+  await assert.rejects(env.bot().opened, (error) => error.status === 429);
+});
+

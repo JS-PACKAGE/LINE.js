@@ -5,14 +5,17 @@ import { extname, resolve, sep } from "node:path";
 import type { Config } from "../config.js";
 import { SlidingWindowLimiter } from "../limit.js";
 import { isMediaId, sniffUpload, type MediaService } from "../media/service.js";
+import type { ApiTokenStore } from "./apiToken.js";
 
 export interface WebServer {
   server: Server;
   /** Host, Origin and per-process browser cookie must all match; used for the WS upgrade. */
   authorizeUpgrade(request: IncomingMessage): boolean;
+  /** Bot endpoint: loopback Host, no Origin (so never a web page) and a valid `Authorization: Bearer` token. */
+  authorizeApiUpgrade(request: IncomingMessage): boolean;
 }
 
-export function createWebServer(config: Config, webRoot: string, media: MediaService): WebServer {
+export function createWebServer(config: Config, webRoot: string, media: MediaService, apiTokens: ApiTokenStore): WebServer {
   const browserToken = randomBytes(32).toString("hex");
   // The Host header must name the address configured for this server (or localhost); anything else is a rebinding attempt.
   const authority = config.server.host.includes(":") ? `[${config.server.host}]` : config.server.host;
@@ -36,6 +39,15 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
     const host = request.headers.host;
     if (!host || hosts[host] !== true || request.headers.origin !== `http://${host}`) return false;
     return hasBrowserCookie(request);
+  }
+
+  function authorizeApiUpgrade(request: IncomingMessage): boolean {
+    const host = request.headers.host;
+    // Browsers always attach Origin to a WebSocket handshake; a bot does not. Refusing it keeps every
+    // web page out even if the token ever leaks into one.
+    if (!config.api.enabled || !host || hosts[host] !== true || request.headers.origin !== undefined) return false;
+    const bearer = /^Bearer (\S+)$/.exec(request.headers.authorization ?? "")?.[1];
+    return bearer !== undefined && apiTokens.verify(bearer);
   }
 
   // Uploads are rare and single-user: one budget for the whole (single-browser) server.
@@ -174,7 +186,7 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
       else response.destroy();
     });
   });
-  return { server, authorizeUpgrade };
+  return { server, authorizeUpgrade, authorizeApiUpgrade };
 }
 
 /** A single `bytes=a-b` range, which is all a media element sends; anything else is served in full. */

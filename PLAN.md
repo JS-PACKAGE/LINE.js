@@ -128,7 +128,7 @@
 > v1.9：上傳由「圖片」擴充為「媒體」：`POST /media/upload` 另接受 MP4／MOV 影片（以位元組內容判斷；錯誤碼 `INVALID_IMAGE` 改為 `INVALID_MEDIA`），影片上限 `limits.uploadVideoMaxBytes`（預設 50MB）；`message:send` 的 `mediaId` 可引用圖片或影片，伺服器依上傳內容決定送出型別。
 > v1.10：新增 `update:available`（`{ version, current, url }`，GitHub 有較新 Release 時對所有連線廣播、新連線於 `hello` 後立即補送；僅公開資訊，登入前也會收到）；`hello.protocol` 由前端與自身常數比對，不相容即重新載入。前端以 build 時注入的版本與 `hello.serverVersion` 比對，不同則提示重新整理；服務重啟後 cookie 失效，舊分頁連線連續被拒三次且服務可連時自動重新載入。版本檢查由 `update.check`（預設 true）控制；更新由使用者執行 `npm run update`，不提供網頁觸發。
 
-> v1.11：**裁示**：`server.host` 不再強制 127.0.0.1，以 `config.yaml` 為準（預設與範本仍為 127.0.0.1，非本機迴路啟動時印警告）。
+> v1.11：新增**機器人 API** `ws://<host>:<port>/api/ws`（`api.enabled`，預設關閉；Bearer Token、不得帶 `Origin`；只開放 `message:send`（僅文字）、`history:fetch`、`ping`；只能存取 `api.chats`；連線不重播舊訊息）。新增 `api:state`／`api:token`（Server → 網頁）與 `api:token:create`／`api:token:revoke`（網頁 → Server）：Token 由網頁產生，只顯示一次，伺服器只存 SHA-256（`api-token.json`）。**裁示**：`server.host` 不再強制 127.0.0.1，以 `config.yaml` 為準（預設與範本仍為 127.0.0.1，非本機迴路啟動時印警告）。
 
 ### Server → Client
 
@@ -146,6 +146,8 @@
 | `history` | `{ requestId, chatId, messages: Message[], hasMore, cursor? }`（`cursor` 傳回 `before` 取更早一頁） |
 | `read` | `{ chatId, positions: { readerId, messageId }[] }`（他人已讀到哪則；開啟聊天時送快照，之後即時增量；社群無已讀） |
 | `sent` | `{ requestId, messageId }` |
+| `api:state` | `{ enabled, chats: string[], createdAt? }`（只給網頁連線；`createdAt` 為目前 Token 的建立時間，無 Token 則省略） |
+| `api:token` | `{ token }`（新 Token；**只送給發起 `api:token:create` 的連線、僅此一次**，不入日誌） |
 | `error` | `{ requestId?, code, message }`（generic） |
 | `status` | `{ state: "starting"｜"listening"｜"reconnecting" }` |
 
@@ -157,7 +159,14 @@
 | `history:fetch` | `{ requestId, chatId, limit?, before? }` |
 | `message:send` | `{ requestId, chatId, text?, mediaId?, sticker?: { packageId, stickerId } }` |
 | `channels:refresh` | `{}` |
+| `api:token:create` / `api:token:revoke` | `{}`（產生或撤銷機器人 Token，並中斷所有機器人連線） |
 | `ping` | `{}` |
+
+### 機器人 API（`/api/ws`）
+- 升級條件：`api.enabled`、`Host` 為設定位址或 localhost、**無 `Origin`**、`Authorization: Bearer linejs_…` 符合目前 Token；否則 403（同時超過 4 個連線回 429）。
+- 連線時收到 `hello`、`auth:state`、`status`、`auth:ready`、僅含 `api.chats` 的 `channels`；之後只有這些聊天室的 `message`／`message:edit`。不重播、不給 `read`／`update:available`／`api:state`。
+- 可送：`message:send`（`requestId`、`chatId`、`text`、可選 `mentions`／`replyTo`；`mediaId`／`sticker` 回 `INVALID_REQUEST`）、`history:fetch`、`ping`；其餘 `UNKNOWN_TYPE`；`api.chats` 以外的聊天室回 `UNKNOWN_CHAT`。
+- 限制：每連線 `limits.sendsPerSecond`，且全部機器人合計 `api.sendsPerMinute`（預設 20，≤120）。
 
 ### HTTP
 - `GET /`：前端 SPA。
@@ -196,6 +205,7 @@ Media   { mediaId, mime, size, kind: "image"｜"sticker"｜"video"｜"audio" }
 8. 對外一律 generic 錯誤；內部錯誤只入本地日誌。
 9. 依賴釘選版本；`npm audit` 無 high 以上（Gate 4 驗收）。
 10. 解密／解析失敗 **fail-closed**：顯示佔位，不降級猜測內容。
+11. 機器人 API（v1.11）：預設關閉；Bearer Token（只存雜湊、一次性顯示）、不得帶 `Origin`、影格白名單、`api.chats` 範圍、全域每分鐘發送上限、最多 4 連線、換／撤銷 Token 立即斷線。
 
 ---
 

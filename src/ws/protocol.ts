@@ -21,6 +21,10 @@ export type ServerFrame =
   | { type: "sent"; requestId: string; messageId: string }
   | { type: "read"; chatId: string; positions: ReadPosition[] }
   | { type: "stickers"; requestId: string; packages: StickerPackage[] }
+  /** Bot API status; sent to pages only. `chats` is the allow-list from config.yaml, `createdAt` the active token's age. */
+  | { type: "api:state"; enabled: boolean; chats: string[]; createdAt?: number }
+  /** A freshly made bot token: shown once, only to the page that asked, never repeated or stored in clear. */
+  | { type: "api:token"; token: string }
   | { type: "error"; requestId?: string; code: string; message: string };
 
 export type ClientFrame =
@@ -30,5 +34,7 @@ export type ClientFrame =
   | { type: "message:send"; requestId: string; chatId: string; text?: string; mentions?: Mention[]; mediaId?: string; sticker?: { packageId: number; stickerId: number } }
   | { type: "chat:read"; chatId: string; messageId: string }
   | { type: "stickers:list"; requestId: string }
+  | { type: "api:token:create"; requestId?: string }
+  | { type: "api:token:revoke"; requestId?: string }
   | { type: "channels:refresh" }
   | { type: "ping" };

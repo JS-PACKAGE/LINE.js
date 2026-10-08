@@ -4,6 +4,7 @@ import type { AuthState, Channel, Message, Profile } from "../src/model/dto.js";
 import type { ClientFrame, ListenState, ServerFrame } from "../src/ws/protocol.js";
 import { createComposer } from "./composer.js";
 import { confirmDialog } from "./dialog.js";
+import { createApiPanel } from "./api.js";
 import { createAvatar } from "./avatar.js";
 import { mediaElement } from "./media.js";
 import { linkifiedNodes } from "./links.js";
@@ -94,12 +95,14 @@ function send(frame: ClientFrame): boolean {
 }
 
 const composer = createComposer(send);
+const api = createApiPanel(send, (chatId) => channels.find((channel) => channel.channelId === chatId)?.name);
 
 function clearSecrets(): void {
   qrBox.hidden = true;
   canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
   pin.textContent = "";
   pin.hidden = true;
+  api.clear();
 }
 
 function showLogin(text: string, canStart: boolean, label = "產生登入 QR code"): void {
@@ -597,6 +600,12 @@ async function handle(frame: ServerFrame): Promise<void> {
     case "stickers":
       composer.handleStickers(frame.requestId, frame.packages);
       return;
+    case "api:state":
+      api.handleState(frame);
+      return;
+    case "api:token":
+      api.handleToken(frame.token);
+      return;
     case "status":
       listenState.textContent = LISTEN_LABEL[frame.state];
       listenState.dataset.state = frame.state;
@@ -612,6 +621,10 @@ async function handle(frame: ServerFrame): Promise<void> {
           state.failed = true;
         }
         if (channelId === selected) renderMessages("keep");
+        return;
+      }
+      if (frame.code === "API_FAILED" || frame.code === "API_UNAVAILABLE") {
+        api.handleError(frame.message);
         return;
       }
       if (composer.handleError(frame.requestId, frame.message)) return;

@@ -4,6 +4,7 @@ import { loadConfig } from "./config.js";
 import { SessionStorage } from "./line/session.js";
 import { EvexLineProvider } from "./line/provider.js";
 import { LoginController } from "./line/login.js";
+import { ApiTokenStore } from "./http/apiToken.js";
 import { createWebServer } from "./http/server.js";
 import { MediaService } from "./media/service.js";
 import { ChatStore } from "./model/store.js";
@@ -33,10 +34,14 @@ async function main(): Promise<void> {
   }, undefined, config.limits.downloadMaxBytes);
   const login = new LoginController(provider);
   const media = new MediaService(config.cache.mediaMaxBytes, provider);
-  const web = createWebServer(config, resolve("dist/web"), media);
+  const apiTokens = new ApiTokenStore(resolve("api-token.json"));
+  await apiTokens.load();
+  const web = createWebServer(config, resolve("dist/web"), media, apiTokens);
   const hub = createHub({
     server: web.server,
     authorizeUpgrade: web.authorizeUpgrade,
+    authorizeApiUpgrade: web.authorizeApiUpgrade,
+    apiTokens,
     config,
     login,
     media,
@@ -55,6 +60,7 @@ async function main(): Promise<void> {
   if (!["127.0.0.1", "localhost", "::1"].includes(config.server.host)) {
     console.warn("警告：監聽位址不是本機迴路。能連到此位址的人都能開啟網頁並操作已登入的 LINE 帳號，請確認網路環境可信。");
   }
+  if (config.api.enabled) console.info(`機器人 API：ws://${config.server.host}:${config.server.port}/api/ws（Token 由網頁產生）`);
   console.info("請使用次要帳號；QR 與 PIN 僅於網頁顯示。");
   void login.restore();
   const updates = config.update.check ? new UpdateChecker({ current: manifest.version, onUpdate: (info) => hub.setUpdate(info) }) : undefined;

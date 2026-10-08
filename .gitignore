@@ -5,3 +5,5 @@ session.json
 session.json.*
 *.log
 .DS_Store
+api-token.json
+api-token.json.*

@@ -46,3 +46,17 @@ test("the listen address is whatever config.yaml says; the shipped default stays
     assert.equal((await loadConfig(root)).server.host, host);
   }
 });
+
+test("the bot API is off by default and, once on, needs a non-empty list of valid chat ids", async (t) => {
+  const { root, config } = await fixture(t);
+  const chat = `c${"a".repeat(32)}`;
+  const load = async (api) => {
+    await writeFile(join(root, "config.yaml"), stringify({ ...config, api }));
+    return loadConfig(root);
+  };
+  assert.deepEqual((await loadConfig(root)).api, { enabled: false, chats: [], sendsPerMinute: 20 });
+  assert.deepEqual(await load({ enabled: true, chats: [chat, chat], sendsPerMinute: 5 }).then((c) => c.api), { enabled: true, chats: [chat], sendsPerMinute: 5 });
+  for (const bad of [{ enabled: "yes" }, { enabled: true }, { enabled: true, chats: [] }, { enabled: true, chats: ["nope"] }, { enabled: true, chats: [chat], sendsPerMinute: 121 }]) {
+    await assert.rejects(load(bad), /CONFIG_INVALID/);
+  }
+});

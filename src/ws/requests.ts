@@ -5,7 +5,7 @@ export const MAX_HISTORY_LIMIT = 100;
 
 const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
 // LINE mids: u(ser), c(group/room), r(oom), s/m (OpenChat: observed as "m") followed by an opaque alphanumeric id.
-const CHAT_ID = /^[ucrsm][A-Za-z0-9]{10,64}$/;
+export const CHAT_ID = /^[ucrsm][A-Za-z0-9]{10,64}$/;
 const CURSOR = /^[A-Za-z0-9+/=_:.-]{1,1024}$/;
 // Talk member mids ("u…") and OpenChat member mids ("p…").
 const MEMBER_ID = /^[up][A-Za-z0-9]{10,64}$/;

@@ -57,7 +57,7 @@ npm start
 
 ## 設定
 
-`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`chat`、`update`、`limits`（`chat`、`update` 區段與 `limits.downloadMaxBytes`、`limits.uploadVideoMaxBytes` 可省略，舊設定檔照常運作）。
+`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`chat`、`update`、`api`、`limits`（`chat`、`update`、`api` 區段與 `limits.downloadMaxBytes`、`limits.uploadVideoMaxBytes` 可省略，舊設定檔照常運作；`api` 預設關閉）。
 
 - 監聽 host：預設且建議 `127.0.0.1`。以 `config.yaml` 為準，可改為其他主機名稱、IPv4 或 IPv6；程式不再強制本機迴路。網頁沒有帳號密碼，能連到該位址的人就能操作已登入的 LINE 帳號，啟動時非本機位址會印出警告；`Host` 標頭須等於設定的「位址:埠」或 `localhost:埠`。
 - port：預設 `3789`，可調整；host 與 port 從 `config.yaml` 讀取，程式不得寫死。
@@ -91,8 +91,33 @@ npm start
 | Client → Server | `chat:read` | 回報已讀到某則訊息（無回應；僅限伺服器已顯示過的訊息，每個位置只送一次） |
 | Client → Server | `message:send`（`mentions`／`replyTo`） | 發送文字時可附 @ 提及與回覆目標（右鍵訊息選單：回覆、@ 提及、複製文字） |
 | Client → Server | `channels:refresh` / `ping` | 重新載入頻道／連線保活 |
+| Server → Client | `api:state` / `api:token` | 機器人 API 狀態（只給網頁）／剛產生的 Token（只送給要求的那個連線，僅此一次） |
+| Client → Server | `api:token:create` / `api:token:revoke` | 產生或撤銷機器人 Token（僅網頁連線可用，機器人不行） |
 
 HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、收到的圖片／影片／語音；支援 Range）與 `POST /media/upload`（圖片／影片上傳）皆需瀏覽器 cookie 與同源。WS 不傳媒體位元組。
+
+### 機器人 API（`/api/ws`）
+
+讓你自己的程式（機器人）收發訊息。預設關閉；在 `config.yaml` 設 `api.enabled: true` 並列出 `api.chats`（機器人可存取的聊天室 id，至少一個），重啟後網頁側邊欄會出現「API」按鈕：
+
+1. 按「產生 Token」。Token 只顯示**一次**，請立即複製；伺服器只保存 SHA-256（`api-token.json`，權限 600，不入版控），之後無法再查看。「重新產生」或「撤銷」會立即中斷所有機器人連線。
+2. 機器人連到 `ws://<host>:<port>/api/ws`，帶標頭 `Authorization: Bearer <Token>`，**不可帶 `Origin`**（瀏覽器一定會帶，所以網頁無法使用此入口）；`Host` 須符合上述規則。失敗一律回 403；同時最多 4 個連線（超過回 429）。
+3. 可用影格只有：`message:send`（僅文字，可含 `mentions`／`replyTo`；不支援圖片、貼圖）、`history:fetch`、`ping`；其餘一律回 `UNKNOWN_TYPE`。不提供登入／登出、`chat:read`（已讀回報）與 `channels:refresh`。
+4. 機器人只看得到 `api.chats` 內的聊天室：連線時收到 `hello`、`auth:state`、`status`、`auth:ready`（含自己的 `userId`，用來略過自己發的訊息）與過濾後的 `channels`，之後只收到這些聊天室的即時 `message`／`message:edit`。**不重播舊訊息**；不給 `read`、`update:available`、`api:state`。未列出的聊天室一律回 `UNKNOWN_CHAT`。
+5. 頻率：每連線 `limits.sendsPerSecond`（≤5）／秒，且所有機器人合計每分鐘 `api.sendsPerMinute`（預設 20，≤120）則。自動發送可能觸發 LINE 風控，請保守設定，並先用次要帳號。
+
+```js
+import WebSocket from "ws";
+const ws = new WebSocket("ws://127.0.0.1:3789/api/ws", { headers: { Authorization: `Bearer ${process.env.LINEJS_TOKEN}` } });
+let me;
+ws.on("message", (data) => {
+  const frame = JSON.parse(data);
+  if (frame.type === "auth:ready") me = frame.profile.userId;
+  if (frame.type === "message" && frame.message.senderId !== me && frame.message.text === "ping") {
+    ws.send(JSON.stringify({ type: "message:send", requestId: "r1", chatId: frame.message.channelId, text: "pong" }));
+  }
+});
+```
 
 ## 建置與驗證
 

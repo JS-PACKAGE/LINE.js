@@ -129,8 +129,8 @@ dialog#viewer button { position: fixed; top: 14px; right: 18px; background: #000
 .attachment video { width: 96px; }
 #attachment-info { flex: 1; min-width: 0; font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-dialog#confirm { border: 1px solid var(--line); border-radius: 16px; padding: 0; background: var(--surface); color: inherit; width: min(420px, calc(100vw - 32px)); box-shadow: 0 24px 60px #00000040; }
-dialog#confirm::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
+dialog#confirm, dialog#api { border: 1px solid var(--line); border-radius: 16px; padding: 0; background: var(--surface); color: inherit; width: min(420px, calc(100vw - 32px)); box-shadow: 0 24px 60px #00000040; }
+dialog#confirm::backdrop, dialog#api::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
 .dialog-body { padding: 24px; display: grid; gap: 10px; }
 .dialog-body h2 { margin: 0; font-size: 19px; }
 .dialog-body p { margin: 0; color: var(--muted); }
@@ -138,6 +138,13 @@ dialog#confirm::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
 .dialog-actions button { height: 40px; min-width: 84px; }
 #confirm-ok.danger { background: #b3261e; }
 #confirm-ok.danger:focus-visible { outline-color: #e8908a; }
+dialog#api { width: min(520px, calc(100vw - 32px)); }
+.api-warning { color: #b3261e !important; font-weight: 600; }
+.api-token-row { display: flex; gap: 8px; }
+.api-token-row input { flex: 1; min-width: 0; padding-inline: 8px; font-family: ui-monospace, Menlo, monospace; font-size: 11px; letter-spacing: -.2px; }
+.api-problem { color: #b3261e !important; }
+.api-usage { font-size: 13px; line-height: 1.6; }
+.api-usage code, #api-url { font-family: ui-monospace, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
 #notice { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 30; display: flex; align-items: center; gap: 12px; max-width: min(640px, calc(100vw - 24px)); padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 8px 28px #0000002e; font-size: 14px; line-height: 1.5; }
 #notice a { color: var(--accent); white-space: nowrap; }
 #notice button { padding: 6px 14px; white-space: nowrap; }

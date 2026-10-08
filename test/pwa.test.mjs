@@ -5,6 +5,7 @@ import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import vm from "node:vm";
 import { createWebServer } from "../dist/http/server.js";
+import { ApiTokenStore } from "../dist/http/apiToken.js";
 import { MediaService } from "../dist/media/service.js";
 
 const PUBLIC = new URL("../web/public/", import.meta.url);
@@ -60,7 +61,7 @@ async function freePort() {
 test("the server serves the PWA files with the right types and lets the worker and manifest through CSP", async (t) => {
   const port = await freePort();
   const config = { server: { host: "127.0.0.1", port }, history: { defaultLimit: 50 }, chat: { sendReadReceipts: false }, limits: { frameMaxBytes: 1024, textMaxLength: 20, sendsPerSecond: 5, uploadMaxBytes: 2048, uploadVideoMaxBytes: 4096, uploadsPerMinute: 3, downloadMaxBytes: 1 } };
-  const web = createWebServer(config, new URL(DIST).pathname, new MediaService(1024, {}));
+  const web = createWebServer(config, new URL(DIST).pathname, new MediaService(1024, {}), new ApiTokenStore("/nonexistent/api-token.json"));
   await new Promise((resolve) => web.server.listen(port, "127.0.0.1", resolve));
   t.after(async () => {
     web.server.closeAllConnections();
