@@ -5,7 +5,7 @@ import { parse } from "yaml";
 import type { Device } from "@evex/linejs/base";
 
 export interface Config {
-  server: { host: "127.0.0.1"; port: number };
+  server: { host: string; port: number };
   line: { device: Device };
   history: { defaultLimit: number };
   cache: { messagesPerChannel: number; mediaMaxBytes: number };
@@ -23,6 +23,8 @@ export interface Config {
 }
 
 const DEFAULT_DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024;
+// A hostname, an IPv4 address or an IPv6 address (no brackets, no port).
+const SERVER_HOST = /^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|[0-9A-Fa-f:]{2,45})$/;
 const DEFAULT_UPLOAD_VIDEO_MAX_BYTES = 50 * 1024 * 1024;
 
 function record(value: unknown): Record<string, unknown> {
@@ -65,7 +67,8 @@ export async function loadConfig(root = process.cwd()): Promise<Config> {
   // Optional section too; on by default. It only asks GitHub for the newest release number.
   const update = data.update === undefined ? {} : record(data.update);
   if (update.check !== undefined && typeof update.check !== "boolean") throw new Error("CONFIG_INVALID");
-  if (server.host !== "127.0.0.1") throw new Error("CONFIG_LOOPBACK_REQUIRED");
+  // Any address is allowed, and the file is authoritative; the default stays loopback-only.
+  if (typeof server.host !== "string" || !SERVER_HOST.test(server.host)) throw new Error("CONFIG_INVALID");
   const devices: readonly string[] = [
     "ANDROIDSECONDARY", "DESKTOPWIN", "DESKTOPMAC", "ANDROID", "IOS", "IOSIPAD", "WATCHOS", "WEAROS",
   ];

@@ -14,7 +14,9 @@ export interface WebServer {
 
 export function createWebServer(config: Config, webRoot: string, media: MediaService): WebServer {
   const browserToken = randomBytes(32).toString("hex");
-  const hosts: Record<string, true> = { [`${config.server.host}:${config.server.port}`]: true, [`localhost:${config.server.port}`]: true };
+  // The Host header must name the address configured for this server (or localhost); anything else is a rebinding attempt.
+  const authority = config.server.host.includes(":") ? `[${config.server.host}]` : config.server.host;
+  const hosts: Record<string, true> = { [`${authority}:${config.server.port}`]: true, [`localhost:${config.server.port}`]: true };
   const mime: Record<string, string> = {
     ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml",
     ".webmanifest": "application/manifest+json; charset=utf-8", ".png": "image/png", ".ico": "image/x-icon",

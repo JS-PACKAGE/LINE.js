@@ -51,10 +51,10 @@ Gate 依 [PLAN.md](PLAN.md) 逐關驗收，不跳關；Gate 0 遠端需存在四
 
 ## 安全性架構（硬規則）
 
-1. 僅綁定 **127.0.0.1**；`config.yaml` 改 host 需明示裁示，預設值不得為 `0.0.0.0`。
+1. 監聽位址以 `config.yaml` 為準（2026-10 裁示：不再強制 127.0.0.1，可設主機名稱、IPv4、IPv6），**預設值與範本維持 `127.0.0.1`，不得改成 `0.0.0.0`**。非本機迴路位址啟動時須印警告；網頁無帳號密碼，改 host 等於把已登入帳號開放給該網路。`Host` 標頭只接受「設定位址:埠」與 `localhost:埠`。
 2. QR URL 與 PIN **一次性顯示、不入日誌、不落盤**。
 3. `session.json` 含憑證與 E2EE key material：chmod **600**、列入 `.gitignore`、不入日誌、不分享。
-4. WS `Origin` 限 localhost 來源；非 localhost 拒絕升級。
+4. 網頁 WS 升級須 `Origin` 等於 `http://<Host>`（Host 受上一條限制）並帶瀏覽器 cookie；其餘來源拒絕升級。
 5. 每連線頻率限制：`message:send` ≤ 5/秒；`POST /media/upload` 圖片 ≤ 10MB/檔、影片 ≤ 50MB/檔（`limits.uploadVideoMaxBytes`）、≤ 5 次/分鐘；frame ≤ 256KB。
 6. 媒體快取上限預設 200MB（LRU）；收到的媒體只能請求已見過的訊息（`msg-<id>`），單檔上限 `limits.downloadMaxBytes`（預設 50MB），類型一律以位元組內容判斷且不供應 SVG／HTML；訊息媒體不得被瀏覽器快取。
 7. 輸入驗證：`chatId` 格式（`u／c／r／s／m` 開頭；OpenChat 為 `m`）、`text` ≤ 8000 字、`limit` ≤ 100、`packageId`／`stickerId` 限正整數、上傳媒體以內容判斷（圖片 PNG／JPEG／GIF；影片 MP4／MOV，以 `ftyp` 品牌辨識，聲稱的 Content-Type 只用來選擇大小上限；影片長度取自 `moov/mvhd`，不採用瀏覽器給的值）。

@@ -1,4 +1,4 @@
-# LINE.js 本機 LINE 網頁客戶端 企劃書 v1.10
+# LINE.js 本機 LINE 網頁客戶端 企劃書 v1.11
 
 一句話：以 **WebSocket** 為即時通道、以 **@evex/linejs v3.4.2** 為 LINE 連線核心的本機 TypeScript 網頁客戶端（**LINE.js**）——Node 後端以 QR 掃碼登入 LINE，將訊息與頻道清單經 ws 推送到監聽 `127.0.0.1:3789` 的網頁前端。
 
@@ -128,6 +128,8 @@
 > v1.9：上傳由「圖片」擴充為「媒體」：`POST /media/upload` 另接受 MP4／MOV 影片（以位元組內容判斷；錯誤碼 `INVALID_IMAGE` 改為 `INVALID_MEDIA`），影片上限 `limits.uploadVideoMaxBytes`（預設 50MB）；`message:send` 的 `mediaId` 可引用圖片或影片，伺服器依上傳內容決定送出型別。
 > v1.10：新增 `update:available`（`{ version, current, url }`，GitHub 有較新 Release 時對所有連線廣播、新連線於 `hello` 後立即補送；僅公開資訊，登入前也會收到）；`hello.protocol` 由前端與自身常數比對，不相容即重新載入。前端以 build 時注入的版本與 `hello.serverVersion` 比對，不同則提示重新整理；服務重啟後 cookie 失效，舊分頁連線連續被拒三次且服務可連時自動重新載入。版本檢查由 `update.check`（預設 true）控制；更新由使用者執行 `npm run update`，不提供網頁觸發。
 
+> v1.11：**裁示**：`server.host` 不再強制 127.0.0.1，以 `config.yaml` 為準（預設與範本仍為 127.0.0.1，非本機迴路啟動時印警告）。
+
 ### Server → Client
 
 | type | 負載 |
@@ -184,7 +186,7 @@ Media   { mediaId, mime, size, kind: "image"｜"sticker"｜"video"｜"audio" }
 
 ## 六、安全性架構（**須完整寫入 `AGENTS.md` 作為撰寫硬規則**）
 
-1. 僅綁定 **127.0.0.1**；`config.yaml` 改 host 需明示裁示，預設值不得為 `0.0.0.0`。
+1. 監聽位址以 `config.yaml` 為準（v1.11 裁示：不強制 127.0.0.1）；預設與範本維持 `127.0.0.1`，不得為 `0.0.0.0`；非本機迴路時啟動警告，`Host` 只接受設定位址與 localhost。
 2. QR URL 與 PIN **一次性顯示、不入日誌、不落盤**。
 3. `session.json` 含憑證與 E2EE key material：chmod **600**、列入 `.gitignore`、不入日誌、不分享。
 4. WS `Origin` 限 localhost 來源；非 localhost 拒絕升級。
