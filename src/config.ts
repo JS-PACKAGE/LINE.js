@@ -15,12 +15,14 @@ export interface Config {
     textMaxLength: number;
     sendsPerSecond: number;
     uploadMaxBytes: number;
+    uploadVideoMaxBytes: number;
     uploadsPerMinute: number;
     downloadMaxBytes: number;
   };
 }
 
 const DEFAULT_DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024;
+const DEFAULT_UPLOAD_VIDEO_MAX_BYTES = 50 * 1024 * 1024;
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -81,6 +83,7 @@ export async function loadConfig(root = process.cwd()): Promise<Config> {
       uploadsPerMinute: integer(limits.uploadsPerMinute, 5),
       // Added after the first release: configs written before it must keep working.
       downloadMaxBytes: limits.downloadMaxBytes === undefined ? DEFAULT_DOWNLOAD_MAX_BYTES : integer(limits.downloadMaxBytes, 100 * 1024 * 1024),
+      uploadVideoMaxBytes: limits.uploadVideoMaxBytes === undefined ? DEFAULT_UPLOAD_VIDEO_MAX_BYTES : integer(limits.uploadVideoMaxBytes, 200 * 1024 * 1024),
     },
   };
 }

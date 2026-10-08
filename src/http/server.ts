@@ -4,7 +4,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import type { Config } from "../config.js";
 import { SlidingWindowLimiter } from "../limit.js";
-import { isMediaId, sniffImage, type MediaService } from "../media/service.js";
+import { isMediaId, sniffUpload, type MediaService } from "../media/service.js";
 
 export interface WebServer {
   server: Server;
@@ -40,15 +40,19 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
   const uploadLimiter = new SlidingWindowLimiter(config.limits.uploadsPerMinute, 60_000);
 
   async function handleUpload(request: IncomingMessage, response: ServerResponse, host: string): Promise<void> {
-    // Same-origin and cookie-bound: another website must not be able to queue images for sending.
+    // Same-origin and cookie-bound: another website must not be able to queue media for sending.
     if (request.headers.origin !== `http://${host}` || !hasBrowserCookie(request)) {
       json(response, 403, { code: "FORBIDDEN" });
       return;
     }
-    if (!(request.headers["content-type"] ?? "").startsWith("image/")) {
+    // The declared type only picks the size budget; what the bytes really are is decided below.
+    const declaredType = request.headers["content-type"] ?? "";
+    const isVideo = declaredType.startsWith("video/");
+    if (!isVideo && !declaredType.startsWith("image/")) {
       json(response, 415, { code: "UNSUPPORTED_MEDIA_TYPE" });
       return;
     }
+    const maxBytes = isVideo ? config.limits.uploadVideoMaxBytes : config.limits.uploadMaxBytes;
     const declared = Number(request.headers["content-length"]);
     if (!Number.isSafeInteger(declared) || declared <= 0) {
       json(response, 400, { code: "INVALID_REQUEST" });
@@ -58,7 +62,7 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
       response.writeHead(413, { "Content-Type": "application/json; charset=utf-8", Connection: "close" });
       response.end(JSON.stringify({ code: "TOO_LARGE" }), () => request.destroy());
     };
-    if (declared > config.limits.uploadMaxBytes) {
+    if (declared > maxBytes) {
       tooLarge();
       return;
     }
@@ -71,16 +75,21 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
     for await (const chunk of request as AsyncIterable<Buffer>) {
       total += chunk.length;
       // Content-Length can lie; the byte count we actually receive is what is capped.
-      if (total > config.limits.uploadMaxBytes) {
+      if (total > maxBytes) {
         tooLarge();
         return;
       }
       chunks.push(chunk);
     }
     const bytes = Buffer.concat(chunks);
-    const detected = sniffImage(bytes);
+    const detected = sniffUpload(bytes);
     if (!detected) {
-      json(response, 400, { code: "INVALID_IMAGE" });
+      json(response, 400, { code: "INVALID_MEDIA" });
+      return;
+    }
+    // A big video must not pass as a picture just because it was declared as a video.
+    if (detected.startsWith("image/") && bytes.length > config.limits.uploadMaxBytes) {
+      tooLarge();
       return;
     }
     json(response, 200, { mediaId: media.putUpload({ mime: detected, bytes }) });
@@ -90,7 +99,7 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
-    response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+    response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; manifest-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
     const host = request.headers.host;
     if (!host || hosts[host] !== true || request.headers["sec-fetch-site"] === "cross-site") {
       json(response, 403, { code: "FORBIDDEN" });

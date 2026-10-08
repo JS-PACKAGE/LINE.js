@@ -89,9 +89,18 @@ export class MediaService {
     }
   }
 
-  /** Holds an uploaded image until the browser references it from `message:send`. */
+  /** Holds an uploaded image or video until the browser references it from `message:send`. */
   putUpload(media: MediaBytes, now = Date.now()): string {
     this.pruneUploads(now);
+    // Make room for one more: oldest first (Map iterates in insertion order). Videos are held whole,
+    // so the count alone would not bound memory.
+    let held = 0;
+    for (const entry of this.uploads.values()) held += entry.media.bytes.length;
+    for (const [oldest, entry] of this.uploads) {
+      if (this.uploads.size < MAX_PENDING_UPLOADS && held + media.bytes.length <= MAX_PENDING_UPLOAD_BYTES) break;
+      this.uploads.delete(oldest);
+      held -= entry.media.bytes.length;
+    }
     const id = `upload-${randomBytes(16).toString("hex")}`;
     this.uploads.set(id, { media, expires: now + UPLOAD_TTL_MS });
     return id;
@@ -108,11 +117,6 @@ export class MediaService {
 
   private pruneUploads(now: number): void {
     for (const [id, entry] of this.uploads) if (entry.expires <= now) this.uploads.delete(id);
-    // Make room for one more: oldest first (Map iterates in insertion order).
-    for (const id of this.uploads.keys()) {
-      if (this.uploads.size < MAX_PENDING_UPLOADS) break;
-      this.uploads.delete(id);
-    }
   }
 
   clear(): void {
@@ -125,6 +129,7 @@ export class MediaService {
 const UPLOAD_ID = /^upload-[a-f0-9]{32}$/;
 const UPLOAD_TTL_MS = 10 * 60 * 1000;
 const MAX_PENDING_UPLOADS = 8;
+const MAX_PENDING_UPLOAD_BYTES = 256 * 1024 * 1024;
 
 export function isUploadId(id: string): boolean {
   return UPLOAD_ID.test(id);
@@ -136,6 +141,63 @@ export function sniffImage(bytes: Buffer): "image/png" | "image/jpeg" | "image/g
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
   if (bytes.length >= 6 && (bytes.subarray(0, 6).toString("latin1") === "GIF87a" || bytes.subarray(0, 6).toString("latin1") === "GIF89a")) return "image/gif";
   return undefined;
+}
+
+/** MP4 brands that are video (not HEIC/AVIF pictures, M4A audio or 3GP); "qt  " is QuickTime (.mov). */
+const VIDEO_BRANDS = new Set(["isom", "iso2", "iso3", "iso4", "iso5", "iso6", "mp41", "mp42", "avc1", "M4V ", "M4VH", "M4VP", "MSNV", "dash", "qt  "]);
+
+/** Videos LINE plays: MP4 and QuickTime, recognised by the `ftyp` box of the bytes, never by the file name or Content-Type. */
+export function sniffVideo(bytes: Buffer): "video/mp4" | "video/quicktime" | undefined {
+  if (bytes.length < 12 || bytes.toString("latin1", 4, 8) !== "ftyp") return undefined;
+  const brand = bytes.toString("latin1", 8, 12);
+  if (!VIDEO_BRANDS.has(brand)) return undefined;
+  return brand === "qt  " ? "video/quicktime" : "video/mp4";
+}
+
+/** What an upload may contain: the images and videos above. */
+export function sniffUpload(bytes: Buffer): "image/png" | "image/jpeg" | "image/gif" | "video/mp4" | "video/quicktime" | undefined {
+  return sniffImage(bytes) ?? sniffVideo(bytes);
+}
+
+/**
+ * Length of an MP4/MOV in milliseconds, read from the `moov/mvhd` box. LINE shows this number as
+ * the clip length and does not work it out itself. Undefined when the file does not say.
+ */
+export function mp4DurationMs(bytes: Buffer): number | undefined {
+  const find = (start: number, end: number, wanted: string): { body: number; end: number } | undefined => {
+    let at = start;
+    while (at + 8 <= end) {
+      let size = bytes.readUInt32BE(at);
+      let header = 8;
+      if (size === 1) {
+        if (at + 16 > end) return undefined;
+        const large = bytes.readBigUInt64BE(at + 8);
+        if (large > BigInt(end - at)) return undefined;
+        size = Number(large);
+        header = 16;
+      } else if (size === 0) size = end - at;
+      if (size < header || at + size > end) return undefined;
+      if (bytes.toString("latin1", at + 4, at + 8) === wanted) return { body: at + header, end: at + size };
+      at += size;
+    }
+    return undefined;
+  };
+  const moov = find(0, bytes.length, "moov");
+  const mvhd = moov && find(moov.body, moov.end, "mvhd");
+  if (!mvhd) return undefined;
+  const version = bytes[mvhd.body];
+  let timescale: number;
+  let duration: number;
+  if (version === 0 && mvhd.end - mvhd.body >= 20) {
+    timescale = bytes.readUInt32BE(mvhd.body + 12);
+    duration = bytes.readUInt32BE(mvhd.body + 16);
+  } else if (version === 1 && mvhd.end - mvhd.body >= 32) {
+    timescale = bytes.readUInt32BE(mvhd.body + 20);
+    duration = Number(bytes.readBigUInt64BE(mvhd.body + 24));
+  } else return undefined;
+  if (timescale === 0) return undefined;
+  const ms = Math.round((duration * 1000) / timescale);
+  return Number.isSafeInteger(ms) && ms > 0 ? ms : undefined;
 }
 
 /**

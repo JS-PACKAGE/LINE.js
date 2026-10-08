@@ -2,7 +2,7 @@ import { Client } from "@evex/linejs";
 import { BaseClient, type Device, type FetchLike } from "@evex/linejs/base";
 import { LINEStruct } from "@evex/linejs/thrift";
 import type { Message as LineMessage, SquareMessage as LineSquareMessage } from "@evex/linejs-types";
-import { avatarMediaId, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
+import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
 import type { Channel, ChannelRef, HistoryPage, MemberRole, Mention, Message, Profile, ReadPosition, StickerPackage } from "../model/dto.js";
 import { memberRole, mentionMetadata, replyTarget } from "./members.js";
 import { parseReadOperation, parseReadRanges } from "./read.js";
@@ -53,7 +53,7 @@ export interface LineProvider {
   sendText(channel: ChannelRef, text: string, options?: SendTextOptions): Promise<Message>;
   sendSticker(channel: ChannelRef, packageId: number, stickerId: number): Promise<Message>;
   /** The returned message is what the browser should show now: LINE sends no live event for our own sends. */
-  sendImage(channel: ChannelRef, image: MediaBytes): Promise<Message>;
+  sendMedia(channel: ChannelRef, media: MediaBytes): Promise<Message>;
   close(): Promise<void>;
 }
 
@@ -630,31 +630,35 @@ export class EvexLineProvider implements LineProvider {
   }
 
   /**
-   * LINE creates the message server-side while the image is uploaded, and the sending client gets
+   * LINE creates the message server-side while the media is uploaded, and the sending client gets
    * no live event for its own message, so the message is built here for the caller to show.
    */
-  async sendImage(channel: ChannelRef, image: MediaBytes): Promise<Message> {
+  async sendMedia(channel: ChannelRef, media: MediaBytes): Promise<Message> {
     const client = this.requireClient();
     const me = this.getProfile();
-    const blob = new Blob([new Uint8Array(image.bytes)], { type: image.mime });
-    const filename = `image.${image.mime === "image/png" ? "png" : image.mime === "image/gif" ? "gif" : "jpg"}`;
+    const isVideo = media.mime.startsWith("video/");
+    const blob = new Blob([new Uint8Array(media.bytes)], { type: media.mime });
+    const filename = isVideo ? `video.${media.mime === "video/quicktime" ? "mov" : "mp4"}` : `image.${media.mime === "image/png" ? "png" : media.mime === "image/gif" ? "gif" : "jpg"}`;
+    // LINE shows this number as the clip length and never works it out itself.
+    const durationMs = isVideo ? mp4DurationMs(media.bytes) : undefined;
     try {
-      const uploaded = await client.base.obs.uploadObjTalk(channel.channelId, "image", blob, undefined, filename);
-      if (uploaded.objId) return this.outgoingImage(channel, me, uploaded.objId);
+      const uploaded = await client.base.obs.uploadObjTalk(channel.channelId, isVideo ? "video" : "image", blob, undefined, filename, durationMs);
+      if (uploaded.objId) return this.outgoingMedia(channel, me, uploaded.objId, isVideo ? "VIDEO" : "IMAGE");
     } catch {
       // Fall through: end-to-end encrypted chats reject plain uploads.
     }
     if (channel.kind === "square" || !(channel.channelId.startsWith("u") || channel.channelId.startsWith("c"))) {
-      throw new Error("IMAGE_SEND_FAILED");
+      throw new Error("MEDIA_SEND_FAILED");
     }
-    const message = await client.base.obs.uploadMediaByE2EE({ data: blob, oType: image.mime === "image/gif" ? "gif" : "image", to: channel.channelId, filename });
+    const oType = isVideo ? "video" : media.mime === "image/gif" ? "gif" : "image";
+    const message = await client.base.obs.uploadMediaByE2EE({ data: blob, oType, to: channel.channelId, filename, ...(durationMs ? { durationMs } : {}) });
     return this.talkToMessage({ ...message, to: channel.channelId, from: me.userId }, me.userId);
   }
 
   /** A plain upload's object id is the id of the message LINE created for it. */
-  private outgoingImage(channel: ChannelRef, me: Profile, id: string): Message {
+  private outgoingMedia(channel: ChannelRef, me: Profile, id: string, contentType: "IMAGE" | "VIDEO"): Message {
     const toType = { user: "USER", room: "ROOM", group: "GROUP", square: "SQUARE_CHAT" }[channel.kind];
-    const raw = { id, to: channel.channelId, from: me.userId, toType, contentType: "IMAGE", contentMetadata: {}, createdTime: String(Date.now()) } as unknown as LineMessage;
+    const raw = { id, to: channel.channelId, from: me.userId, toType, contentType, contentMetadata: {}, createdTime: String(Date.now()) } as unknown as LineMessage;
     return channel.kind === "square" ? this.squareToMessage({ message: raw } as LineSquareMessage, me.displayName) : this.talkToMessage(raw, me.userId);
   }
 

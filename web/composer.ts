@@ -2,8 +2,12 @@ import type { Mention, StickerPackage } from "../src/model/dto.js";
 import type { ClientFrame } from "../src/ws/protocol.js";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif"];
+const VIDEO_TYPES = ["video/mp4", "video/quicktime"];
 const RESPONSE_TIMEOUT_MS = 30_000;
+// LINE has to take the whole file before it acknowledges a video.
+const MEDIA_RESPONSE_TIMEOUT_MS = 5 * 60_000;
 const STICKER_ID = /^\d{1,12}$/;
 // Matches the server's limits (text length, tags per message); the server enforces them again.
 const MAX_TEXT_LENGTH = 8000;
@@ -16,7 +20,11 @@ export interface ReplyTarget {
   preview: string;
 }
 
-type SendKind = "text" | "image" | "sticker";
+type SendKind = "text" | "media" | "sticker";
+
+function formatSize(bytes: number): string {
+  return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
 
 export interface Composer {
   /** Which conversation the composer writes to; undefined disables it. */
@@ -45,6 +53,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
   const file = query<HTMLInputElement>("#file");
   const attachmentBox = query<HTMLDivElement>("#attachment");
   const attachmentImage = query<HTMLImageElement>("#attachment img");
+  const attachmentVideo = query<HTMLVideoElement>("#attachment video");
   const attachmentInfo = query<HTMLSpanElement>("#attachment-info");
   const attachmentSend = query<HTMLButtonElement>("#attachment-send");
   const attachmentCancel = query<HTMLButtonElement>("#attachment-cancel");
@@ -91,7 +100,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     stickerToggle.disabled = !usable;
     stickerSend.disabled = !idle;
     panel.dataset.busy = String(!idle);
-    draft.placeholder = usable ? "輸入訊息（Enter 送出，Shift+Enter 換行；可直接貼上圖片）" : connected ? "選擇聊天室後即可發送訊息" : "與本機服務連線中斷…";
+    draft.placeholder = usable ? "輸入訊息（Enter 送出，Shift+Enter 換行；可直接貼上圖片或影片）" : connected ? "選擇聊天室後即可發送訊息" : "與本機服務連線中斷…";
     if (!usable) panel.hidden = true;
     stickerToggle.ariaExpanded = String(!panel.hidden);
   }
@@ -114,7 +123,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
       pending = undefined;
       showNote("送出逾時，請確認連線後重試；草稿已保留。", true);
       refresh();
-    }, RESPONSE_TIMEOUT_MS);
+    }, kind === "media" ? MEDIA_RESPONSE_TIMEOUT_MS : RESPONSE_TIMEOUT_MS);
     pending = { requestId, kind, timer };
     showNote("送出中…");
     refresh();
@@ -156,28 +165,29 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     });
   }
 
-  function imageProblem(candidate: File): string | undefined {
-    if (!IMAGE_TYPES.includes(candidate.type)) return "僅支援 PNG、JPEG、GIF 圖片。";
-    if (candidate.size > MAX_IMAGE_BYTES) return "圖片超過 10MB 上限。";
-    return undefined;
+  function mediaProblem(candidate: File): string | undefined {
+    if (IMAGE_TYPES.includes(candidate.type)) return candidate.size > MAX_IMAGE_BYTES ? "圖片超過 10MB 上限。" : undefined;
+    if (VIDEO_TYPES.includes(candidate.type)) return candidate.size > MAX_VIDEO_BYTES ? "影片超過 50MB 上限。" : undefined;
+    return "僅支援 PNG、JPEG、GIF 圖片與 MP4、MOV 影片。";
   }
 
   async function uploadAndSend(picked: File, thenText: boolean): Promise<void> {
+    const label = VIDEO_TYPES.includes(picked.type) ? "影片" : "圖片";
     uploading = true;
-    showNote("上傳圖片中…");
+    showNote(`上傳${label}中…`);
     refresh();
     try {
       const response = await fetch("/media/upload", { method: "POST", headers: { "Content-Type": picked.type }, body: picked });
       if (!response.ok) {
-        const reasons: Record<number, string> = { 400: "這不是有效的圖片檔。", 413: "圖片超過 10MB 上限。", 415: "僅支援 PNG、JPEG、GIF 圖片。", 429: "上傳太頻繁，請稍後再試。" };
-        throw new Error(reasons[response.status] ?? "圖片上傳失敗。");
+        const reasons: Record<number, string> = { 400: `這不是有效的${label}檔。`, 413: `${label}超過大小上限。`, 415: "僅支援 PNG、JPEG、GIF 圖片與 MP4、MOV 影片。", 429: "上傳太頻繁，請稍後再試。" };
+        throw new Error(reasons[response.status] ?? `${label}上傳失敗。`);
       }
       const { mediaId } = (await response.json()) as { mediaId: string };
       uploading = false;
       followUpText = thenText;
-      dispatch("image", { mediaId });
+      dispatch("media", { mediaId });
     } catch (error) {
-      showNote(error instanceof Error && error.message.endsWith("。") ? error.message : "圖片上傳失敗。", true);
+      showNote(error instanceof Error && error.message.endsWith("。") ? error.message : `${label}上傳失敗。`, true);
     } finally {
       uploading = false;
       refresh();
@@ -189,16 +199,27 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     staged = undefined;
     followUpText = false;
     attachmentImage.removeAttribute("src");
+    attachmentImage.hidden = true;
+    attachmentVideo.pause();
+    attachmentVideo.removeAttribute("src");
+    attachmentVideo.load();
+    attachmentVideo.hidden = true;
     attachmentBox.hidden = true;
   }
 
   function stage(candidate: File): void {
-    const problem = imageProblem(candidate);
+    const problem = mediaProblem(candidate);
     if (problem) return showNote(problem, true);
     clearStaged();
+    const isVideo = VIDEO_TYPES.includes(candidate.type);
     staged = { file: candidate, url: URL.createObjectURL(candidate) };
-    attachmentImage.src = staged.url;
-    attachmentInfo.textContent = `${candidate.name && candidate.name !== "image.png" ? candidate.name : "貼上的圖片"}（${Math.max(1, Math.round(candidate.size / 1024))} KB）`;
+    // The preview is the browser's own decoder on a local blob; nothing is uploaded until "送出".
+    const shown = isVideo ? attachmentVideo : attachmentImage;
+    shown.src = staged.url;
+    shown.hidden = false;
+    const generic = candidate.name === "" || candidate.name === "image.png";
+    attachmentInfo.textContent = `${generic ? (isVideo ? "影片" : "貼上的圖片") : candidate.name}（${formatSize(candidate.size)}）`;
+    attachmentSend.textContent = isVideo ? "送出影片" : "送出圖片";
     attachmentBox.hidden = false;
     showNote("");
     draft.focus();
@@ -234,15 +255,15 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
   });
   draft.addEventListener("input", resizeDraft);
 
-  // Pasting media: an image on the clipboard becomes a preview that is sent on request. Text pastes untouched.
+  // Pasting media: an image or video on the clipboard becomes a preview that is sent on request. Text pastes untouched.
   draft.addEventListener("paste", (event) => {
     const files = [...(event.clipboardData?.files ?? [])];
     if (files.length === 0 || event.clipboardData?.getData("text/plain")) return;
     event.preventDefault();
-    const image = files.find((candidate) => candidate.type.startsWith("image/"));
-    if (!image) return showNote("貼上的內容不是圖片；目前只能傳送 PNG、JPEG、GIF 圖片。", true);
-    stage(image);
-    if (files.length > 1) showNote("一次只能送出一張圖片，已使用第一張。");
+    const media = files.find((candidate) => IMAGE_TYPES.includes(candidate.type) || VIDEO_TYPES.includes(candidate.type));
+    if (!media) return showNote("貼上的內容不是可傳送的媒體；目前只能傳送 PNG、JPEG、GIF 圖片與 MP4、MOV 影片。", true);
+    stage(media);
+    if (files.length > 1) showNote("一次只能送出一個檔案，已使用第一個。");
   });
 
   form.addEventListener("dragover", (event) => {
@@ -266,7 +287,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     const picked = file.files?.[0];
     file.value = "";
     if (!picked) return;
-    const problem = imageProblem(picked);
+    const problem = mediaProblem(picked);
     if (problem) return showNote(problem, true);
     void uploadAndSend(picked, false);
   });
@@ -409,9 +430,9 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
         resizeDraft();
       }
       if (kind === "sticker") panel.hidden = true;
-      const sendText = kind === "image" && followUpText;
-      if (kind === "image") clearStaged();
-      showNote(kind === "image" ? "圖片已送出。" : "");
+      const sendText = kind === "media" && followUpText;
+      if (kind === "media") clearStaged();
+      showNote(kind === "media" ? "已送出。" : "");
       refresh();
       draft.focus();
       if (sendText) submitText();

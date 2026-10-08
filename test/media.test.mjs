@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MediaService, avatarMediaId, isMediaId, sniffMedia } from "../dist/media/service.js";
+import { MediaService, avatarMediaId, isMediaId, mp4DurationMs, sniffMedia, sniffUpload, sniffVideo } from "../dist/media/service.js";
 
 const png = (size) => ({ mime: "image/png", bytes: Buffer.alloc(size, 1) });
 
@@ -130,4 +130,57 @@ test("oversized items are served but never cached; failures and misses are not c
   await assert.rejects(flaky.get("sticker-5"));
   assert.equal((await flaky.get("sticker-5")).bytes.length, 5);
   assert.equal(await new MediaService(100, upstream).get("sticker-404"), undefined);
+});
+
+const box = (type, ...parts) => {
+  const body = Buffer.concat(parts);
+  const head = Buffer.alloc(8);
+  head.writeUInt32BE(8 + body.length, 0);
+  head.write(type, 4, "latin1");
+  return Buffer.concat([head, body]);
+};
+const ftyp = (brand) => box("ftyp", Buffer.from(brand), Buffer.alloc(4));
+const mvhd = (timescale, duration) => {
+  const body = Buffer.alloc(100);
+  body.writeUInt32BE(timescale, 12);
+  body.writeUInt32BE(duration, 16);
+  return box("mvhd", body);
+};
+
+test("uploads are typed from their bytes: MP4 and QuickTime video yes; pictures, audio and look-alikes no", () => {
+  assert.equal(sniffVideo(ftyp("isom")), "video/mp4");
+  assert.equal(sniffVideo(ftyp("mp42")), "video/mp4");
+  assert.equal(sniffVideo(ftyp("qt  ")), "video/quicktime");
+  for (const brand of ["M4A ", "heic", "avif", "3gp4", "XXXX"]) assert.equal(sniffVideo(ftyp(brand)), undefined, brand);
+  assert.equal(sniffVideo(Buffer.from("not a video at all")), undefined);
+  assert.equal(sniffUpload(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), "image/jpeg");
+  assert.equal(sniffUpload(ftyp("isom")), "video/mp4");
+  assert.equal(sniffUpload(Buffer.from("<svg onload=alert(1)>")), undefined);
+});
+
+test("the clip length comes from moov/mvhd and is never guessed", () => {
+  const file = Buffer.concat([ftyp("isom"), box("free", Buffer.alloc(10)), box("moov", box("udta", Buffer.alloc(3)), mvhd(1000, 12_345)), box("mdat", Buffer.alloc(50))]);
+  assert.equal(mp4DurationMs(file), 12_345);
+  assert.equal(mp4DurationMs(Buffer.concat([ftyp("isom"), box("moov", mvhd(90_000, 270_000))])), 3000, "timescale is honoured");
+  assert.equal(mp4DurationMs(Buffer.concat([ftyp("isom"), box("moov", mvhd(0, 5))])), undefined, "zero timescale");
+  assert.equal(mp4DurationMs(Buffer.concat([ftyp("isom"), box("mdat", Buffer.alloc(8))])), undefined, "no moov");
+  assert.equal(mp4DurationMs(Buffer.concat([ftyp("isom"), Buffer.from([0, 0, 0xff, 0xff]), Buffer.from("moov")])), undefined, "a box claiming to be larger than the file");
+  assert.equal(mp4DurationMs(Buffer.alloc(5)), undefined);
+  const v1 = Buffer.alloc(120);
+  v1[0] = 1;
+  v1.writeUInt32BE(1000, 20);
+  v1.writeBigUInt64BE(4000n, 24);
+  assert.equal(mp4DurationMs(Buffer.concat([ftyp("isom"), box("moov", box("mvhd", v1))])), 4000, "version 1 header");
+});
+
+test("pending uploads are bounded by size as well as count, oldest dropped first", () => {
+  const media = new MediaService(1024, {});
+  const big = { mime: "video/mp4", bytes: { length: 100 * 1024 * 1024 } };
+  const first = media.putUpload(big, 0);
+  const second = media.putUpload(big, 0);
+  assert.ok(media.getUpload(first, 0) && media.getUpload(second, 0));
+  media.putUpload(big, 0);
+  assert.equal(media.getUpload(first, 0), undefined, "a third 100 MB video pushes the oldest out");
+  assert.ok(media.getUpload(second, 0));
+  assert.equal(media.getUpload(second, 11 * 60 * 1000), undefined, "and anything expires after ten minutes");
 });

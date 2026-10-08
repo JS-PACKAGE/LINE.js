@@ -122,7 +122,8 @@ dialog#viewer button { position: fixed; top: 14px; right: 18px; background: #000
 #sticker-panel input { width: 130px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; font: inherit; }
 #sticker-preview { width: 56px; height: 56px; object-fit: contain; }
 .attachment { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px dashed var(--accent); border-radius: 12px; background: var(--soft); }
-.attachment img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; }
+.attachment img, .attachment video { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; }
+.attachment video { width: 96px; }
 #attachment-info { flex: 1; min-width: 0; font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 dialog#confirm { border: 1px solid var(--line); border-radius: 16px; padding: 0; background: var(--surface); color: inherit; width: min(420px, calc(100vw - 32px)); box-shadow: 0 24px 60px #00000040; }

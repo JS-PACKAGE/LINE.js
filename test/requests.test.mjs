@@ -31,7 +31,7 @@ test("chat and request ids must look like LINE mids and safe tokens; a valid req
 test("a send carries exactly one payload", () => {
   const send = (extra) => parseSend({ requestId: "r1", chatId: CHAT, ...extra }, 8);
   assert.deepEqual(send({ text: "hello" }).value, { requestId: "r1", chatId: CHAT, kind: "text", text: "hello", mentions: [] });
-  assert.deepEqual(send({ mediaId: UPLOAD }).value, { requestId: "r1", chatId: CHAT, kind: "image", uploadId: UPLOAD });
+  assert.deepEqual(send({ mediaId: UPLOAD }).value, { requestId: "r1", chatId: CHAT, kind: "media", uploadId: UPLOAD });
   assert.deepEqual(send({ sticker: { packageId: 1, stickerId: 2 } }).value, { requestId: "r1", chatId: CHAT, kind: "sticker", packageId: 1, stickerId: 2 });
   for (const mixed of [{ text: "a", mediaId: UPLOAD }, { text: "a", sticker: { packageId: 1, stickerId: 1 } }, { mediaId: UPLOAD, sticker: { packageId: 1, stickerId: 1 } }, {}]) {
     assert.equal(send(mixed).ok, false, JSON.stringify(mixed));

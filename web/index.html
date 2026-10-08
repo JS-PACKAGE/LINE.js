@@ -67,7 +67,8 @@
             </details>
           </div>
           <div id="attachment" class="attachment" hidden>
-            <img alt="待送出的圖片" />
+            <img alt="待送出的圖片" hidden />
+            <video muted controls preload="metadata" aria-label="待送出的影片" hidden></video>
             <span id="attachment-info"></span>
             <button id="attachment-send" type="button">送出圖片</button>
             <button id="attachment-cancel" type="button" class="ghost">取消</button>
@@ -78,8 +79,8 @@
             <button id="reply-cancel" type="button" class="ghost" aria-label="取消回覆">✕</button>
           </div>
           <div class="composer-row">
-            <button id="attach" type="button" class="ghost" aria-label="傳送圖片">圖片</button>
-            <input id="file" type="file" accept="image/png,image/jpeg,image/gif" hidden />
+            <button id="attach" type="button" class="ghost" aria-label="傳送圖片或影片">媒體</button>
+            <input id="file" type="file" accept="image/png,image/jpeg,image/gif,video/mp4,video/quicktime" hidden />
             <button id="sticker-toggle" type="button" class="ghost" aria-haspopup="dialog" aria-expanded="false">貼圖</button>
             <textarea id="draft" rows="1" maxlength="8000" aria-label="訊息內容" disabled></textarea>
             <button id="send" type="submit" disabled>送出</button>

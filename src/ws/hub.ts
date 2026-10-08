@@ -139,10 +139,10 @@ export function createHub(options: HubOptions): Hub {
     }
     try {
       let message: Message;
-      if (request.kind === "image") {
-        const image = media.getUpload(request.uploadId);
-        if (!image) return fail(socket, "UPLOAD_EXPIRED", request.requestId);
-        message = await provider.sendImage(target, image);
+      if (request.kind === "media") {
+        const upload = media.getUpload(request.uploadId);
+        if (!upload) return fail(socket, "UPLOAD_EXPIRED", request.requestId);
+        message = await provider.sendMedia(target, upload);
         media.dropUpload(request.uploadId);
       } else if (request.kind === "text") {
         message = await provider.sendText(target, request.text, { mentions: request.mentions, ...(request.replyTo ? { replyTo: request.replyTo } : {}) });

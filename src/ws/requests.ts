@@ -23,7 +23,7 @@ export interface HistoryRequest {
 
 export type SendRequest = { requestId: string; chatId: string } & (
   | { kind: "text"; text: string; mentions: Mention[]; replyTo?: string }
-  | { kind: "image"; uploadId: string }
+  | { kind: "media"; uploadId: string }
   | { kind: "sticker"; packageId: number; stickerId: number }
 );
 
@@ -88,7 +88,7 @@ export function parseSend(frame: Record<string, unknown>, textMaxLength: number)
   }
   if (mediaId !== undefined) {
     if (typeof mediaId !== "string" || !isUploadId(mediaId)) return refuse;
-    return { ok: true, value: { ...base, kind: "image", uploadId: mediaId } };
+    return { ok: true, value: { ...base, kind: "media", uploadId: mediaId } };
   }
   if (!sticker || typeof sticker !== "object" || Array.isArray(sticker)) return refuse;
   const { packageId, stickerId } = sticker as Record<string, unknown>;

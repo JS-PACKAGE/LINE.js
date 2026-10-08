@@ -84,11 +84,12 @@ class FakeProvider {
     if (this.sendError) throw this.sendError;
     return this.outgoing(channel, { contentType: "STICKER", mediaId: `sticker-${stickerId}` });
   }
-  async sendImage(channel, image) {
-    this.calls.push(["image", channel, image.mime, image.bytes.length]);
+  async sendMedia(channel, media) {
+    this.calls.push(["media", channel, media.mime, media.bytes.length]);
     if (this.sendError) throw this.sendError;
-    // LINE sends no live event for our own image, so the adapter returns the message to show.
-    return this.outgoing(channel, { messageId: "9001", contentType: "IMAGE", mediaId: "msg-9001" });
+    // LINE sends no live event for our own media, so the adapter returns the message to show.
+    const video = media.mime.startsWith("video/");
+    return this.outgoing(channel, { messageId: "9001", contentType: video ? "VIDEO" : "IMAGE", mediaId: "msg-9001" });
   }
 }
 
@@ -108,7 +109,7 @@ async function start(t, { restore = true, readReceipts = true } = {}) {
     server: { host: "127.0.0.1", port },
     history: { defaultLimit: 50 },
     chat: { sendReadReceipts: readReceipts },
-    limits: { frameMaxBytes: 1024, textMaxLength: 20, sendsPerSecond: 5, uploadMaxBytes: 2048, uploadsPerMinute: 3 },
+    limits: { frameMaxBytes: 1024, textMaxLength: 20, sendsPerSecond: 5, uploadMaxBytes: 2048, uploadVideoMaxBytes: 8192, uploadsPerMinute: 3 },
   };
   const provider = new FakeProvider();
   provider.restoreResult = restore;
@@ -430,7 +431,7 @@ test("an uploaded image is sent once; unknown, expired or reused uploads are ref
   const shown = await env.client.until((frame) => frame.type === "message" && frame.message.messageId === "9001");
   assert.equal(shown.message.contentType, "IMAGE");
   assert.equal(shown.message.mediaId, "msg-9001", "the sender's own image appears in the chat without waiting for a live event");
-  assert.deepEqual(env.provider.calls.slice(-1)[0], ["image", { channelId: CHAT, kind: "group" }, "image/png", PNG.length]);
+  assert.deepEqual(env.provider.calls.slice(-1)[0], ["media", { channelId: CHAT, kind: "group" }, "image/png", PNG.length]);
 
   env.request({ type: "message:send", requestId: "i2", chatId: CHAT, mediaId });
   assert.equal((await env.client.until((frame) => frame.requestId === "i2")).code, "UPLOAD_EXPIRED");
@@ -454,7 +455,7 @@ test("the upload route only accepts same-origin, cookie-bound, real, small image
   assert.equal((await upload(env, Buffer.alloc(3000, 1))).status, 413, "over the configured size");
   const fake = await upload(env, Buffer.from("<svg onload=alert(1)>"));
   assert.equal(fake.status, 400, "contents are sniffed, the declared type is not trusted");
-  assert.deepEqual(await fake.json(), { code: "INVALID_IMAGE" });
+  assert.deepEqual(await fake.json(), { code: "INVALID_MEDIA" });
   for (const bytes of [Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0]), Buffer.from("GIF89a....")]) {
     assert.equal((await upload(env, bytes, { "Content-Type": "image/jpeg" })).status, 200);
   }
@@ -462,6 +463,30 @@ test("the upload route only accepts same-origin, cookie-bound, real, small image
   const limited = await upload(env, PNG);
   assert.equal(limited.status, 429);
   assert.deepEqual(await limited.json(), { code: "RATE_LIMITED" });
+});
+
+/** The smallest thing that sniffs as a video: an `ftyp` box with the given brand. */
+const video = (brand, extra = 0) => Buffer.concat([Buffer.from([0, 0, 0, 16]), Buffer.from("ftyp"), Buffer.from(brand), Buffer.alloc(4 + extra, 1)]);
+
+test("videos are accepted by content, with their own size budget, and sent as media", async (t) => {
+  const env = await signedIn(t);
+  const mp4 = await upload(env, video("isom"), { "Content-Type": "video/mp4" });
+  assert.equal(mp4.status, 200);
+  const mov = await upload(env, video("qt  ", 5000), { "Content-Type": "video/quicktime" });
+  assert.equal(mov.status, 200, "a video may exceed the image limit (2048) up to its own limit (8192)");
+  env.request({ type: "message:send", requestId: "v1", chatId: CHAT, mediaId: (await mov.json()).mediaId });
+  await env.client.until((frame) => frame.type === "sent" && frame.requestId === "v1");
+  assert.deepEqual(env.provider.calls.slice(-1)[0], ["media", { channelId: CHAT, kind: "group" }, "video/quicktime", 5016]);
+  const shown = await env.client.until((frame) => frame.type === "message" && frame.message.messageId === "9001");
+  assert.equal(shown.message.contentType, "VIDEO");
+});
+
+test("an upload is judged by its bytes: pictures never pass the image limit as videos, and non-video MP4 family files are refused", async (t) => {
+  const env = await signedIn(t);
+  const bigPng = Buffer.concat([PNG, Buffer.alloc(3000)]);
+  assert.equal((await upload(env, bigPng, { "Content-Type": "video/mp4" })).status, 413, "declared as a video, still a picture over 2048");
+  assert.equal((await upload(env, Buffer.alloc(9000, 1), { "Content-Type": "video/mp4" })).status, 413, "over the video limit");
+  assert.equal((await upload(env, video("isom"), { "Content-Type": "image/png" })).status, 200, "the declared type only picks the size budget");
 });
 
 test("opening a chat reports where others have read, once; a failing lookup does not spoil the history page", async (t) => {
