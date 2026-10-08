@@ -1,4 +1,4 @@
-# LINE.js 本機 LINE 網頁客戶端 企劃書 v1.4
+# LINE.js 本機 LINE 網頁客戶端 企劃書 v1.5
 
 一句話：以 **WebSocket** 為即時通道、以 **@evex/linejs v3.4.2** 為 LINE 連線核心的本機 TypeScript 網頁客戶端（**LINE.js**）——Node 後端以 QR 掃碼登入 LINE，將訊息與頻道清單經 ws 推送到監聽 `127.0.0.1:3789` 的網頁前端。
 
@@ -119,14 +119,17 @@
 
 ---
 
-## 四、通訊協定（ws://127.0.0.1:3789，JSON frames）
+## 四、通訊協定（ws://127.0.0.1:3789/ws，JSON frames）
+
+> v1.5：登入互動併入 ws（新增 `auth:state`、`auth:start`），不另設 HTTP 登入端點。ws 升級須帶本機 `Origin` 與首頁下發的 HttpOnly／SameSite=Strict cookie。
 
 ### Server → Client
 
 | type | 負載 |
 |---|---|
 | `hello` | `{ protocol: 1, serverVersion }` |
-| `auth:qr` | `{ url }`（一次性；前端渲染 QR 圖） |
+| `auth:state` | `{ state: "restoring"｜"idle"｜"authenticating"｜"ready"｜"error" }`（連線即送、變動廣播；不含祕密） |
+| `auth:qr` | `{ url }`（一次性；只送給發起 `auth:start` 的連線） |
 | `auth:pin` | `{ code }`（一次性；僅畫面顯示） |
 | `auth:ready` | `{ profile }` |
 | `channels` | `{ channels: Channel[] }`（snapshot，連線即送、變動重送） |
@@ -141,6 +144,7 @@
 
 | type | 負載 |
 |---|---|
+| `auth:start` | `{}`（開始 QR 登入；僅 `idle`／`error` 有效） |
 | `history:fetch` | `{ requestId, chatId, limit?, before? }` |
 | `message:send` | `{ requestId, chatId, text?, mediaId?, sticker?: { packageId, stickerId } }` |
 | `channels:refresh` | `{}` |

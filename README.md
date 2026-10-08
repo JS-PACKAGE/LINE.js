@@ -1,8 +1,8 @@
 # LINE.js
 
-本機 TypeScript LINE 網頁客戶端，以釘選的 [@evex/linejs v3.4.2](https://github.com/evex-dev/linejs/tree/v3.4.2) 連線 LINE。目標以 WebSocket 同步頻道與訊息、同埠 HTTP 提供網頁及圖片／貼圖；目前交付 Phase 1 登入驗證程序。
+本機 TypeScript LINE 網頁客戶端，以釘選的 [@evex/linejs v3.4.2](https://github.com/evex-dev/linejs/tree/v3.4.2) 連線 LINE，經 WebSocket 同步頻道與訊息、同埠 HTTP 提供網頁。
 
-> 開發狀態：Gate 0 已通過；Phase 1 QR 登入、session 復用與瀏覽器登入頁已實作。實際 LINE QR 已產生並在瀏覽器渲染；**Gate 1 尚待次要帳號掃碼與真實訊息驗收**，因此尚未進入頻道、WS、歷史、發送與媒體階段。
+> 開發狀態：QR 登入、session 復用、頻道清單與**即時訊息接收**已可用；登入成功後網頁自動切換到聊天視窗。歷史載入、發送與圖片／貼圖顯示尚未實作（Phase 3）。Gate 1 以次要帳號掃碼的驗收仍待小語確認。
 
 ## 定案用途與範圍
 
@@ -20,7 +20,7 @@ flowchart LR
     Backend <-->|同埠 HTTP 靜態頁與媒體| Browser
 ```
 
-後端僅綁定 `127.0.0.1`，預設埠 `3789`。後端 `tsc` 建置至 `dist/`；前端 Vite 建置至 `dist/web/`。目前提供登入頁與 LINE 訊息接收計數；每頻道最多 500 則的訊息快取與媒體 LRU 將在後續 Gate 實作，不使用資料庫。
+後端僅綁定 `127.0.0.1`，預設埠 `3789`。後端 `tsc` 建置至 `dist/`；前端 Vite 建置至 `dist/web/`。訊息只存記憶體（每頻道最多 500 則，同 id 去重，編輯覆寫），不使用資料庫；媒體 LRU 於 Phase 3 實作。
 
 ## 環境需求
 
@@ -29,7 +29,7 @@ flowchart LR
 - 能掃描 QR 並確認 PIN 的 LINE 次要帳號。
 - `@evex/linejs` 與 `@evex/linejs-types` 均固定 **3.4.2**（JSR）；其餘直接依賴也須釘選版本。
 
-上游 3.4.2 的 Thrift 依賴包含 high 漏洞，本專案以 `overrides` 釘選修補版 `thrift@0.23.0`，不更動 LINE 套件版本。修補依據：[CVE-2026-41636](https://github.com/advisories/GHSA-r67j-r569-jrwp)。已驗證真實 QR 產生相容性；登入完成與後續訊息仍待次要帳號驗收。
+上游 3.4.2 的 Thrift 依賴包含 high 漏洞，本專案以 `overrides` 釘選修補版 `thrift@0.23.0`，不更動 LINE 套件版本。修補依據：[CVE-2026-41636](https://github.com/advisories/GHSA-r67j-r569-jrwp)。已以真實 LINE 帳號驗證登入復用、頻道清單與即時訊息相容。
 
 ## 安裝與啟動
 
@@ -41,19 +41,17 @@ npm run build
 npm start
 ```
 
-開啟 `http://127.0.0.1:3789`，點「產生登入 QR code」，用次要帳號掃描並確認畫面 PIN。QR URL 與 PIN 只交給發起登入的分頁一次，不入日誌或檔案。重啟優先復用 `session.json`，失效則等待使用者開始 QR 登入；失敗不自動循環。刷新或關閉登入分頁不重播 QR，請在原分頁完成登入，或等失效後按按鈕重試。
+開啟 `http://127.0.0.1:3789`。有可復用的 `session.json` 時直接進入聊天視窗；否則點「產生登入 QR code」，用次要帳號掃描並確認畫面 PIN。QR URL 與 PIN 只經 WebSocket 送給按下按鈕的那個連線一次，不入日誌或檔案；重新整理不會重播。失敗不自動循環，須再按按鈕。聊天視窗左側為好友／群組／聊天室／社群，右側顯示即時收到的訊息（影片、語音、檔案等僅顯示類型佔位）。
 
 `session.json` 包含憑證與 E2EE key material，必須以權限 `600` 保存，不得分享或提交。`config.yaml` 為個人設定，不入版本控制。
 
 `src/line/session.ts` 的 SessionStorage 沿用 linejs FileStorage 契約，改以序列化、權限 `600` 的暫存檔與原子替換保存資料，避免併發寫入遺失 token／key。既有檔案會收緊權限；損壞 JSON 或 symlink 拒絕載入，不覆寫原資料。寫入失敗會使後續 `flush()` 失敗，不冒充 session 已保存。
 
-### Gate 1 實際驗收
+### Gate 1 驗收
 
-1. 啟動程序，在網頁以**次要 LINE 帳號**掃碼並完成 PIN 確認。
-2. 掃碼後於 LINE 手機傳送一則訊息；60 秒內確認 terminal 出現 `LINE 訊息收到：id=… type=… source=…`，網頁接收計數增加。只記錄訊息識別資訊，不 dump 原始內容。
-3. 停止並重新 `npm start`，確認 session 直接復用、不需再次掃碼；`session.json` 權限仍為 `600`。
-
-未實際完成上述驗收，不標記 Gate 1 通過，也不啟動 Phase 2。
+1. 啟動程序，在網頁以**次要 LINE 帳號**掃碼並完成 PIN 確認，網頁應自動進入聊天視窗。
+2. 於 LINE 手機傳送一則訊息；60 秒內 terminal 出現 `LINE 訊息收到：id=… type=… kind=…`，該聊天室在網頁即時出現訊息與未讀數。只記錄識別資訊，不 dump 內容。
+3. 停止並重新 `npm start`，確認 session 直接復用、不需再掃碼；`session.json` 權限仍為 `600`。
 
 ## 設定
 
@@ -69,27 +67,27 @@ npm start
 
 ## 通訊協定
 
-Phase 1 登入 spike 以同源 HTTP `POST /auth/start` 與 `GET /auth/status` 交付一次性 QR／PIN 與狀態。需 HttpOnly／SameSite cookie 與分頁識別碼；HTTP 檢查 Host、Origin，頁面使用 CSP，敏感回應 `no-store`。此登入通道將於 Phase 2 切換成定案 WS，屆時移除 HTTP 登入路徑，不保留相容 shim。
+同埠 `ws://127.0.0.1:3789/ws`，JSON frames，單 frame 上限由 `limits.frameMaxBytes`（≤256KB）決定。升級須同時符合：路徑 `/ws`、`Host` 為本機位址、`Origin` 與 `Host` 相同、並帶有首頁下發的 HttpOnly／SameSite=Strict 瀏覽器 cookie；否則回 403。完整負載見 [PLAN.md 第四節](PLAN.md)。
 
-以下 WS／媒體協定為**後續 Gate 契約，尚未提供**：`ws://127.0.0.1:3789` 使用 JSON frames。完整負載見 PLAN.md 第四節。
+已提供：
 
 | 方向 | type | 用途 |
 |---|---|---|
-| Server → Client | `hello` | 協定版本 1 與伺服器版本 |
-| Server → Client | `auth:qr` / `auth:pin` / `auth:ready` | 一次性登入畫面與帳號就緒 |
-| Server → Client | `channels` | 連線與重連的頻道 snapshot |
+| Server → Client | `hello` | 協定版本 1 與伺服器版本；收到後前端清空本機快取，等待完整 snapshot |
+| Server → Client | `auth:state` | `restoring`／`idle`／`authenticating`／`ready`／`error` |
+| Server → Client | `auth:qr` / `auth:pin` | 一次性，只送給發起 `auth:start` 的連線 |
+| Server → Client | `auth:ready` | 登入完成與帳號資料；連線即送 snapshot（`channels` 與記憶體中的訊息） |
+| Server → Client | `channels` | 頻道 snapshot；新增頻道或刷新後重送 |
 | Server → Client | `message` / `message:edit` | 即時訊息與覆寫既有訊息 |
-| Server → Client | `history` / `sent` | 對應 `requestId` 的歷史及發送結果 |
-| Server → Client | `error` / `status` | generic 錯誤與監聽狀態 |
-| Client → Server | `history:fetch` | `requestId`、`chatId`、`limit?`、`before?` |
-| Client → Server | `message:send` | `requestId`、`chatId`，文字／`mediaId`／貼圖其一 |
-| Client → Server | `channels:refresh` / `ping` | 更新頻道與連線保活 |
+| Server → Client | `status` / `error` | LINE 監聽狀態與 generic 錯誤 |
+| Client → Server | `auth:start` | 開始 QR 登入（僅 `idle`／`error` 時有效） |
+| Client → Server | `channels:refresh` / `ping` | 重新載入頻道／連線保活 |
 
-HTTP：`GET /` 提供網頁；`GET /media/:mediaId` 提供圖片／貼圖；`POST /media/upload` 接收 `image/*` 並回傳 `{ mediaId }`。WS 不傳媒體位元組，非 localhost Origin 拒絕升級。
+後續 Gate 才提供：`history:fetch`／`history`、`message:send`／`sent`、`GET /media/:mediaId`、`POST /media/upload`。WS 不傳媒體位元組。
 
 ## 建置與驗證
 
-以下命令已提供；`npm test` 會先建置後執行隔離的設定、session 與登入狀態測試：
+以下命令已提供；`npm test` 會先建置，再以隔離的假 provider 測試設定、session、登入狀態、訊息快取與 WS（升級驗證、QR 只送發起者、去重／編輯、畸形與超大 frame）：
 
 ```sh
 npm run typecheck
@@ -100,7 +98,7 @@ npm audit
 
 測試使用 `node --test` 與 Mock Provider；Mock 不代替真實 LINE 驗收。Gate 1 需要次要帳號掃碼後 60 秒內收到一則真實訊息，Gate 2–4 另驗證網頁同步、歷史、發送與媒體。全部 Gate 及驗收條件見 [PLAN.md](PLAN.md)。
 
-本次已驗證：後端／前端 typecheck、build、9 項測試、`npm audit` 0 vulnerabilities、實際 HTTP 安全邊界、session 權限 `600` 與 gitignore、真實 LINE QR 產生及瀏覽器 QR canvas 顯示。尚未驗證：實際帳號登入、session 帳號復用、登入後真實訊息與 listen 恢復；須由次要帳號掃碼完成，不以測試替代。
+已驗證：typecheck、build、18 項測試、`npm audit` 無 high；真實 LINE 帳號的 session 復用、398 個頻道清單載入、網頁自動進入聊天視窗，以及好友／群組／社群的即時訊息廣播。尚未驗證：次要帳號首次掃碼完整流程（需手機）、listen 中斷後的退避重連。
 
 ## 開發規範與授權
 

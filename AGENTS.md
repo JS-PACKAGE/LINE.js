@@ -13,7 +13,7 @@
 
 ## 結構對應
 
-以下為定案結構；目前 Phase 1 已建立設定、session、LineProvider、HTTP 登入頁與 web。WS、訊息模型、頻道與媒體依後續 Gate 建立，不能將目標結構當作已交付功能。
+以下為定案結構；目前已建立設定、session、LineProvider、同埠 HTTP（靜態頁）、WS hub（登入、頻道、即時訊息）、訊息快取與聊天網頁。歷史、發送、媒體上傳與 `/media` 依 Phase 3 建立，不能將其視為已交付。
 
 | 路徑 | 職責 |
 |---|---|
@@ -43,7 +43,7 @@ npm start
 
 Gate 依 [PLAN.md](PLAN.md) 逐關驗收，不跳關；Gate 0 遠端需存在四件必要文件及前置根檔。Gate 1 必須用**次要帳號** QR 掃碼，60 秒內接收真實訊息並驗證 session 權限。未經實測不得宣稱 Gate 通過。
 
-Phase 1 的 HTTP 登入 spike 將在 Phase 2 改為定案 WS，舊登入路徑須一併刪除。QR／PIN 必須只交給發起登入的分頁一次，其他分頁不得消耗或重播。登入 helper 無法在登入前附加 token 監聽，因此 adapter 使用等價 BaseClient 流程；token listener 必須先註冊。SessionStorage 沿用 FileStorage 契約但覆寫原子持久化，不能吞寫入錯誤。Thrift 以 override 固定修補版 `0.23.0`，不得解除修補而引入已知 high 漏洞。
+登入完全經 WS：QR／PIN 只可送給發起 `auth:start` 的連線，`auth:state` 等廣播不得含祕密；不得新增 HTTP 登入端點或把祕密放進任何共享狀態。WS 升級必須同時驗證路徑、Host、Origin 與瀏覽器 cookie。每個 ws 連線必須掛 `error` 處理（超大 frame 會觸發 error，未處理會使程序崩潰）。登入 helper 無法在登入前附加 token 監聽，因此 adapter 使用等價 BaseClient 流程；token listener 必須先註冊。SessionStorage 沿用 FileStorage 契約但覆寫原子持久化，不能吞寫入錯誤。Thrift 以 override 固定修補版 `0.23.0`，不得解除修補而引入已知 high 漏洞。linejs 3.4.2 的 `fetchUsers()` 一次送出全部好友 mid，超過 LINE 上限 100 會失敗，因此 adapter 自行分批取得好友。
 
 ## 安全性架構（硬規則）
 
