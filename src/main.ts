@@ -5,6 +5,7 @@ import { SessionStorage } from "./line/session.js";
 import { EvexLineProvider } from "./line/provider.js";
 import { LoginController } from "./line/login.js";
 import { createWebServer } from "./http/server.js";
+import { MediaService } from "./media/service.js";
 import { ChatStore } from "./model/store.js";
 import { createHub } from "./ws/hub.js";
 
@@ -29,7 +30,8 @@ async function main(): Promise<void> {
     },
   });
   const login = new LoginController(provider);
-  const web = createWebServer(config, resolve("dist/web"));
+  const media = new MediaService(config.cache.mediaMaxBytes, provider);
+  const web = createWebServer(config, resolve("dist/web"), media);
   const hub = createHub({
     server: web.server,
     authorizeUpgrade: web.authorizeUpgrade,

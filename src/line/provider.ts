@@ -1,5 +1,6 @@
 import { Client, type SquareMessage, type TalkMessage } from "@evex/linejs";
 import { BaseClient, type Device, type FetchLike } from "@evex/linejs/base";
+import type { MediaBytes } from "../media/service.js";
 import type { Channel, Message, Profile } from "../model/dto.js";
 import { SessionStorage } from "./session.js";
 
@@ -24,6 +25,7 @@ export interface LineProvider {
   loginQR(callbacks: QRCallbacks): Promise<void>;
   logout(): Promise<LogoutResult>;
   getProfile(): Profile;
+  fetchSticker(stickerId: string, animated: boolean): Promise<MediaBytes | undefined>;
   fetchChannels(): Promise<Channel[]>;
   close(): Promise<void>;
 }
@@ -31,6 +33,8 @@ export interface LineProvider {
 const UNKNOWN_MEMBER = "成員";
 
 const FRIEND_BATCH = 100;
+const STICKER_TIMEOUT_MS = 10_000;
+const STICKER_MAX_BYTES = 2 * 1024 * 1024;
 
 export class EvexLineProvider implements LineProvider {
   private base?: BaseClient;
@@ -148,32 +152,64 @@ export class EvexLineProvider implements LineProvider {
     const type = String(raw.toType);
     const channelKind = type === "USER" || type === "0" ? "user" : type === "ROOM" || type === "1" ? "room" : "group";
     const channelId = channelKind === "user" && raw.from === myMid ? raw.to : channelKind === "user" ? raw.from : raw.to;
-    return this.toMessage(raw.id, channelId, channelKind, raw.from, raw.text, String(raw.contentType), raw.createdTime, raw.chunks?.length > 0);
+    return this.toMessage({
+      id: raw.id, channelId, channelKind, senderId: raw.from, text: raw.text, contentType: String(raw.contentType),
+      createdTime: raw.createdTime, encrypted: raw.chunks?.length > 0, metadata: raw.contentMetadata,
+    });
   }
 
   private fromSquare(message: SquareMessage): Message {
     const raw = message.raw.message;
-    return this.toMessage(raw.id, raw.to, "square", raw.from, raw.text, String(raw.contentType), raw.createdTime, raw.chunks?.length > 0);
+    return this.toMessage({
+      id: raw.id, channelId: raw.to, channelKind: "square", senderId: raw.from, text: raw.text, contentType: String(raw.contentType),
+      createdTime: raw.createdTime, encrypted: raw.chunks?.length > 0, metadata: raw.contentMetadata,
+    });
   }
 
-  private toMessage(
-    id: unknown, channelId: string, channelKind: Message["channelKind"], senderId: string,
-    text: string | undefined, contentType: string, createdTime: unknown, encrypted: boolean,
-  ): Message {
+  private toMessage(fields: {
+    id: unknown; channelId: string; channelKind: Message["channelKind"]; senderId: string;
+    text: string | undefined; contentType: string; createdTime: unknown; encrypted: boolean;
+    metadata: Record<string, string> | undefined;
+  }): Message {
+    const { contentType, text } = fields;
     const isText = contentType === "NONE" || contentType === "0";
-    const created = Number(createdTime);
+    const created = Number(fields.createdTime);
+    const stickerId = contentType === "STICKER" || contentType === "7" ? fields.metadata?.STKID : undefined;
     return {
-      messageId: String(id),
-      channelId,
-      channelKind,
-      senderId,
-      senderName: this.names[senderId] ?? UNKNOWN_MEMBER,
+      messageId: String(fields.id),
+      channelId: fields.channelId,
+      channelKind: fields.channelKind,
+      senderId: fields.senderId,
+      senderName: this.names[fields.senderId] ?? UNKNOWN_MEMBER,
       ...(isText && text ? { text } : {}),
       contentType,
       createdAt: Number.isFinite(created) && created > 0 ? created : Date.now(),
+      // Only a numeric id may become a media id: it is later spliced into a CDN URL path.
+      ...(stickerId && /^\d{1,12}$/.test(stickerId) ? { mediaId: `sticker-${stickerId}${fields.metadata?.STKOPT === "A" ? "-a" : ""}` } : {}),
       // Fail closed: an E2EE payload without readable text is a placeholder, never a guess.
-      ...(isText && !text && encrypted ? { decryptFailed: true } : {}),
+      ...(isText && !text && fields.encrypted ? { decryptFailed: true } : {}),
     };
+  }
+
+  /**
+   * Stickers live on LINE's public sticker CDN, not behind the authenticated API, so the
+   * browser never talks to a third party: the server fetches and re-serves them.
+   */
+  async fetchSticker(stickerId: string, animated: boolean): Promise<MediaBytes | undefined> {
+    const variants = animated ? ["sticker_animation", "sticker"] : ["sticker"];
+    for (const variant of variants) {
+      const response = await fetch(`https://stickershop.line-scdn.net/stickershop/v1/sticker/${stickerId}/android/${variant}.png`, {
+        signal: AbortSignal.timeout(STICKER_TIMEOUT_MS),
+        redirect: "error",
+      });
+      if (response.status === 404 || response.status === 403) continue;
+      if (!response.ok) throw new Error("STICKER_FETCH_FAILED");
+      if (!response.headers.get("content-type")?.startsWith("image/png")) throw new Error("STICKER_BAD_TYPE");
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length === 0 || bytes.length > STICKER_MAX_BYTES) throw new Error("STICKER_BAD_SIZE");
+      return { mime: "image/png", bytes };
+    }
+    return undefined;
   }
 
   // linejs 3.4.2 `fetchUsers()` sends every friend mid in one getContactsV3 call, which

@@ -9,6 +9,7 @@ import { createWebServer } from "../dist/http/server.js";
 import { createHub } from "../dist/ws/hub.js";
 import { LoginController } from "../dist/line/login.js";
 import { ChatStore } from "../dist/model/store.js";
+import { MediaService } from "../dist/media/service.js";
 
 class FakeProvider {
   restoreResult = true;
@@ -21,6 +22,11 @@ class FakeProvider {
   logoutError = undefined;
   async logout() { if (this.logoutError) throw this.logoutError; return this.logoutResult; }
   async close() {}
+  async fetchSticker(id) {
+    if (id === "404") return undefined;
+    if (id === "500") throw new Error("upstream down");
+    return { mime: "image/png", bytes: Buffer.from(`png-${id}`) };
+  }
 }
 
 async function freePort() {
@@ -40,7 +46,7 @@ async function start(t, { restore = true } = {}) {
   provider.restoreResult = restore;
   const login = new LoginController(provider);
   const store = new ChatStore(500);
-  const web = createWebServer(config, root);
+  const web = createWebServer(config, root, new MediaService(1024, provider));
   const hub = createHub({ server: web.server, authorizeUpgrade: web.authorizeUpgrade, config, login, provider, store, serverVersion: "test" });
   await new Promise((resolve) => web.server.listen(port, "127.0.0.1", resolve));
   t.after(async () => {
@@ -204,4 +210,24 @@ test("logout is refused when nobody is signed in; a failing logout ends in error
   assert.ok(!JSON.stringify(failure).includes("secret"));
   assert.equal(login.state, "error");
   assert.equal(login.canLogout(), false);
+});
+
+test("media route serves stickers only to the browser that holds the cookie and only for valid ids", async (t) => {
+  const { port, cookie } = await start(t);
+  const base = `http://127.0.0.1:${port}/media/`;
+  const ok = await fetch(`${base}sticker-123`, { headers: { Cookie: cookie } });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers.get("content-type"), "image/png");
+  assert.equal(ok.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(await ok.text(), "png-123");
+  assert.equal((await fetch(`${base}sticker-123`)).status, 404, "no cookie");
+  assert.equal((await fetch(`${base}sticker-123`, { headers: { Cookie: "linejs_browser=" + "0".repeat(64) } })).status, 404, "wrong cookie");
+  for (const bad of ["..%2F..%2Fsession.json", "sticker-12-x", "sticker-", "image-1"]) {
+    assert.equal((await fetch(base + bad, { headers: { Cookie: cookie } })).status, 404, bad);
+  }
+  assert.equal((await fetch(`${base}sticker-404`, { headers: { Cookie: cookie } })).status, 404);
+  const broken = await fetch(`${base}sticker-500`, { headers: { Cookie: cookie } });
+  assert.equal(broken.status, 502);
+  assert.deepEqual(await broken.json(), { code: "MEDIA_UNAVAILABLE" });
+  assert.equal((await fetch(`${base}sticker-123`, { method: "POST", headers: { Cookie: cookie } })).status, 405);
 });

@@ -3,6 +3,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import type { Config } from "../config.js";
+import { isMediaId, type MediaService } from "../media/service.js";
 
 export interface WebServer {
   server: Server;
@@ -10,7 +11,7 @@ export interface WebServer {
   authorizeUpgrade(request: IncomingMessage): boolean;
 }
 
-export function createWebServer(config: Config, webRoot: string): WebServer {
+export function createWebServer(config: Config, webRoot: string, media: MediaService): WebServer {
   const browserToken = randomBytes(32).toString("hex");
   const hosts: Record<string, true> = { [`${config.server.host}:${config.server.port}`]: true, [`localhost:${config.server.port}`]: true };
   const mime: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml" };
@@ -20,11 +21,15 @@ export function createWebServer(config: Config, webRoot: string): WebServer {
     response.end(JSON.stringify(payload));
   }
 
+  function hasBrowserCookie(request: IncomingMessage): boolean {
+    const cookie = request.headers.cookie?.split(";").map((entry) => entry.trim()).find((entry) => entry.startsWith("linejs_browser="))?.slice("linejs_browser=".length) ?? "";
+    return /^[a-f0-9]{64}$/.test(cookie) && timingSafeEqual(Buffer.from(cookie), Buffer.from(browserToken));
+  }
+
   function authorizeUpgrade(request: IncomingMessage): boolean {
     const host = request.headers.host;
     if (!host || hosts[host] !== true || request.headers.origin !== `http://${host}`) return false;
-    const cookie = request.headers.cookie?.split(";").map((entry) => entry.trim()).find((entry) => entry.startsWith("linejs_browser="))?.slice("linejs_browser=".length) ?? "";
-    return /^[a-f0-9]{64}$/.test(cookie) && timingSafeEqual(Buffer.from(cookie), Buffer.from(browserToken));
+    return hasBrowserCookie(request);
   }
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -42,6 +47,26 @@ export function createWebServer(config: Config, webRoot: string): WebServer {
       return;
     }
     const url = new URL(request.url ?? "/", `http://${host}`);
+    if (url.pathname.startsWith("/media/")) {
+      const id = url.pathname.slice("/media/".length);
+      if (!hasBrowserCookie(request) || !isMediaId(id)) {
+        json(response, 404, { code: "NOT_FOUND" });
+        return;
+      }
+      try {
+        const found = await media.get(id);
+        if (!found) {
+          json(response, 404, { code: "NOT_FOUND" });
+          return;
+        }
+        // Sticker bytes are immutable per id, unlike everything else this server returns.
+        response.writeHead(200, { "Content-Type": found.mime, "Content-Length": found.bytes.length, "Cache-Control": "private, max-age=86400" });
+        response.end(request.method === "HEAD" ? undefined : found.bytes);
+      } catch {
+        json(response, 502, { code: "MEDIA_UNAVAILABLE" });
+      }
+      return;
+    }
     try {
       const root = await realpath(webRoot);
       const path = await realpath(resolve(root, `.${decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname)}`));

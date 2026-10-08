@@ -53,6 +53,7 @@ footer { color: #667c73; font-size: 12px; line-height: 1.7; }
 .message time { color: var(--muted); }
 .message p { margin: 4px 0 0; padding: 9px 13px; background: var(--surface); border: 1px solid var(--line); border-radius: 4px 14px 14px 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message p.placeholder, .empty { color: var(--muted); font-style: italic; }
+.sticker { display: block; width: 140px; max-width: 60%; height: auto; margin-top: 6px; }
 .empty { margin: auto; text-align: center; }
 .read-only { padding: 12px 24px; border-top: 1px solid var(--line); background: var(--surface); }
 

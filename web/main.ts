@@ -166,6 +166,21 @@ function messageNode(message: Message): HTMLElement {
   if (message.decryptFailed) {
     body.className = "placeholder";
     body.textContent = "無法解密此訊息";
+  } else if (message.mediaId && message.contentType === "STICKER") {
+    const image = document.createElement("img");
+    image.className = "sticker";
+    image.src = `/media/${message.mediaId}`;
+    image.alt = "貼圖";
+    image.loading = "lazy";
+    image.addEventListener("error", () => {
+      // The CDN may not have this sticker (or is unreachable): fall back to the type label.
+      const fallback = document.createElement("p");
+      fallback.className = "placeholder";
+      fallback.textContent = "［貼圖］";
+      image.replaceWith(fallback);
+    });
+    item.append(head, image);
+    return item;
   } else if (message.text) {
     body.textContent = message.text;
   } else {
