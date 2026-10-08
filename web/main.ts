@@ -2,6 +2,8 @@ import QRCode from "qrcode";
 import "./style.css";
 import type { AuthState, Channel, Message } from "../src/model/dto.js";
 import type { ClientFrame, ListenState, ServerFrame } from "../src/ws/protocol.js";
+import { createComposer } from "./composer.js";
+import { confirmDialog } from "./dialog.js";
 
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const login = $<HTMLElement>("#login");
@@ -39,10 +41,19 @@ let messages: Record<string, Message[]> = {};
 let unread: Record<string, number> = {};
 let tab: "chats" | "friends" = "chats";
 let selected: string | undefined;
+let myUserId: string | undefined;
 
-function send(frame: ClientFrame): void {
-  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame));
+interface HistoryState { cursor?: string; hasMore: boolean; loading: boolean; loaded: boolean; failed: boolean }
+let historyOf: Record<string, HistoryState> = {};
+let pendingHistory: Record<string, string> = {};
+
+function send(frame: ClientFrame): boolean {
+  if (socket?.readyState !== WebSocket.OPEN) return false;
+  socket.send(JSON.stringify(frame));
+  return true;
 }
+
+const composer = createComposer(send);
 
 function clearSecrets(): void {
   qrBox.hidden = true;
@@ -72,6 +83,9 @@ function applyAuthState(state: AuthState): void {
     selected = undefined;
     tab = "chats";
     filter.value = "";
+    historyOf = {};
+    pendingHistory = {};
+    composer.reset();
   }
   clearSecrets();
   if (state === "restoring") showLogin("正在復用 session…", false);
@@ -191,34 +205,90 @@ function messageNode(message: Message): HTMLElement {
   return item;
 }
 
-function renderMessages(): void {
+function renderMessages(anchor: "bottom" | "keep" | "prepend" = "bottom"): void {
   const channel = channels.find((entry) => entry.channelId === selected);
   channelTitle.textContent = channel?.name ?? "選擇一個聊天室";
   channelMeta.textContent = channel ? KIND_LABEL[channel.kind] : "";
   const list = selected ? (messages[selected] ?? []) : [];
+  const state = selected ? historyOf[selected] : undefined;
+  const previousHeight = messageList.scrollHeight;
+  const previousTop = messageList.scrollTop;
   if (!channel || list.length === 0) {
     const empty = document.createElement("p");
     empty.className = "empty";
-    empty.textContent = channel ? "尚未收到此聊天室的即時訊息。" : "從左側選擇聊天室；新的訊息會即時出現在這裡。";
+    if (!channel) empty.textContent = "從左側選擇聊天室；新的訊息會即時出現在這裡。";
+    else if (state?.loading || !state?.loaded) empty.textContent = state?.failed ? "無法載入歷史訊息。" : "載入訊息中…";
+    else empty.textContent = "這個聊天室還沒有訊息。";
     messageList.replaceChildren(empty);
     return;
   }
-  messageList.replaceChildren(...list.map(messageNode));
-  messageList.scrollTop = messageList.scrollHeight;
+  const nodes: HTMLElement[] = [];
+  if (state) {
+    const marker = document.createElement("div");
+    marker.className = "history-note";
+    if (state.loading) marker.textContent = "載入更早的訊息…";
+    else if (state.failed) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "ghost";
+      retry.textContent = "載入失敗，點此重試";
+      retry.addEventListener("click", () => { if (selected) requestHistory(selected); });
+      marker.append(retry);
+    } else if (state.hasMore) marker.textContent = "向上捲動以載入更早的訊息";
+    else marker.textContent = "— 已經是最早的訊息 —";
+    nodes.push(marker);
+  }
+  nodes.push(...list.map(messageNode));
+  messageList.replaceChildren(...nodes);
+  if (anchor === "bottom") messageList.scrollTop = messageList.scrollHeight;
+  // Older messages were inserted above: keep what the reader was looking at in place.
+  else if (anchor === "prepend") messageList.scrollTop = previousTop + (messageList.scrollHeight - previousHeight);
+  else messageList.scrollTop = previousTop;
 }
 
-function upsertMessage(message: Message): void {
+function mergeMessage(message: Message): void {
   const list = messages[message.channelId] ?? [];
   const index = list.findIndex((entry) => entry.messageId === message.messageId);
   if (index >= 0) list[index] = message;
   else list.push(message);
   list.sort((a, b) => a.createdAt - b.createdAt);
   messages[message.channelId] = list;
-  if (message.channelId === selected) {
-    const nearBottom = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 80;
-    renderMessages();
-    if (!nearBottom) messageList.scrollTop = Math.max(0, messageList.scrollTop);
-  }
+}
+
+function requestHistory(channelId: string): void {
+  const state = (historyOf[channelId] ??= { hasMore: true, loading: false, loaded: false, failed: false });
+  if (state.loading || (state.loaded && !state.hasMore)) return;
+  const requestId = crypto.randomUUID();
+  if (!send({ type: "history:fetch", requestId, chatId: channelId, ...(state.cursor ? { before: state.cursor } : {}) })) return;
+  state.loading = true;
+  state.failed = false;
+  pendingHistory[requestId] = channelId;
+  if (channelId === selected) renderMessages("keep");
+}
+
+function applyHistory(frame: Extract<ServerFrame, { type: "history" }>): void {
+  const channelId = pendingHistory[frame.requestId];
+  const state = channelId ? historyOf[channelId] : undefined;
+  if (!channelId || !state) return;
+  delete pendingHistory[frame.requestId];
+  const firstPage = !state.loaded;
+  for (const message of frame.messages) mergeMessage(message);
+  state.loading = false;
+  state.loaded = true;
+  state.cursor = frame.cursor;
+  state.hasMore = frame.hasMore && frame.cursor !== undefined;
+  renderChannels();
+  if (channelId !== selected) return;
+  renderMessages(firstPage ? "bottom" : "prepend");
+  // A short conversation never scrolls, so the scroll trigger would never fire: keep filling the view.
+  if (state.hasMore && frame.messages.length > 0 && messageList.scrollHeight <= messageList.clientHeight + 40) requestHistory(channelId);
+}
+
+function upsertMessage(message: Message): void {
+  const nearBottom = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 80;
+  mergeMessage(message);
+  // Your own message always jumps into view, even when you were reading older history.
+  if (message.channelId === selected) renderMessages(nearBottom || message.senderId === myUserId ? "bottom" : "keep");
 }
 
 async function handle(frame: ServerFrame): Promise<void> {
@@ -228,6 +298,8 @@ async function handle(frame: ServerFrame): Promise<void> {
       channels = [];
       messages = {};
       unread = {};
+      historyOf = {};
+      pendingHistory = {};
       return;
     case "auth:state":
       applyAuthState(frame.state);
@@ -242,39 +314,67 @@ async function handle(frame: ServerFrame): Promise<void> {
       pin.hidden = false;
       return;
     case "auth:ready":
+      myUserId = frame.profile.userId;
       enterChat(frame.profile.displayName);
       return;
     case "channels":
       channels = frame.channels;
-      if (selected && !channels.some((channel) => channel.channelId === selected)) selected = undefined;
+      if (selected && !channels.some((channel) => channel.channelId === selected)) {
+        selected = undefined;
+        composer.setChannel(undefined);
+      }
       renderChannels();
-      renderMessages();
+      renderMessages("keep");
+      // After a reconnect the snapshot replaces local state; refill the open conversation.
+      if (selected && !historyOf[selected]?.loaded) requestHistory(selected);
       return;
     case "message":
     case "message:edit": {
       const { message } = frame;
       upsertMessage(message);
-      if (frame.type === "message" && message.channelId !== selected) {
+      if (frame.type === "message" && message.channelId !== selected && message.senderId !== myUserId) {
         unread[message.channelId] = (unread[message.channelId] ?? 0) + 1;
       }
       renderChannels();
       return;
     }
+    case "history":
+      applyHistory(frame);
+      return;
+    case "sent":
+      composer.handleSent(frame.requestId);
+      return;
     case "status":
       listenState.textContent = LISTEN_LABEL[frame.state];
       listenState.dataset.state = frame.state;
       return;
-    case "error":
+    case "error": {
       logoutButton.disabled = false;
+      const channelId = frame.requestId ? pendingHistory[frame.requestId] : undefined;
+      if (frame.requestId && channelId) {
+        delete pendingHistory[frame.requestId];
+        const state = historyOf[channelId];
+        if (state) {
+          state.loading = false;
+          state.failed = true;
+        }
+        if (channelId === selected) renderMessages("keep");
+        return;
+      }
+      if (composer.handleError(frame.requestId, frame.message)) return;
       if (signedIn) channelMeta.textContent = frame.message;
       else status.textContent = frame.message;
       return;
+    }
   }
 }
 
 function connect(): void {
   socket = new WebSocket(`ws://${location.host}/ws`);
-  socket.addEventListener("open", () => { reconnectDelay = 1000; });
+  socket.addEventListener("open", () => {
+    reconnectDelay = 1000;
+    composer.setConnected(true);
+  });
   socket.addEventListener("message", (event) => {
     try {
       void handle(JSON.parse(String(event.data)) as ServerFrame);
@@ -284,6 +384,7 @@ function connect(): void {
   });
   socket.addEventListener("close", () => {
     clearSecrets();
+    composer.setConnected(false);
     if (signedIn) listenState.textContent = "與本機服務斷線，重新連線中…";
     else showLogin("無法連線至本機服務，正在重新連線…", false);
     setTimeout(connect, reconnectDelay);
@@ -319,8 +420,14 @@ for (const button of [tabChats, tabFriends]) {
   });
 }
 
-logoutButton.addEventListener("click", () => {
-  if (!window.confirm("登出後會清除本機登入資料並登出此裝置，下次需重新掃碼。確定要登出嗎？")) return;
+logoutButton.addEventListener("click", async () => {
+  const confirmed = await confirmDialog({
+    title: "登出 LINE",
+    message: "登出後會清除本機登入資料與快取，並登出此裝置；下次使用需要重新掃描 QR code。",
+    confirmLabel: "登出",
+    danger: true,
+  });
+  if (!confirmed) return;
   logoutButton.disabled = true;
   send({ type: "auth:logout" });
 });
@@ -330,8 +437,10 @@ function selectChannel(item: EventTarget | null): void {
   if (!id) return;
   selected = id;
   delete unread[id];
+  composer.setChannel(id);
   renderChannels();
   renderMessages();
+  if (!historyOf[id]?.loaded) requestHistory(id);
 }
 channelList.addEventListener("click", (event) => selectChannel(event.target));
 channelList.addEventListener("keydown", (event) => {
@@ -339,6 +448,12 @@ channelList.addEventListener("keydown", (event) => {
     event.preventDefault();
     selectChannel(event.target);
   }
+});
+
+messageList.addEventListener("scroll", () => {
+  const state = selected ? historyOf[selected] : undefined;
+  // Near the top: load the next older page, unless the last attempt failed (then the user retries explicitly).
+  if (selected && state?.loaded && state.hasMore && !state.loading && !state.failed && messageList.scrollTop < 80) requestHistory(selected);
 });
 
 setInterval(() => send({ type: "ping" }), 30_000);

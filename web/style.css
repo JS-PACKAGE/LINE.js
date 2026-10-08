@@ -55,8 +55,29 @@ footer { color: #667c73; font-size: 12px; line-height: 1.7; }
 .message p.placeholder, .empty { color: var(--muted); font-style: italic; }
 .sticker { display: block; width: 140px; max-width: 60%; height: auto; margin-top: 6px; }
 .empty { margin: auto; text-align: center; }
-.read-only { padding: 12px 24px; border-top: 1px solid var(--line); background: var(--surface); }
+.history-note { text-align: center; color: var(--muted); font-size: 13px; padding: 4px 0 8px; }
+.composer { border-top: 1px solid var(--line); background: var(--surface); padding: 10px 16px 12px; display: grid; gap: 8px; }
+.composer-row { display: flex; gap: 8px; align-items: flex-end; }
+.composer textarea { flex: 1; min-height: 40px; max-height: 140px; resize: none; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: transparent; color: inherit; font: inherit; line-height: 1.5; }
+.composer .ghost, .composer-row > button { align-self: flex-end; height: 40px; }
+.composer .ghost:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+#composer-note { margin: 0; font-size: 13px; color: var(--muted); }
+#composer-note[data-kind="error"] { color: #b3261e; }
+#sticker-panel { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: end; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--soft); }
+#sticker-panel label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+#sticker-panel input { width: 130px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; font: inherit; }
+#sticker-panel small { flex-basis: 100%; color: var(--muted); }
+#sticker-preview { width: 56px; height: 56px; object-fit: contain; }
 
+dialog#confirm { border: 1px solid var(--line); border-radius: 16px; padding: 0; background: var(--surface); color: inherit; width: min(420px, calc(100vw - 32px)); box-shadow: 0 24px 60px #00000040; }
+dialog#confirm::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
+.dialog-body { padding: 24px; display: grid; gap: 10px; }
+.dialog-body h2 { margin: 0; font-size: 19px; }
+.dialog-body p { margin: 0; color: var(--muted); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 12px; }
+.dialog-actions button { height: 40px; min-width: 84px; }
+#confirm-ok.danger { background: #b3261e; }
+#confirm-ok.danger:focus-visible { outline-color: #e8908a; }
 @media (prefers-color-scheme: dark) {
   :root { color: #e2eee8; background: #101b17; --line: #304b3c; --muted: #95b0a1; --surface: #172720; --soft: #213a2e; }
   .eyebrow { color: #8abd9f; }
