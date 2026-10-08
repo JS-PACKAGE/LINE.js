@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { SessionStorage } from "./line/session.js";
@@ -56,6 +56,15 @@ async function main(): Promise<void> {
       ready();
     });
   });
+  // `linejs stop|restart` finds the running service through this file (scripts/service.mjs).
+  const pidPath = resolve("linejs.pid");
+  await writeFile(pidPath, String(process.pid), { mode: 0o600 }).catch(() => {
+    console.warn("警告：無法寫入 linejs.pid，管理腳本的 stop／restart 將找不到此服務。");
+  });
+  const releasePid = async (): Promise<void> => {
+    // A newer instance may already own the file; only remove our own.
+    if ((await readFile(pidPath, "utf8").catch(() => "")) === String(process.pid)) await rm(pidPath, { force: true });
+  };
   console.info(`LINE.js：http://${config.server.host}:${config.server.port}`);
   if (!["127.0.0.1", "localhost", "::1"].includes(config.server.host)) {
     console.warn("警告：監聽位址不是本機迴路。能連到此位址的人都能開啟網頁並操作已登入的 LINE 帳號，請確認網路環境可信。");
@@ -75,9 +84,11 @@ async function main(): Promise<void> {
     web.server.closeAllConnections();
     try {
       await provider.close();
+      await releasePid();
       process.exit(0);
     } catch {
       console.error("SESSION_WRITE_FAILED");
+      await releasePid().catch(() => {});
       process.exit(1);
     }
   };
