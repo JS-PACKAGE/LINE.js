@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>LINE.js</title>
+    <meta name="theme-color" content="#087e4f" />
+    <meta name="description" content="本機 LINE 網頁客戶端" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/favicon.ico" sizes="48x48 32x32 16x16" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <script type="module" src="/main.ts"></script>
   </head>
   <body>
@@ -66,6 +72,11 @@
             <button id="attachment-send" type="button">送出圖片</button>
             <button id="attachment-cancel" type="button" class="ghost">取消</button>
           </div>
+          <div id="reply-bar" class="reply-bar" hidden>
+            <span class="reply-label">回覆</span>
+            <span id="reply-preview"></span>
+            <button id="reply-cancel" type="button" class="ghost" aria-label="取消回覆">✕</button>
+          </div>
           <div class="composer-row">
             <button id="attach" type="button" class="ghost" aria-label="傳送圖片">圖片</button>
             <input id="file" type="file" accept="image/png,image/jpeg,image/gif" hidden />
@@ -76,6 +87,8 @@
         </form>
       </section>
     </div>
+
+    <div id="context-menu" role="menu" aria-label="訊息選單" hidden></div>
 
     <dialog id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-message">
       <div class="dialog-body">

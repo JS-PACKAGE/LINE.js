@@ -15,7 +15,10 @@ export interface WebServer {
 export function createWebServer(config: Config, webRoot: string, media: MediaService): WebServer {
   const browserToken = randomBytes(32).toString("hex");
   const hosts: Record<string, true> = { [`${config.server.host}:${config.server.port}`]: true, [`localhost:${config.server.port}`]: true };
-  const mime: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml" };
+  const mime: Record<string, string> = {
+    ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml",
+    ".webmanifest": "application/manifest+json; charset=utf-8", ".png": "image/png", ".ico": "image/x-icon",
+  };
 
   function json(response: ServerResponse, status: number, payload: unknown): void {
     response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -87,7 +90,7 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
-    response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+    response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self'; manifest-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
     const host = request.headers.host;
     if (!host || hosts[host] !== true || request.headers["sec-fetch-site"] === "cross-site") {
       json(response, 403, { code: "FORBIDDEN" });
