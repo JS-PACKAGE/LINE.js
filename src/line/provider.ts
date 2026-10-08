@@ -611,8 +611,8 @@ export class EvexLineProvider implements LineProvider {
     const me = this.getProfile();
     const contentMetadata = mentionMetadata(options.mentions ?? []);
     const reply = options.replyTo ? { relatedMessageId: options.replyTo } : {};
-    // The echo carries what we sent even if LINE's answer omits it.
-    const echo = (message: Message): Message => ({ ...message, text, ...(options.replyTo ? { replyTo: options.replyTo } : {}) });
+    // The echo carries what we sent even if LINE's answer omits it (an E2EE reply has only ciphertext chunks).
+    const echo = ({ decryptFailed: _unreadable, ...message }: Message): Message => ({ ...message, text, ...(options.replyTo ? { replyTo: options.replyTo } : {}) });
     if (channel.kind === "square") {
       const { createdSquareMessage } = await client.base.square.sendMessage({ squareChatMid: channel.channelId, text, contentMetadata, ...reply });
       return echo(this.squareToMessage(createdSquareMessage, me.displayName));
