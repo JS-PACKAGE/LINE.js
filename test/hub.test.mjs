@@ -1,0 +1,156 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { WebSocket } from "ws";
+import { createWebServer } from "../dist/http/server.js";
+import { createHub } from "../dist/ws/hub.js";
+import { LoginController } from "../dist/line/login.js";
+import { ChatStore } from "../dist/model/store.js";
+
+class FakeProvider {
+  restoreResult = true;
+  channels = [{ channelId: "c1", kind: "group", name: "測試群組" }];
+  async restoreSession() { return this.restoreResult; }
+  loginQR(callbacks) { this.callbacks = callbacks; return new Promise((resolve) => { this.finish = resolve; }); }
+  getProfile() { return { userId: "u-me", displayName: "測試帳號" }; }
+  async fetchChannels() { return this.channels; }
+  async close() {}
+}
+
+async function freePort() {
+  const probe = createServer();
+  await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const { port } = probe.address();
+  await new Promise((resolve) => probe.close(resolve));
+  return port;
+}
+
+async function start(t, { restore = true } = {}) {
+  const port = await freePort();
+  const root = await mkdtemp(join(tmpdir(), "linejs-hub-"));
+  await writeFile(join(root, "index.html"), "<!doctype html><title>test</title>");
+  const config = { server: { host: "127.0.0.1", port }, limits: { frameMaxBytes: 1024 } };
+  const provider = new FakeProvider();
+  provider.restoreResult = restore;
+  const login = new LoginController(provider);
+  const store = new ChatStore(500);
+  const web = createWebServer(config, root);
+  const hub = createHub({ server: web.server, authorizeUpgrade: web.authorizeUpgrade, config, login, provider, store, serverVersion: "test" });
+  await new Promise((resolve) => web.server.listen(port, "127.0.0.1", resolve));
+  t.after(async () => {
+    hub.close();
+    web.server.closeAllConnections();
+    await new Promise((resolve) => web.server.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  });
+  const cookie = (await fetch(`http://127.0.0.1:${port}/`)).headers.get("set-cookie").split(";")[0];
+  return { port, cookie, login, hub, provider };
+}
+
+function connect(port, headers) {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers });
+  const frames = [];
+  const waiters = [];
+  socket.on("message", (data) => {
+    const frame = JSON.parse(data.toString());
+    frames.push(frame);
+    for (const waiter of [...waiters]) waiter();
+  });
+  const until = (predicate, timeout = 2000) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timeout; saw ${frames.map((f) => f.type)}`)), timeout);
+    const check = () => {
+      const hit = frames.find(predicate);
+      if (!hit) return;
+      clearTimeout(timer);
+      waiters.splice(waiters.indexOf(check), 1);
+      resolve(hit);
+    };
+    waiters.push(check);
+    check();
+  });
+  const opened = new Promise((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); socket.once("unexpected-response", (_, res) => reject(Object.assign(new Error("rejected"), { status: res.statusCode }))); });
+  return { socket, frames, until, opened };
+}
+
+test("upgrade is refused for wrong Origin, missing cookie or wrong path", async (t) => {
+  const { port, cookie } = await start(t);
+  const origin = `http://127.0.0.1:${port}`;
+  for (const headers of [{ Origin: "http://evil.example", Cookie: cookie }, { Origin: origin }, { Cookie: cookie }]) {
+    await assert.rejects(connect(port, headers).opened, (error) => error.status === 403);
+  }
+  const wrongPath = new WebSocket(`ws://127.0.0.1:${port}/other`, { headers: { Origin: origin, Cookie: cookie } });
+  await assert.rejects(new Promise((resolve, reject) => { wrongPath.once("open", resolve); wrongPath.once("error", reject); }));
+});
+
+test("a restored session receives ready state, profile, channels and cached messages on connect", async (t) => {
+  const { port, cookie, login, hub } = await start(t);
+  await login.restore();
+  hub.handleMessage({ messageId: "m1", channelId: "c1", channelKind: "group", senderId: "u1", senderName: "小明", text: "你好", contentType: "NONE", createdAt: 1 }, "new");
+  const client = connect(port, { Origin: `http://127.0.0.1:${port}`, Cookie: cookie });
+  t.after(() => client.socket.close());
+  await client.opened;
+  const ready = await client.until((frame) => frame.type === "auth:ready");
+  assert.deepEqual(ready.profile, { userId: "u-me", displayName: "測試帳號" });
+  await client.until((frame) => frame.type === "channels" && frame.channels.some((channel) => channel.channelId === "c1"));
+  const replayed = await client.until((frame) => frame.type === "message");
+  assert.equal(replayed.message.text, "你好");
+  assert.equal(client.frames[0].type, "hello");
+  assert.equal(client.frames[0].protocol, 1);
+});
+
+test("live messages broadcast once; duplicates are suppressed and edits arrive as message:edit", async (t) => {
+  const { port, cookie, login, hub } = await start(t);
+  await login.restore();
+  const client = connect(port, { Origin: `http://127.0.0.1:${port}`, Cookie: cookie });
+  t.after(() => client.socket.close());
+  await client.opened;
+  await client.until((frame) => frame.type === "auth:ready");
+  const message = { messageId: "m1", channelId: "c1", channelKind: "group", senderId: "u1", senderName: "小明", text: "第一版", contentType: "NONE", createdAt: 10 };
+  hub.handleMessage(message, "new");
+  hub.handleMessage(message, "new");
+  hub.handleMessage({ ...message, text: "第二版" }, "edit");
+  const edited = await client.until((frame) => frame.type === "message:edit");
+  assert.equal(edited.message.text, "第二版");
+  assert.equal(client.frames.filter((frame) => frame.type === "message").length, 1);
+});
+
+test("QR and PIN go only to the socket that asked; other sockets see state changes only", async (t) => {
+  const { port, cookie, login, provider } = await start(t, { restore: false });
+  await login.restore();
+  const headers = { Origin: `http://127.0.0.1:${port}`, Cookie: cookie };
+  const asker = connect(port, headers);
+  const observer = connect(port, headers);
+  t.after(() => { asker.socket.close(); observer.socket.close(); });
+  await Promise.all([asker.opened, observer.opened]);
+  await asker.until((frame) => frame.type === "auth:state" && frame.state === "idle");
+  await observer.until((frame) => frame.type === "auth:state" && frame.state === "idle");
+  asker.socket.send(JSON.stringify({ type: "auth:start" }));
+  await observer.until((frame) => frame.type === "auth:state" && frame.state === "authenticating");
+  provider.callbacks.onQRUrl("https://example.invalid/test-only-qr");
+  provider.callbacks.onPinCode("654321");
+  await asker.until((frame) => frame.type === "auth:pin");
+  assert.ok(asker.frames.some((frame) => frame.type === "auth:qr"));
+  assert.ok(!observer.frames.some((frame) => frame.type === "auth:qr" || frame.type === "auth:pin"));
+  asker.socket.send(JSON.stringify({ type: "auth:start" }));
+  const refused = await asker.until((frame) => frame.type === "error");
+  assert.equal(refused.code, "LOGIN_UNAVAILABLE");
+  provider.finish();
+  await observer.until((frame) => frame.type === "auth:ready");
+});
+
+test("malformed, unknown and oversized frames are rejected without leaking details", async (t) => {
+  const { port, cookie, login } = await start(t);
+  await login.restore();
+  const client = connect(port, { Origin: `http://127.0.0.1:${port}`, Cookie: cookie });
+  await client.opened;
+  client.socket.send("not json");
+  assert.equal((await client.until((frame) => frame.type === "error")).code, "INVALID_REQUEST");
+  client.socket.send(JSON.stringify({ type: "history:fetch" }));
+  assert.equal((await client.until((frame) => frame.code === "UNKNOWN_TYPE")).message, "不支援的請求類型。");
+  const closed = new Promise((resolve) => client.socket.once("close", resolve));
+  client.socket.send(JSON.stringify({ type: "ping", pad: "x".repeat(2048) }));
+  assert.equal(await closed, 1009);
+});

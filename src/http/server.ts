@@ -1,11 +1,16 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import type { Config } from "../config.js";
-import { LoginController } from "../line/login.js";
 
-export function createLoginServer(config: Config, login: LoginController, webRoot: string) {
+export interface WebServer {
+  server: Server;
+  /** Host, Origin and per-process browser cookie must all match; used for the WS upgrade. */
+  authorizeUpgrade(request: IncomingMessage): boolean;
+}
+
+export function createWebServer(config: Config, webRoot: string): WebServer {
   const browserToken = randomBytes(32).toString("hex");
   const hosts: Record<string, true> = { [`${config.server.host}:${config.server.port}`]: true, [`localhost:${config.server.port}`]: true };
   const mime: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml" };
@@ -15,54 +20,28 @@ export function createLoginServer(config: Config, login: LoginController, webRoo
     response.end(JSON.stringify(payload));
   }
 
+  function authorizeUpgrade(request: IncomingMessage): boolean {
+    const host = request.headers.host;
+    if (!host || hosts[host] !== true || request.headers.origin !== `http://${host}`) return false;
+    const cookie = request.headers.cookie?.split(";").map((entry) => entry.trim()).find((entry) => entry.startsWith("linejs_browser="))?.slice("linejs_browser=".length) ?? "";
+    return /^[a-f0-9]{64}$/.test(cookie) && timingSafeEqual(Buffer.from(cookie), Buffer.from(browserToken));
+  }
+
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
-    response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+    response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
     const host = request.headers.host;
     if (!host || hosts[host] !== true || request.headers["sec-fetch-site"] === "cross-site") {
       json(response, 403, { code: "FORBIDDEN" });
-      return;
-    }
-    const origin = request.headers.origin;
-    if (origin && origin !== `http://${host}`) {
-      json(response, 403, { code: "FORBIDDEN" });
-      return;
-    }
-    const url = new URL(request.url ?? "/", `http://${host}`);
-    if (url.pathname.startsWith("/auth/")) {
-      const cookie = request.headers.cookie?.split(";").map((entry) => entry.trim()).find((entry) => entry.startsWith("linejs_browser="))?.slice("linejs_browser=".length) ?? "";
-      if (!/^[a-f0-9]{64}$/.test(cookie) || !timingSafeEqual(Buffer.from(cookie), Buffer.from(browserToken))) {
-        json(response, 403, { code: "FORBIDDEN" });
-        return;
-      }
-      const clientId = request.headers["x-linejs-client"];
-      if (typeof clientId !== "string" || !/^[a-f0-9-]{36}$/.test(clientId)) {
-        json(response, 400, { code: "INVALID_REQUEST" });
-        return;
-      }
-      if (url.pathname === "/auth/status" && request.method === "GET") {
-        json(response, 200, login.snapshot(clientId));
-        return;
-      }
-      if (url.pathname === "/auth/start" && request.method === "POST") {
-        if (!origin || !login.canStartQR()) {
-          json(response, 409, { code: "LOGIN_UNAVAILABLE" });
-          return;
-        }
-        // The browser polls status; do not keep an HTTP request open throughout QR login.
-        void login.startQR(clientId).catch(() => {});
-        json(response, 202, { state: "authenticating" });
-        return;
-      }
-      json(response, 404, { code: "NOT_FOUND" });
       return;
     }
     if (request.method !== "GET" && request.method !== "HEAD") {
       json(response, 405, { code: "METHOD_NOT_ALLOWED" });
       return;
     }
+    const url = new URL(request.url ?? "/", `http://${host}`);
     try {
       const root = await realpath(webRoot);
       const path = await realpath(resolve(root, `.${decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname)}`));
@@ -82,10 +61,11 @@ export function createLoginServer(config: Config, login: LoginController, webRoo
     }
   }
 
-  return createServer((request, response) => {
+  const server = createServer((request, response) => {
     void handle(request, response).catch(() => {
       if (!response.headersSent) json(response, 500, { code: "INTERNAL_ERROR" });
       else response.destroy();
     });
   });
+  return { server, authorizeUpgrade };
 }

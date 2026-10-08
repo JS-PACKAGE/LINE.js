@@ -1,17 +1,7 @@
-import { Client } from "@evex/linejs";
+import { Client, type SquareMessage, type TalkMessage } from "@evex/linejs";
 import { BaseClient, type Device, type FetchLike } from "@evex/linejs/base";
+import type { Channel, Message, Profile } from "../model/dto.js";
 import { SessionStorage } from "./session.js";
-
-export interface Profile {
-  userId: string;
-  displayName: string;
-}
-
-export interface MessageReceipt {
-  messageId: string;
-  contentType: string;
-  source: "talk" | "square" | "edit";
-}
 
 export interface QRCallbacks {
   onQRUrl: (url: string) => void;
@@ -19,17 +9,22 @@ export interface QRCallbacks {
 }
 
 export interface ProviderEvents {
-  onMessage: (receipt: MessageReceipt) => void;
+  onMessage: (message: Message, kind: "new" | "edit") => void;
   onStatus: (state: "listening" | "reconnecting") => void;
-  onError: (code: "SESSION_WRITE_FAILED" | "LINE_LISTEN_FAILED") => void;
+  onError: (code: "SESSION_WRITE_FAILED" | "LINE_LISTEN_FAILED" | "MESSAGE_PARSE_FAILED") => void;
 }
 
 export interface LineProvider {
   restoreSession(): Promise<boolean>;
   loginQR(callbacks: QRCallbacks): Promise<void>;
   getProfile(): Profile;
+  fetchChannels(): Promise<Channel[]>;
   close(): Promise<void>;
 }
+
+const UNKNOWN_MEMBER = "成員";
+
+const FRIEND_BATCH = 100;
 
 export class EvexLineProvider implements LineProvider {
   private base?: BaseClient;
@@ -38,6 +33,8 @@ export class EvexLineProvider implements LineProvider {
   private retry?: NodeJS.Timeout;
   private retryDelay = 1000;
   private stopped = false;
+  // Display names learned from the friend list; LINE events carry only mids.
+  private names: Record<string, string> = {};
 
   constructor(
     private readonly storage: SessionStorage,
@@ -110,13 +107,22 @@ export class EvexLineProvider implements LineProvider {
     if (this.stopped) throw new Error("LOGIN_STOPPED");
     const client = new Client(base);
     this.client = client;
-    const receive = (messageId: string, contentType: string, source: MessageReceipt["source"]) => {
+    const profile = this.getProfile();
+    this.names[profile.userId] = profile.displayName;
+    const deliver = (convert: () => Message, kind: "new" | "edit") => {
+      let message: Message;
+      try {
+        message = convert();
+      } catch {
+        this.events.onError("MESSAGE_PARSE_FAILED");
+        return;
+      }
       this.retryDelay = 1000;
-      this.events.onMessage({ messageId, contentType, source });
+      this.events.onMessage(message, kind);
     };
-    client.on("message", (message) => receive(String(message.raw.id), String(message.raw.contentType), "talk"));
-    client.on("message:edit", (message) => receive(String(message.raw.id), String(message.raw.contentType), "edit"));
-    client.on("square:message", (message) => receive(String(message.raw.message.id), String(message.raw.message.contentType), "square"));
+    client.on("message", (message) => deliver(() => this.fromTalk(message, profile.userId), "new"));
+    client.on("message:edit", (message) => deliver(() => this.fromTalk(message, profile.userId), "edit"));
+    client.on("square:message", (message) => deliver(() => this.fromSquare(message), "new"));
     this.listen();
   }
 
@@ -125,6 +131,88 @@ export class EvexLineProvider implements LineProvider {
     this.signal = new AbortController();
     this.client?.listen({ talk: true, square: true, signal: this.signal.signal });
     this.events.onStatus("listening");
+  }
+
+  private fromTalk(message: TalkMessage, myMid: string): Message {
+    const raw = message.raw;
+    const type = String(raw.toType);
+    const channelKind = type === "USER" || type === "0" ? "user" : type === "ROOM" || type === "1" ? "room" : "group";
+    const channelId = channelKind === "user" && raw.from === myMid ? raw.to : channelKind === "user" ? raw.from : raw.to;
+    return this.toMessage(raw.id, channelId, channelKind, raw.from, raw.text, String(raw.contentType), raw.createdTime, raw.chunks?.length > 0);
+  }
+
+  private fromSquare(message: SquareMessage): Message {
+    const raw = message.raw.message;
+    return this.toMessage(raw.id, raw.to, "square", raw.from, raw.text, String(raw.contentType), raw.createdTime, raw.chunks?.length > 0);
+  }
+
+  private toMessage(
+    id: unknown, channelId: string, channelKind: Message["channelKind"], senderId: string,
+    text: string | undefined, contentType: string, createdTime: unknown, encrypted: boolean,
+  ): Message {
+    const isText = contentType === "NONE" || contentType === "0";
+    const created = Number(createdTime);
+    return {
+      messageId: String(id),
+      channelId,
+      channelKind,
+      senderId,
+      senderName: this.names[senderId] ?? UNKNOWN_MEMBER,
+      ...(isText && text ? { text } : {}),
+      contentType,
+      createdAt: Number.isFinite(created) && created > 0 ? created : Date.now(),
+      // Fail closed: an E2EE payload without readable text is a placeholder, never a guess.
+      ...(isText && !text && encrypted ? { decryptFailed: true } : {}),
+    };
+  }
+
+  // linejs 3.4.2 `fetchUsers()` sends every friend mid in one getContactsV3 call, which
+  // LINE rejects above 100 mids ("max_size":100). Page it here instead.
+  private async fetchFriends(client: Client): Promise<Channel[]> {
+    const { userFriendMids } = await client.base.relation.getUserFriendIds({ request: { blockStatus: "ALL" } });
+    const friends: Channel[] = [];
+    for (let offset = 0; offset < (userFriendMids?.length ?? 0); offset += FRIEND_BATCH) {
+      const { responses } = await client.base.relation.getContactsV3({ mids: userFriendMids.slice(offset, offset + FRIEND_BATCH) });
+      for (const contact of responses) {
+        const name = contact.friendDetail?.user?.overriddenName || contact.targetProfileDetail?.profileName || UNKNOWN_MEMBER;
+        this.names[contact.targetUserMid] = name;
+        friends.push({ channelId: contact.targetUserMid, kind: "user", name });
+      }
+    }
+    return friends;
+  }
+
+  async fetchChannels(): Promise<Channel[]> {
+    const client = this.client;
+    if (!client || this.stopped) throw new Error("NOT_AUTHENTICATED");
+    const [chats, friends] = await Promise.all([client.fetchJoinedChats(), this.fetchFriends(client)]);
+    // Square access is optional; accounts without OpenChat must still list talk chats.
+    const [squares, squareChats] = await Promise.allSettled([client.fetchJoinedSquares(), client.fetchJoinedSquareChats()]);
+    const channels: Channel[] = [...friends];
+    for (const chat of chats) {
+      const type = String(chat.raw.type);
+      const members = Object.keys(chat.raw.extra?.groupExtra?.memberMids ?? {}).length;
+      channels.push({
+        channelId: chat.mid,
+        kind: type === "ROOM" || type === "1" ? "room" : "group",
+        name: chat.name || "未命名聊天",
+        ...(members > 0 ? { memberCount: members } : {}),
+      });
+    }
+    if (squareChats.status === "fulfilled") {
+      const squareNames: Record<string, string> = {};
+      if (squares.status === "fulfilled") for (const square of squares.value) squareNames[square.mid] = square.name;
+      for (const chat of squareChats.value) {
+        const squareName = squareNames[chat.raw.squareMid];
+        const chatName = chat.raw.name || "未命名聊天";
+        channels.push({
+          channelId: chat.raw.squareChatMid,
+          kind: "square",
+          name: squareName && squareName !== chatName ? `${squareName} / ${chatName}` : chatName,
+        });
+      }
+    }
+    return channels;
   }
 
   getProfile(): Profile {

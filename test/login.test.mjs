@@ -12,60 +12,46 @@ class ControlledProvider {
     this.callbacks = callbacks;
     return new Promise((resolve, reject) => { this.finish = resolve; this.reject = reject; });
   }
-  getProfile() { return { userId: "test-user", displayName: "測試帳號" }; }
 }
 
-test("QR and PIN are consumed once; failure requires an explicit new attempt", async () => {
+test("QR and PIN reach only the starter; state observers never see secrets; failure needs a new attempt", async () => {
   const provider = new ControlledProvider();
   const login = new LoginController(provider);
+  const observed = [];
+  login.subscribe((state) => observed.push(state));
   await login.restore();
-  const attempt = login.startQR("requesting-tab");
+  const received = [];
+  const attempt = login.startQR({ onQRUrl: (url) => received.push(["qr", url]), onPinCode: (code) => received.push(["pin", code]) });
   provider.callbacks.onQRUrl("https://example.invalid/test-only-qr");
   provider.callbacks.onPinCode("123456");
-  assert.deepEqual(login.snapshot("requesting-tab").events, [
-    { type: "auth:qr", url: "https://example.invalid/test-only-qr" },
-    { type: "auth:pin", code: "123456" },
-  ]);
-  assert.deepEqual(login.snapshot("requesting-tab").events, []);
-  await assert.rejects(login.startQR("requesting-tab"), /LOGIN_BUSY/);
+  assert.deepEqual(received, [["qr", "https://example.invalid/test-only-qr"], ["pin", "123456"]]);
+  await assert.rejects(login.startQR({ onQRUrl() {}, onPinCode() {} }), /LOGIN_BUSY/);
   provider.reject(new Error("test login failure"));
   await attempt;
-  assert.equal(login.snapshot("requesting-tab").state, "error");
+  assert.equal(login.state, "error");
   assert.equal(login.canStartQR(), true);
-  assert.deepEqual(login.snapshot("requesting-tab").events, []);
+  assert.deepEqual(observed, ["idle", "authenticating", "error"]);
+  assert.ok(!JSON.stringify(observed).includes("example.invalid"));
 });
 
-test("restored sessions do not generate QR and successful login removes pending secrets", async () => {
+test("successful QR login and restored sessions both end in ready; restore never asks for a QR", async () => {
   const provider = new ControlledProvider();
   const login = new LoginController(provider);
   await login.restore();
-  const attempt = login.startQR("requesting-tab");
-  provider.callbacks.onQRUrl("https://example.invalid/test-only-qr");
+  const attempt = login.startQR({ onQRUrl() {}, onPinCode() {} });
   provider.finish();
   await attempt;
-  assert.deepEqual(login.snapshot("requesting-tab").events, []);
-  assert.equal(login.snapshot("requesting-tab").state, "ready");
+  assert.equal(login.state, "ready");
   assert.equal(login.canStartQR(), false);
+
   provider.restoreResult = true;
   const restored = new LoginController(provider);
   await restored.restore();
-  assert.equal(restored.snapshot("requesting-tab").state, "ready");
-  assert.deepEqual(restored.snapshot("requesting-tab").profile, { userId: "test-user", displayName: "測試帳號" });
+  assert.equal(restored.state, "ready");
 });
 
-test("another tab cannot consume or replay the requesting tab's QR and PIN", async () => {
-  const provider = new ControlledProvider();
-  const login = new LoginController(provider);
+test("a provider failure during restore surfaces as error instead of an unhandled rejection", async () => {
+  const login = new LoginController({ async restoreSession() { throw new Error("test failure"); } });
   await login.restore();
-  const attempt = login.startQR("requesting-tab");
-  provider.callbacks.onQRUrl("https://example.invalid/test-only-qr");
-  provider.callbacks.onPinCode("123456");
-  assert.deepEqual(login.snapshot("other-tab").events, []);
-  assert.deepEqual(login.snapshot("requesting-tab").events, [
-    { type: "auth:qr", url: "https://example.invalid/test-only-qr" },
-    { type: "auth:pin", code: "123456" },
-  ]);
-  assert.deepEqual(login.snapshot("requesting-tab").events, []);
-  provider.finish();
-  await attempt;
+  assert.equal(login.state, "error");
 });

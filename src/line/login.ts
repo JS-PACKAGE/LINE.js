@@ -1,68 +1,54 @@
-import type { LineProvider, Profile } from "./provider.js";
+import type { AuthState } from "../model/dto.js";
+import type { LineProvider, QRCallbacks } from "./provider.js";
 
-export type AuthState = "restoring" | "idle" | "authenticating" | "ready" | "error";
-export type AuthEvent = { type: "auth:qr"; url: string } | { type: "auth:pin"; code: string };
-export interface AuthSnapshot {
-  state: AuthState;
-  profile?: Profile;
-  events: AuthEvent[];
-  receivedMessages: number;
-}
-
+/**
+ * Owns the login state machine. Secrets (QR URL, PIN) never enter this class'
+ * state: they flow only to the callbacks of the caller that started the login.
+ */
 export class LoginController {
-  private state: AuthState = "restoring";
-  private events: AuthEvent[] = [];
-  private receivedMessages = 0;
-  private owner?: string;
+  private current: AuthState = "restoring";
+  private listeners = new Set<(state: AuthState) => void>();
 
   constructor(private readonly provider: LineProvider) {}
 
+  get state(): AuthState {
+    return this.current;
+  }
+
+  subscribe(listener: (state: AuthState) => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  private transition(next: AuthState): void {
+    this.current = next;
+    for (const listener of this.listeners) listener(next);
+  }
+
   async restore(): Promise<void> {
     try {
-      this.state = await this.provider.restoreSession() ? "ready" : "idle";
+      this.transition(await this.provider.restoreSession() ? "ready" : "idle");
     } catch {
       this.fail();
     }
   }
 
   canStartQR(): boolean {
-    return this.state === "idle" || this.state === "error";
+    return this.current === "idle" || this.current === "error";
   }
 
-  async startQR(owner: string): Promise<void> {
-    if (this.state !== "idle" && this.state !== "error") throw new Error("LOGIN_BUSY");
-    this.events = [];
-    this.owner = owner;
-    this.state = "authenticating";
+  async startQR(callbacks: QRCallbacks): Promise<void> {
+    if (!this.canStartQR()) throw new Error("LOGIN_BUSY");
+    this.transition("authenticating");
     try {
-      await this.provider.loginQR({
-        onQRUrl: (url) => { this.events.push({ type: "auth:qr", url }); },
-        onPinCode: (code) => { this.events.push({ type: "auth:pin", code }); },
-      });
-      this.events = [];
-      this.state = "ready";
+      await this.provider.loginQR(callbacks);
+      this.transition("ready");
     } catch {
       this.fail();
     }
   }
 
-  snapshot(owner: string): AuthSnapshot {
-    const events = this.owner === owner ? this.events : [];
-    if (this.owner === owner) this.events = [];
-    return {
-      state: this.state,
-      ...(this.state === "ready" ? { profile: this.provider.getProfile() } : {}),
-      events,
-      receivedMessages: this.receivedMessages,
-    };
-  }
-
-  receiveMessage(): void {
-    this.receivedMessages += 1;
-  }
-
   fail(): void {
-    this.events = [];
-    this.state = "error";
+    this.transition("error");
   }
 }
