@@ -39,7 +39,7 @@ class CliError extends Error {}
 
 const WAIT_MS = 10_000;
 const LOGIN_MS = 180_000;
-// A server bound to every interface is reached through loopback, under a Host name it accepts.
+// A wildcard address is not a destination; a server bound to every interface is reached through loopback.
 const WILDCARD: Record<string, string> = { "0.0.0.0": "127.0.0.1", "::": "::1" };
 
 type Frame<T extends ServerFrame["type"]> = Extract<ServerFrame, { type: T }>;

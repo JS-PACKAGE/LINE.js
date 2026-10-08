@@ -9,21 +9,18 @@ import type { ApiTokenStore } from "./apiToken.js";
 
 export interface WebServer {
   server: Server;
-  /** Host, Origin and per-process browser cookie must all match; used for the WS upgrade. */
+  /** Origin must equal the request's own origin and the per-process browser cookie must match; used for the WS upgrade. */
   authorizeUpgrade(request: IncomingMessage): boolean;
-  /** Bot endpoint: loopback Host, no Origin (so never a web page) and a valid `Authorization: Bearer` token. */
+  /** Bot endpoint: no Origin (so never a web page) and a valid `Authorization: Bearer` token. */
   authorizeApiUpgrade(request: IncomingMessage): boolean;
 }
 
 export function createWebServer(config: Config, webRoot: string, media: MediaService, apiTokens: ApiTokenStore): WebServer {
   const browserToken = randomBytes(32).toString("hex");
-  // Loopback binds only answer to their own names: any other Host there is a DNS-rebinding attempt. A server the
-  // operator deliberately bound to another address is reached under whatever name or IP the network gives it, so
-  // the Host header cannot be pinned (requests stay same-origin and cookie-bound).
-  const authority = config.server.host.includes(":") ? `[${config.server.host}]` : config.server.host;
-  const loopbackHosts: Record<string, true> = { [`${authority}:${config.server.port}`]: true, [`localhost:${config.server.port}`]: true };
-  const loopbackOnly = ["127.0.0.1", "localhost", "::1"].includes(config.server.host);
-  const hostAllowed = (host: string | undefined): host is string => host !== undefined && host !== "" && (!loopbackOnly || loopbackHosts[host] === true);
+  // The Host header is deliberately not pinned, on loopback binds too (owner's decision): the service is reached
+  // under whatever name or IP the user uses (reverse proxy, LAN name, tunnel). Origin must still equal the Host
+  // it came in under, the cookie is required and cross-site requests are refused, but a DNS-rebinding page
+  // (attacker domain resolving to this address) is same-origin with itself, so that class is not defended here.
   const mime: Record<string, string> = {
     ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml",
     ".webmanifest": "application/manifest+json; charset=utf-8", ".png": "image/png", ".ico": "image/x-icon",
@@ -41,15 +38,14 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
 
   function authorizeUpgrade(request: IncomingMessage): boolean {
     const host = request.headers.host;
-    if (!hostAllowed(host) || request.headers.origin !== `http://${host}`) return false;
+    if (!host || request.headers.origin !== `http://${host}`) return false;
     return hasBrowserCookie(request);
   }
 
   function authorizeApiUpgrade(request: IncomingMessage): boolean {
-    const host = request.headers.host;
     // Browsers always attach Origin to a WebSocket handshake; a bot does not. Refusing it keeps every
     // web page out even if the token ever leaks into one.
-    if (!config.api.enabled || !hostAllowed(host) || request.headers.origin !== undefined) return false;
+    if (!config.api.enabled || request.headers.origin !== undefined) return false;
     const bearer = /^Bearer (\S+)$/.exec(request.headers.authorization ?? "")?.[1];
     return bearer !== undefined && apiTokens.verify(bearer);
   }
@@ -119,7 +115,7 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
     response.setHeader("Referrer-Policy", "no-referrer");
     response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; manifest-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
     const host = request.headers.host;
-    if (!hostAllowed(host) || request.headers["sec-fetch-site"] === "cross-site") {
+    if (!host || request.headers["sec-fetch-site"] === "cross-site") {
       json(response, 403, { code: "FORBIDDEN" });
       return;
     }

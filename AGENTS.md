@@ -57,17 +57,17 @@ Gate 依 [PLAN.md](PLAN.md) 逐關驗收，不跳關；Gate 0 遠端需存在四
 
 ## 安全性架構（硬規則）
 
-1. 監聽位址以 `config.yaml` 為準（2026-10 裁示：不再強制 127.0.0.1，可設主機名稱、IPv4、IPv6），**預設值與範本維持 `127.0.0.1`，不得改成 `0.0.0.0`**。非本機迴路位址啟動時須印警告；網頁無帳號密碼，改 host 等於把已登入帳號開放給該網路。`Host` 標頭：監聽本機迴路（`127.0.0.1`／`localhost`／`::1`）時只接受「設定位址:埠」與 `localhost:埠`（防 DNS rebinding）；監聽其他位址時**不限制 `Host` 名稱**（以任何 IP／網域連入皆可），其餘 Origin／cookie／Token 檢查不變。
+1. 監聽位址以 `config.yaml` 為準（2026-10 裁示：不再強制 127.0.0.1，可設主機名稱、IPv4、IPv6），**預設值與範本維持 `127.0.0.1`，不得改成 `0.0.0.0`**。非本機迴路位址啟動時須印警告；網頁無帳號密碼，改 host 等於把已登入帳號開放給該網路。**不檢查 `Host` 標頭**（裁示：不論監聽位址，任何 IP／網域皆可連入；代價是不防 DNS rebinding），其餘 Origin／cookie／Token／`Sec-Fetch-Site: cross-site` 檢查不變。
 2. QR URL 與 PIN **一次性顯示、不入日誌、不落盤**。
 3. `session.json` 含憑證與 E2EE key material：chmod **600**、列入 `.gitignore`、不入日誌、不分享。
-4. 網頁 WS 升級須 `Origin` 等於 `http://<Host 標頭>`（Host 受上一條規則約束）並帶瀏覽器 cookie；其餘來源拒絕升級。
+4. 網頁 WS 升級須 `Origin` 等於 `http://<Host 標頭>` 並帶瀏覽器 cookie；其餘來源拒絕升級。
 5. 每連線頻率限制：`message:send` ≤ 5/秒；`POST /media/upload` 圖片 ≤ 10MB/檔、影片 ≤ 50MB/檔（`limits.uploadVideoMaxBytes`）、≤ 5 次/分鐘；frame ≤ 256KB。
 6. 媒體快取上限預設 200MB（LRU）；收到的媒體只能請求已見過的訊息（`msg-<id>`），單檔上限 `limits.downloadMaxBytes`（預設 50MB），類型一律以位元組內容判斷且不供應 SVG／HTML；訊息媒體不得被瀏覽器快取。
 7. 輸入驗證：`chatId` 格式（`u／c／r／s／m` 開頭；OpenChat 為 `m`）、`text` ≤ 8000 字、`limit` ≤ 100、`packageId`／`stickerId` 限正整數、上傳媒體以內容判斷（圖片 PNG／JPEG／GIF；影片 MP4／MOV，以 `ftyp` 品牌辨識，聲稱的 Content-Type 只用來選擇大小上限；影片長度取自 `moov/mvhd`，不採用瀏覽器給的值）。
 8. 對外一律 generic 錯誤；內部錯誤只入本地日誌。
 9. 依賴釘選版本；`npm audit` 無 high 以上（Gate 4 驗收）。
 10. 解密／解析失敗 **fail-closed**：顯示佔位，不降級猜測內容。
-11. 機器人 API（`/api/ws`，預設關閉，`api.enabled`）：Bearer Token 認證（只存雜湊、比對用 `timingSafeEqual`、產生後只顯示一次、不入日誌）；升級**不得帶 `Origin`**（網頁不可用此入口）且 `Host` 須合法；只開放 `message:send`（僅文字）、`history:fetch`、`ping`，其餘一律 `UNKNOWN_TYPE`；只能存取 `api.chats` 清單內的聊天室（空清單視為設定錯誤，未列出者一律 `UNKNOWN_CHAT`）；不給 `chat:read`、登入／登出、`channels:refresh`、媒體與貼圖發送；連線不重播舊訊息、不收 `read`；所有機器人合計 `api.sendsPerMinute`（≤120/分鐘）加每連線 `limits.sendsPerSecond`；同時最多 4 個連線；重新產生／撤銷 Token 立即中斷所有機器人連線。Token 的產生與撤銷只接受一般 `/ws` 連線（網頁，或同樣取得瀏覽器 cookie 的本機 CLI），機器人連線無此權限。
+11. 機器人 API（`/api/ws`，預設關閉，`api.enabled`）：Bearer Token 認證（只存雜湊、比對用 `timingSafeEqual`、產生後只顯示一次、不入日誌）；升級**不得帶 `Origin`**（網頁不可用此入口），`Host` 不檢查；只開放 `message:send`（僅文字）、`history:fetch`、`ping`，其餘一律 `UNKNOWN_TYPE`；只能存取 `api.chats` 清單內的聊天室（空清單視為設定錯誤，未列出者一律 `UNKNOWN_CHAT`）；不給 `chat:read`、登入／登出、`channels:refresh`、媒體與貼圖發送；連線不重播舊訊息、不收 `read`；所有機器人合計 `api.sendsPerMinute`（≤120/分鐘）加每連線 `limits.sendsPerSecond`；同時最多 4 個連線；重新產生／撤銷 Token 立即中斷所有機器人連線。Token 的產生與撤銷只接受一般 `/ws` 連線（網頁，或同樣取得瀏覽器 cookie 的本機 CLI），機器人連線無此權限。
 
 內部日誌也不得包含憑證、token、QR URL、PIN 或 key material；不得直接 dump 套件錯誤物件、session 或登入 payload。圖片／貼圖／影片／語音位元組一律走 HTTP，WS 不傳位元組；檔案僅佔位。訊息不落盤；每頻道最多 500 則，同 messageId 去重，編輯覆寫快取。LINE listen 失效採退避重啟；QR 失敗不自動循環，須由使用者動作重新產生。
 

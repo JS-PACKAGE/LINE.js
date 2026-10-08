@@ -823,7 +823,7 @@ test("a token is created from the page, shown once and kept only as a hash", asy
   assert.equal(reloaded.verify(`linejs_${"A".repeat(43)}`), false);
 });
 
-test("only a loopback Host, no Origin and the exact token get through /api/ws", async (t) => {
+test("only a connection with no Origin and the exact token gets through /api/ws", async (t) => {
   const env = await botEnv(t);
   const wrong = `linejs_${"A".repeat(43)}`;
   for (const headers of [
@@ -834,7 +834,6 @@ test("only a loopback Host, no Origin and the exact token get through /api/ws", 
     { Authorization: `Bearer ${env.token}x` },
     { Authorization: `Bearer ${env.token}`, Origin: `http://127.0.0.1:${env.port}` },
     { Authorization: `Bearer ${env.token}`, Origin: "http://evil.example" },
-    { Authorization: `Bearer ${env.token}`, Host: "evil.example" },
   ]) {
     await assert.rejects(connect(env.port, headers, "/api/ws").opened, (error) => error.status === 403, JSON.stringify(Object.keys(headers)));
   }
