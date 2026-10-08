@@ -36,6 +36,14 @@ export class ChatStore {
     return this.channels[channelId];
   }
 
+  /** The chat was read (LINE was told so): later snapshots must not show the old badge. */
+  clearUnread(channelId: string): void {
+    const channel = this.channels[channelId];
+    if (!channel?.unreadCount) return;
+    const { unreadCount: _cleared, ...rest } = channel;
+    this.channels[channelId] = rest;
+  }
+
   /** Returns false when the message is an identical duplicate. */
   upsert(message: Message, edited: boolean): boolean {
     const list = this.messages[message.channelId] ?? [];

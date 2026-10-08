@@ -30,12 +30,39 @@ test("chat and request ids must look like LINE mids and safe tokens; a valid req
 
 test("a send carries exactly one payload", () => {
   const send = (extra) => parseSend({ requestId: "r1", chatId: CHAT, ...extra }, 8);
-  assert.deepEqual(send({ text: "hello" }).value, { requestId: "r1", chatId: CHAT, kind: "text", text: "hello" });
+  assert.deepEqual(send({ text: "hello" }).value, { requestId: "r1", chatId: CHAT, kind: "text", text: "hello", mentions: [] });
   assert.deepEqual(send({ mediaId: UPLOAD }).value, { requestId: "r1", chatId: CHAT, kind: "image", uploadId: UPLOAD });
   assert.deepEqual(send({ sticker: { packageId: 1, stickerId: 2 } }).value, { requestId: "r1", chatId: CHAT, kind: "sticker", packageId: 1, stickerId: 2 });
   for (const mixed of [{ text: "a", mediaId: UPLOAD }, { text: "a", sticker: { packageId: 1, stickerId: 1 } }, { mediaId: UPLOAD, sticker: { packageId: 1, stickerId: 1 } }, {}]) {
     assert.equal(send(mixed).ok, false, JSON.stringify(mixed));
   }
+});
+
+const MEMBER = `u${"b".repeat(32)}`;
+const OPENCHAT_MEMBER = `p${"c".repeat(32)}`;
+
+test("mentions are sorted, non-overlapping ranges that start on an @ inside the text", () => {
+  const text = "@Ann hi @Bob";
+  const send = (mentions, body = text) => parseSend({ requestId: "r1", chatId: CHAT, text: body, mentions }, 100);
+  const ann = { userId: MEMBER, start: 0, end: 4 };
+  const bob = { userId: OPENCHAT_MEMBER, start: 8, end: 12 };
+  assert.deepEqual(send([ann, bob]).value.mentions, [ann, bob]);
+  assert.deepEqual(send([]).value.mentions, []);
+  const refused = [
+    [bob, ann], [ann, { ...bob, start: 3 }], [{ ...ann, start: 1, end: 4 }], [{ ...ann, end: 0 }], [{ ...ann, end: 99 }],
+    [{ ...ann, userId: "x" }], [{ ...ann, userId: "../../etc" }], [{ ...ann, start: "0" }], [{ ...ann, start: 0.5 }], [null], ["ann"], "nope", {},
+    Array.from({ length: 21 }, (_, index) => ({ userId: MEMBER, start: index, end: index + 1 })),
+  ];
+  for (const mentions of refused) assert.equal(send(mentions).ok, false, JSON.stringify(mentions));
+  assert.equal(parseSend({ requestId: "r1", chatId: CHAT, mediaId: UPLOAD, mentions: [ann] }, 100).ok, false, "mentions only decorate text");
+});
+
+test("a reply names a numeric message id and only decorates text", () => {
+  const reply = (replyTo, extra = {}) => parseSend({ requestId: "r1", chatId: CHAT, text: "ok", replyTo, ...extra }, 100);
+  assert.equal(reply("5871234567890123").value.replyTo, "5871234567890123");
+  assert.equal("replyTo" in parseSend({ requestId: "r1", chatId: CHAT, text: "ok" }, 100).value, false);
+  for (const bad of ["", "12ab", "../x", 5, null, "9".repeat(25)]) assert.equal(reply(bad).ok, false, String(bad));
+  assert.equal(parseSend({ requestId: "r1", chatId: CHAT, sticker: { packageId: 1, stickerId: 1 }, replyTo: "5" }, 100).ok, false);
 });
 
 test("text is length-capped before trimming and may not be blank; the original text is preserved", () => {

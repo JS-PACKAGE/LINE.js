@@ -33,9 +33,9 @@ class FakeProvider {
     if (id === "500") throw new Error("upstream down");
     return { mime: "image/png", bytes: Buffer.from(`png-${id}`) };
   }
-  async fetchAvatar(host, hash) {
+  async fetchAvatar(host, hash, full) {
     if (hash === "missing00") return undefined;
-    return { mime: "image/jpeg", bytes: Buffer.from(`jpeg-${host}-${hash}`) };
+    return { mime: "image/jpeg", bytes: Buffer.from(`jpeg-${host}-${hash}${full ? "-full" : ""}`) };
   }
   async fetchMessageMedia(id) {
     if (id === "404") return undefined;
@@ -72,10 +72,12 @@ class FakeProvider {
   outgoing(channel, fields) {
     return { messageId: `sent-${this.calls.length}`, channelId: channel.channelId, channelKind: channel.kind, senderId: "u-me", senderName: "測試帳號", contentType: "NONE", createdAt: Date.now(), ...fields };
   }
-  async sendText(channel, text) {
+  textOptions = [];
+  async sendText(channel, text, options) {
     this.calls.push(["text", channel, text]);
+    this.textOptions.push(options);
     if (this.sendError) throw this.sendError;
-    return this.outgoing(channel, { text });
+    return this.outgoing(channel, { text, ...(options?.replyTo ? { replyTo: options.replyTo } : {}) });
   }
   async sendSticker(channel, packageId, stickerId) {
     this.calls.push(["sticker", channel, packageId, stickerId]);
@@ -85,7 +87,8 @@ class FakeProvider {
   async sendImage(channel, image) {
     this.calls.push(["image", channel, image.mime, image.bytes.length]);
     if (this.sendError) throw this.sendError;
-    return { messageId: "image-1" };
+    // LINE sends no live event for our own image, so the adapter returns the message to show.
+    return this.outgoing(channel, { messageId: "9001", contentType: "IMAGE", mediaId: "msg-9001" });
   }
 }
 
@@ -423,7 +426,10 @@ test("an uploaded image is sent once; unknown, expired or reused uploads are ref
 
   env.request({ type: "message:send", requestId: "i1", chatId: CHAT, mediaId });
   const ack = await env.client.until((frame) => frame.type === "sent" && frame.requestId === "i1");
-  assert.equal(ack.messageId, "image-1");
+  assert.equal(ack.messageId, "9001");
+  const shown = await env.client.until((frame) => frame.type === "message" && frame.message.messageId === "9001");
+  assert.equal(shown.message.contentType, "IMAGE");
+  assert.equal(shown.message.mediaId, "msg-9001", "the sender's own image appears in the chat without waiting for a live event");
   assert.deepEqual(env.provider.calls.slice(-1)[0], ["image", { channelId: CHAT, kind: "group" }, "image/png", PNG.length]);
 
   env.request({ type: "message:send", requestId: "i2", chatId: CHAT, mediaId });
@@ -475,7 +481,10 @@ test("opening a chat reports where others have read, once; a failing lookup does
   const page = await env.client.until((frame) => frame.type === "history" && frame.requestId === "r3");
   assert.equal(page.messages.length, 1);
   await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(env.client.frames.filter((frame) => frame.type === "read").length, 1);
+  // The failed lookup adds nothing new, but what was already known is still replayed.
+  const reads = env.client.frames.filter((frame) => frame.type === "read");
+  assert.equal(reads.length, 2);
+  assert.deepEqual(reads[1].positions, reads[0].positions);
   assert.ok(!env.client.frames.some((frame) => frame.type === "error"));
 });
 
@@ -544,6 +553,23 @@ test("received media is served with byte ranges and is never cached by the brows
 const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
 const readCalls = (env) => env.provider.calls.filter(([kind]) => kind === "read");
 
+test("read positions seen live are replayed on the next open, merged with LINE's snapshot at the highest id", async (t) => {
+  const env = await signedIn(t);
+  env.hub.handleRead(CHAT, { readerId: "u1", messageId: "50" });
+  env.hub.handleRead(CHAT, { readerId: "u1", messageId: "40" });
+  env.hub.handleRead(CHAT, { readerId: "u2", messageId: "10" });
+  env.provider.readPositions = [{ readerId: "u2", messageId: "30" }, { readerId: "u3", messageId: "5" }];
+  env.request({ type: "history:fetch", requestId: "r1", chatId: CHAT });
+  const snapshot = await env.client.until((frame) => frame.type === "read" && frame.positions.length === 3);
+  const byReader = Object.fromEntries(snapshot.positions.map((position) => [position.readerId, position.messageId]));
+  assert.deepEqual(byReader, { u1: "50", u2: "30", u3: "5" });
+
+  // With LINE offering nothing (1:1 chats), what was seen live still comes back after a reload.
+  env.provider.readPositions = [];
+  env.request({ type: "history:fetch", requestId: "r2", chatId: CHAT });
+  await env.client.until(() => env.client.frames.filter((frame) => frame.type === "read" && frame.positions.length === 3).length === 2);
+});
+
 test("an open chat is reported read once per position, only for messages the server has shown", async (t) => {
   const env = await signedIn(t);
   env.provider.history = { messages: [older("1001", 10), older("1002", 20), older("1003", 30)], hasMore: false };
@@ -611,4 +637,77 @@ test("owned sticker packages are listed on request, with generic errors and vali
   assert.equal((await fetch(`${base}stickerpack-404`, { headers: { Cookie: env.cookie } })).status, 404);
   assert.equal((await fetch(`${base}stickerpack-11537`)).status, 404, "no cookie");
   assert.equal((await fetch(`${base}stickerpack-1x`, { headers: { Cookie: env.cookie } })).status, 404);
+});
+
+test("an image sent together with text appears first, then the text, in the chat", async (t) => {
+  const env = await signedIn(t);
+  const { mediaId } = await (await upload(env, PNG)).json();
+  env.request({ type: "message:send", requestId: "c1", chatId: CHAT, mediaId });
+  await env.client.until((frame) => frame.type === "sent" && frame.requestId === "c1");
+  env.request({ type: "message:send", requestId: "c2", chatId: CHAT, text: "附帶的文字" });
+  await env.client.until((frame) => frame.type === "sent" && frame.requestId === "c2");
+  const shown = env.client.frames.filter((frame) => frame.type === "message").map((frame) => frame.message.contentType);
+  assert.deepEqual(shown, ["IMAGE", "NONE"]);
+});
+
+test("mentions and replies reach LINE only for people and messages this chat has shown", async (t) => {
+  const env = await signedIn(t);
+  const speaker = `u${"d".repeat(32)}`;
+  env.provider.history = { messages: [{ ...older("1001", 10), senderId: speaker }], hasMore: false };
+  env.request({ type: "history:fetch", requestId: "h1", chatId: CHAT });
+  await env.client.until((frame) => frame.type === "history");
+
+  env.request({ type: "message:send", requestId: "m1", chatId: CHAT, text: "@小明 好", mentions: [{ userId: speaker, start: 0, end: 3 }], replyTo: "1001" });
+  await env.client.until((frame) => frame.type === "sent" && frame.requestId === "m1");
+  assert.deepEqual(env.provider.textOptions.at(-1), { mentions: [{ userId: speaker, start: 0, end: 3 }], replyTo: "1001" });
+  const echoed = env.client.frames.find((frame) => frame.type === "message" && frame.message.text === "@小明 好");
+  assert.equal(echoed.message.replyTo, "1001");
+
+  const before = env.provider.textOptions.length;
+  const refused = [
+    { text: "@路人 好", mentions: [{ userId: `u${"e".repeat(32)}`, start: 0, end: 3 }] },
+    { text: "回覆", replyTo: "424242" },
+  ];
+  for (const [index, extra] of refused.entries()) {
+    env.request({ type: "message:send", requestId: `x${index}`, chatId: CHAT, ...extra });
+    assert.equal((await env.client.until((frame) => frame.requestId === `x${index}`)).code, "INVALID_REQUEST");
+  }
+  assert.equal(env.provider.textOptions.length, before, "nothing was sent to LINE");
+
+  const friend = `u${"f".repeat(32)}`;
+  env.provider.channels.push({ channelId: friend, kind: "user", name: "好友" });
+  env.request({ type: "channels:refresh" });
+  await env.client.until((frame) => frame.type === "channels" && frame.channels.some((channel) => channel.channelId === friend));
+  env.request({ type: "message:send", requestId: "dm", chatId: friend, text: "@誰 好", mentions: [{ userId: speaker, start: 0, end: 2 }] });
+  assert.equal((await env.client.until((frame) => frame.requestId === "dm")).code, "INVALID_REQUEST", "1:1 chats have nobody to tag");
+});
+
+test("the enlarged avatar asks for the original, the list avatar for the preview", async (t) => {
+  const { port, cookie } = await start(t);
+  const base = `http://127.0.0.1:${port}/media/`;
+  const hash = "0hAbC_def-123456";
+  const small = await (await fetch(`${base}avatar-p-${hash}`, { headers: { Cookie: cookie } })).text();
+  const full = await (await fetch(`${base}avatarfull-p-${hash}`, { headers: { Cookie: cookie } })).text();
+  assert.equal(small, `jpeg-profile-${hash}`);
+  assert.equal(full, `jpeg-profile-${hash}-full`);
+  assert.equal((await fetch(`${base}avatarfull-x-${hash}`, { headers: { Cookie: cookie } })).status, 404);
+  assert.equal((await fetch(`${base}avatarfull-p-${hash}`)).status, 404, "no cookie");
+});
+
+test("connect-time replays are marked so the page does not count them as unread, and a reported read clears LINE's badge", async (t) => {
+  const { port, cookie, login, hub, provider, store } = await start(t);
+  provider.channels = [{ channelId: CHAT, kind: "group", name: "測試群組", unreadCount: 4 }];
+  await login.restore();
+  hub.handleMessage({ messageId: "10", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "舊的", contentType: "NONE", createdAt: 1 }, "new");
+  const client = connect(port, { Origin: `http://127.0.0.1:${port}`, Cookie: cookie });
+  t.after(() => client.socket.close());
+  await client.opened;
+  const listed = await client.until((frame) => frame.type === "channels" && frame.channels.some((channel) => channel.channelId === CHAT));
+  assert.equal(listed.channels.find((channel) => channel.channelId === CHAT).unreadCount, 4);
+  assert.equal((await client.until((frame) => frame.type === "message")).replay, true);
+  hub.handleMessage({ messageId: "11", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "新的", contentType: "NONE", createdAt: 2 }, "new");
+  assert.equal((await client.until((frame) => frame.type === "message" && frame.message.messageId === "11")).replay, undefined);
+  client.socket.send(JSON.stringify({ type: "chat:read", chatId: CHAT, messageId: "11" }));
+  for (let attempt = 0; attempt < 50 && store.channelOf(CHAT).unreadCount; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(store.channelOf(CHAT).unreadCount, undefined);
 });

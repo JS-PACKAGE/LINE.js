@@ -56,6 +56,9 @@ export function createHub(options: HubOptions): Hub {
   let refreshTimer: NodeJS.Timeout | undefined;
   // Newest message id per chat already reported as read, so each position is sent to LINE once.
   const markedRead = new Map<string, bigint>();
+  // Latest read position per chat and reader, from LINE snapshots and live events. LINE has no
+  // snapshot for 1:1 chats, so without this a page reload would forget who already read.
+  const seenReads = new Map<string, Map<string, bigint>>();
 
   function send(socket: WebSocket, frame: ServerFrame): void {
     if (socket.readyState !== WebSocket.OPEN) return;
@@ -100,13 +103,22 @@ export function createHub(options: HubOptions): Hub {
     }
   }
 
+  function rememberRead(chatId: string, position: ReadPosition): void {
+    const readers = seenReads.get(chatId) ?? new Map<string, bigint>();
+    const id = BigInt(position.messageId);
+    const known = readers.get(position.readerId);
+    if (known === undefined || id > known) readers.set(position.readerId, id);
+    seenReads.set(chatId, readers);
+  }
+
   async function sendReadSnapshot(socket: WebSocket, chatId: string, kind: ChannelKind): Promise<void> {
     try {
-      const positions = await provider.fetchReadPositions({ channelId: chatId, kind });
-      if (positions.length > 0 && login.state === "ready") send(socket, { type: "read", chatId, positions });
+      for (const position of await provider.fetchReadPositions({ channelId: chatId, kind })) rememberRead(chatId, position);
     } catch (error) {
       logFailure("READ_RANGE_FAILED", error);
     }
+    const positions = [...(seenReads.get(chatId) ?? [])].map(([readerId, id]) => ({ readerId, messageId: String(id) }));
+    if (positions.length > 0 && login.state === "ready") send(socket, { type: "read", chatId, positions });
   }
 
   async function handleSend(socket: WebSocket, frame: Record<string, unknown>): Promise<void> {
@@ -116,22 +128,30 @@ export function createHub(options: HubOptions): Hub {
     const channel = store.channelOf(request.chatId);
     if (login.state !== "ready" || !channel) return fail(socket, "UNKNOWN_CHAT", request.requestId);
     const target = { channelId: request.chatId, kind: channel.kind };
+    if (request.kind === "text") {
+      // Only people who have spoken in this chat can be tagged, and 1:1 chats have nobody to tag.
+      const speakers = new Set(store.snapshotMessages().filter((message) => message.channelId === request.chatId).map((message) => message.senderId));
+      if (request.mentions.length > 0 && (channel.kind === "user" || !request.mentions.every((mention) => speakers.has(mention.userId)))) {
+        return fail(socket, "INVALID_REQUEST", request.requestId);
+      }
+      // A reply must point at a message this server has shown in the same chat.
+      if (request.replyTo && !store.get(request.replyTo, request.chatId)) return fail(socket, "INVALID_REQUEST", request.requestId);
+    }
     try {
-      let messageId: string;
+      let message: Message;
       if (request.kind === "image") {
         const image = media.getUpload(request.uploadId);
         if (!image) return fail(socket, "UPLOAD_EXPIRED", request.requestId);
-        messageId = (await provider.sendImage(target, image)).messageId;
+        message = await provider.sendImage(target, image);
         media.dropUpload(request.uploadId);
+      } else if (request.kind === "text") {
+        message = await provider.sendText(target, request.text, { mentions: request.mentions, ...(request.replyTo ? { replyTo: request.replyTo } : {}) });
       } else {
-        const message = request.kind === "text"
-          ? await provider.sendText(target, request.text)
-          : await provider.sendSticker(target, request.packageId, request.stickerId);
-        messageId = message.messageId;
-        // Show our own message immediately; the live event for the same id is then a harmless duplicate.
-        ingest(message, "new");
+        message = await provider.sendSticker(target, request.packageId, request.stickerId);
       }
-      send(socket, { type: "sent", requestId: request.requestId, messageId });
+      // LINE sends no live event for our own messages: show it now (a later duplicate is harmless).
+      ingest(message, "new");
+      send(socket, { type: "sent", requestId: request.requestId, messageId: message.messageId });
     } catch (error) {
       logFailure("SEND_FAILED", error);
       fail(socket, "SEND_FAILED", request.requestId);
@@ -165,6 +185,8 @@ export function createHub(options: HubOptions): Hub {
     markedRead.set(chatId, id);
     try {
       await provider.markRead({ channelId: chatId, kind: channel.kind }, messageId);
+      // Anyone opening the page later must not see the badge of a chat that was just read.
+      store.clearUnread(chatId);
     } catch (error) {
       if (known === undefined) markedRead.delete(chatId);
       else markedRead.set(chatId, known);
@@ -210,7 +232,7 @@ export function createHub(options: HubOptions): Hub {
   function sendReady(socket: WebSocket): void {
     send(socket, { type: "auth:ready", profile: provider.getProfile() });
     sendChannels(socket);
-    for (const message of store.snapshotMessages()) send(socket, { type: "message", message });
+    for (const message of store.snapshotMessages()) send(socket, { type: "message", message, replay: true });
   }
 
   login.subscribe((state) => {
@@ -220,6 +242,7 @@ export function createHub(options: HubOptions): Hub {
       store.clear();
       media.clear();
       markedRead.clear();
+      seenReads.clear();
       status = "starting";
     }
     broadcast({ type: "auth:state", state });
@@ -318,7 +341,9 @@ export function createHub(options: HubOptions): Hub {
     },
     handleMessage: ingest,
     handleRead(chatId, position) {
-      if (store.hasChannel(chatId)) broadcast({ type: "read", chatId, positions: [position] });
+      if (!store.hasChannel(chatId)) return;
+      rememberRead(chatId, position);
+      broadcast({ type: "read", chatId, positions: [position] });
     },
     close() {
       clearTimeout(refreshTimer);

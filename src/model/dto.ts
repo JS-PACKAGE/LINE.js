@@ -6,6 +6,8 @@ export interface Channel {
   name: string;
   /** Media id of the chat picture (served by `/media/:id`). */
   pictureId?: string;
+  /** Unread messages as LINE counts them when the list was loaded (absent = none). */
+  unreadCount?: number;
   memberCount?: number;
   lastMessageAt?: number;
 }
@@ -29,6 +31,13 @@ export interface ReadPosition {
 
 export type MemberRole = "admin" | "coAdmin";
 
+/** A tagged person inside a text message: `text.slice(start, end)` is "@name". */
+export interface Mention {
+  userId: string;
+  start: number;
+  end: number;
+}
+
 /** A sticker package the account owns, with the stickers that can be sent from it. */
 export interface StickerPackage {
   packageId: number;
@@ -51,6 +60,8 @@ export interface Message {
   createdAt: number;
   editedAt?: number;
   mediaId?: string;
+  /** Id of the message this one answers (LINE "reply"). */
+  replyTo?: string;
   decryptFailed?: boolean;
 }
 

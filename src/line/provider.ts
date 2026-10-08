@@ -3,8 +3,8 @@ import { BaseClient, type Device, type FetchLike } from "@evex/linejs/base";
 import { LINEStruct } from "@evex/linejs/thrift";
 import type { Message as LineMessage, SquareMessage as LineSquareMessage } from "@evex/linejs-types";
 import { avatarMediaId, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
-import type { Channel, ChannelRef, HistoryPage, MemberRole, Message, Profile, ReadPosition, StickerPackage } from "../model/dto.js";
-import { memberRole } from "./members.js";
+import type { Channel, ChannelRef, HistoryPage, MemberRole, Mention, Message, Profile, ReadPosition, StickerPackage } from "../model/dto.js";
+import { memberRole, mentionMetadata, replyTarget } from "./members.js";
 import { parseReadOperation, parseReadRanges } from "./read.js";
 import { parseOwnedProducts, parsePackageMeta, type PackageMeta } from "./stickers.js";
 import { SessionStorage } from "./session.js";
@@ -26,13 +26,19 @@ export interface LogoutResult {
   remoteRevoked: boolean;
 }
 
+export interface SendTextOptions {
+  mentions?: Mention[];
+  /** Id of the message being answered. */
+  replyTo?: string;
+}
+
 export interface LineProvider {
   restoreSession(): Promise<boolean>;
   loginQR(callbacks: QRCallbacks): Promise<void>;
   logout(): Promise<LogoutResult>;
   getProfile(): Profile;
   fetchSticker(stickerId: string, animated: boolean): Promise<MediaBytes | undefined>;
-  fetchAvatar(host: AvatarHost, hash: string): Promise<MediaBytes | undefined>;
+  fetchAvatar(host: AvatarHost, hash: string, full: boolean): Promise<MediaBytes | undefined>;
   fetchMessageMedia(messageId: string): Promise<MediaBytes | undefined>;
   /** Tab icon of an owned sticker package. */
   fetchStickerPack(packageId: string): Promise<MediaBytes | undefined>;
@@ -44,9 +50,10 @@ export interface LineProvider {
   fetchReadPositions(channel: ChannelRef): Promise<ReadPosition[]>;
   fetchChannels(): Promise<Channel[]>;
   fetchHistory(channel: ChannelRef, limit: number, before?: string): Promise<HistoryPage>;
-  sendText(channel: ChannelRef, text: string): Promise<Message>;
+  sendText(channel: ChannelRef, text: string, options?: SendTextOptions): Promise<Message>;
   sendSticker(channel: ChannelRef, packageId: number, stickerId: number): Promise<Message>;
-  sendImage(channel: ChannelRef, image: MediaBytes): Promise<{ messageId: string }>;
+  /** The returned message is what the browser should show now: LINE sends no live event for our own sends. */
+  sendImage(channel: ChannelRef, image: MediaBytes): Promise<Message>;
   close(): Promise<void>;
 }
 
@@ -67,6 +74,8 @@ const LOOKUP_RETRY_MS = 5 * 60 * 1000;
 const TALK_USER_MID = /^u[0-9a-f]{32}$/;
 const STICKER_PACKS_CACHE_MS = 10 * 60 * 1000;
 const PACK_META_CONCURRENCY = 4;
+const UNREAD_MAX_PAGES = 20;
+const MAX_UNREAD_SHOWN = 9999;
 
 /** What the UI shows for a person. `settled` means LINE answered a profile lookup (or the friend list did). */
 interface MemberProfile {
@@ -219,7 +228,7 @@ export class EvexLineProvider implements LineProvider {
     return this.toMessage({
       id: raw.id, channelId, channelKind, senderId: raw.from, text: raw.text, contentType: String(raw.contentType),
       createdTime: raw.createdTime, encrypted: undecryptable || (raw.chunks?.length ?? 0) > 0, metadata: raw.contentMetadata,
-      mediaId: this.rememberMedia(raw, false),
+      mediaId: this.rememberMedia(raw, false), replyTo: replyTarget(raw.messageRelationType, raw.relatedMessageId),
     });
   }
 
@@ -230,7 +239,7 @@ export class EvexLineProvider implements LineProvider {
     return this.toMessage({
       id: message.id, channelId: message.to, channelKind: "square", senderId: message.from, text: message.text, contentType: String(message.contentType),
       createdTime: message.createdTime, encrypted: (message.chunks?.length ?? 0) > 0, metadata: message.contentMetadata,
-      mediaId: this.rememberMedia(message, true),
+      mediaId: this.rememberMedia(message, true), replyTo: replyTarget(message.messageRelationType, message.relatedMessageId),
     });
   }
 
@@ -245,7 +254,7 @@ export class EvexLineProvider implements LineProvider {
   private toMessage(fields: {
     id: unknown; channelId: string; channelKind: Message["channelKind"]; senderId: string;
     text: string | undefined; contentType: string; createdTime: unknown; encrypted: boolean;
-    metadata: Record<string, string> | undefined; mediaId?: string | undefined;
+    metadata: Record<string, string> | undefined; mediaId?: string | undefined; replyTo?: string | undefined;
   }): Message {
     const { text } = fields;
     // Numeric content types are normalised so the browser only ever sees one spelling.
@@ -267,6 +276,7 @@ export class EvexLineProvider implements LineProvider {
       contentType,
       createdAt: Number.isFinite(created) && created > 0 ? created : Date.now(),
       ...(mediaId ? { mediaId } : {}),
+      ...(fields.replyTo ? { replyTo: fields.replyTo } : {}),
       // Fail closed: an E2EE payload without readable text is a placeholder, never a guess.
       ...(isText && !text && fields.encrypted ? { decryptFailed: true } : {}),
     };
@@ -293,10 +303,13 @@ export class EvexLineProvider implements LineProvider {
     return undefined;
   }
 
-  /** Profile pictures sit on LINE's public CDNs; like stickers they are fetched and re-served here. */
-  async fetchAvatar(host: AvatarHost, hash: string): Promise<MediaBytes | undefined> {
+  /**
+   * Profile pictures sit on LINE's public CDNs; like stickers they are fetched and re-served here.
+   * Lists use the small `/preview`; the enlarged view asks for the original.
+   */
+  async fetchAvatar(host: AvatarHost, hash: string, full: boolean): Promise<MediaBytes | undefined> {
     const origin = host === "profile" ? "https://profile.line-scdn.net" : "https://obs.line-scdn.net";
-    const response = await fetch(`${origin}/${hash}/preview`, { signal: AbortSignal.timeout(STICKER_TIMEOUT_MS), redirect: "error" });
+    const response = await fetch(`${origin}/${hash}${full ? "" : "/preview"}`, { signal: AbortSignal.timeout(STICKER_TIMEOUT_MS), redirect: "error" });
     if (response.status === 404 || response.status === 403) return undefined;
     if (!response.ok) throw new Error("AVATAR_FETCH_FAILED");
     const bytes = Buffer.from(await response.arrayBuffer());
@@ -588,16 +601,20 @@ export class EvexLineProvider implements LineProvider {
     return messages;
   }
 
-  async sendText(channel: ChannelRef, text: string): Promise<Message> {
+  async sendText(channel: ChannelRef, text: string, options: SendTextOptions = {}): Promise<Message> {
     const client = this.requireClient();
     const me = this.getProfile();
+    const contentMetadata = mentionMetadata(options.mentions ?? []);
+    const reply = options.replyTo ? { relatedMessageId: options.replyTo } : {};
+    // The echo carries what we sent even if LINE's answer omits it.
+    const echo = (message: Message): Message => ({ ...message, text, ...(options.replyTo ? { replyTo: options.replyTo } : {}) });
     if (channel.kind === "square") {
-      const { createdSquareMessage } = await client.base.square.sendMessage({ squareChatMid: channel.channelId, text });
-      return { ...this.squareToMessage(createdSquareMessage, me.displayName), text };
+      const { createdSquareMessage } = await client.base.square.sendMessage({ squareChatMid: channel.channelId, text, contentMetadata, ...reply });
+      return echo(this.squareToMessage(createdSquareMessage, me.displayName));
     }
     // e2ee left undefined: linejs first tries plain and retries encrypted when LINE demands E2EE.
-    const sent = await client.base.talk.sendMessage({ to: channel.channelId, text });
-    return { ...this.talkToMessage({ ...sent, to: channel.channelId, from: me.userId }, me.userId), text };
+    const sent = await client.base.talk.sendMessage({ to: channel.channelId, text, contentMetadata, ...reply });
+    return echo(this.talkToMessage({ ...sent, to: channel.channelId, from: me.userId }, me.userId));
   }
 
   async sendSticker(channel: ChannelRef, packageId: number, stickerId: number): Promise<Message> {
@@ -613,24 +630,32 @@ export class EvexLineProvider implements LineProvider {
   }
 
   /**
-   * LINE creates the message server-side while the image is uploaded, so there is no message
-   * to echo here; the sender sees it through the live event stream like any other message.
+   * LINE creates the message server-side while the image is uploaded, and the sending client gets
+   * no live event for its own message, so the message is built here for the caller to show.
    */
-  async sendImage(channel: ChannelRef, image: MediaBytes): Promise<{ messageId: string }> {
-    const obs = this.requireClient().base.obs;
+  async sendImage(channel: ChannelRef, image: MediaBytes): Promise<Message> {
+    const client = this.requireClient();
+    const me = this.getProfile();
     const blob = new Blob([new Uint8Array(image.bytes)], { type: image.mime });
     const filename = `image.${image.mime === "image/png" ? "png" : image.mime === "image/gif" ? "gif" : "jpg"}`;
     try {
-      const uploaded = await obs.uploadObjTalk(channel.channelId, "image", blob, undefined, filename);
-      if (uploaded.objId) return { messageId: uploaded.objId };
+      const uploaded = await client.base.obs.uploadObjTalk(channel.channelId, "image", blob, undefined, filename);
+      if (uploaded.objId) return this.outgoingImage(channel, me, uploaded.objId);
     } catch {
       // Fall through: end-to-end encrypted chats reject plain uploads.
     }
     if (channel.kind === "square" || !(channel.channelId.startsWith("u") || channel.channelId.startsWith("c"))) {
       throw new Error("IMAGE_SEND_FAILED");
     }
-    const message = await obs.uploadMediaByE2EE({ data: blob, oType: image.mime === "image/gif" ? "gif" : "image", to: channel.channelId, filename });
-    return { messageId: String(message.id) };
+    const message = await client.base.obs.uploadMediaByE2EE({ data: blob, oType: image.mime === "image/gif" ? "gif" : "image", to: channel.channelId, filename });
+    return this.talkToMessage({ ...message, to: channel.channelId, from: me.userId }, me.userId);
+  }
+
+  /** A plain upload's object id is the id of the message LINE created for it. */
+  private outgoingImage(channel: ChannelRef, me: Profile, id: string): Message {
+    const toType = { user: "USER", room: "ROOM", group: "GROUP", square: "SQUARE_CHAT" }[channel.kind];
+    const raw = { id, to: channel.channelId, from: me.userId, toType, contentType: "IMAGE", contentMetadata: {}, createdTime: String(Date.now()) } as unknown as LineMessage;
+    return channel.kind === "square" ? this.squareToMessage({ message: raw } as LineSquareMessage, me.displayName) : this.talkToMessage(raw, me.userId);
   }
 
   // linejs 3.4.2 `fetchUsers()` sends every friend mid in one getContactsV3 call, which
@@ -684,7 +709,47 @@ export class EvexLineProvider implements LineProvider {
         });
       }
     }
+    await this.attachUnreadCounts(client, channels);
     return channels;
+  }
+
+  /**
+   * Unread badges must match LINE (a chat read on the phone has none), not what this page happened
+   * to receive. Best effort: without counts the list simply shows no badges.
+   */
+  private async attachUnreadCounts(client: Client, channels: Channel[]): Promise<void> {
+    const counts = new Map<string, number>();
+    try {
+      const seen = new Set<string>();
+      let minChatId: string | undefined;
+      for (let page = 0; page < UNREAD_MAX_PAGES; page += 1) {
+        const { messageBoxes, hasNext } = await client.base.talk.getMessageBoxes({ messageBoxListRequest: { withUnreadCount: true, ...(minChatId ? { minChatId } : {}) } });
+        const fresh = (messageBoxes ?? []).filter((box) => !seen.has(box.id));
+        for (const box of fresh) {
+          seen.add(box.id);
+          counts.set(box.id, Number(box.unreadCount));
+        }
+        if (!hasNext || fresh.length === 0) break;
+        minChatId = fresh.at(-1)!.id;
+      }
+    } catch {
+      // Talk chats just show no badge this time.
+    }
+    const squares = channels.filter((channel) => channel.kind === "square");
+    for (let offset = 0; offset < squares.length; offset += SQUARE_LOOKUP_CONCURRENCY) {
+      await Promise.all(squares.slice(offset, offset + SQUARE_LOOKUP_CONCURRENCY).map(async (channel) => {
+        try {
+          const { chatStatus } = await client.base.square.getSquareChatStatus({ request: { squareChatMid: channel.channelId } });
+          counts.set(channel.channelId, Number(chatStatus.otherStatus.unreadMessageCount));
+        } catch {
+          // This OpenChat shows no badge this time.
+        }
+      }));
+    }
+    for (const channel of channels) {
+      const count = counts.get(channel.channelId);
+      if (count && Number.isFinite(count) && count > 0) channel.unreadCount = Math.min(count, MAX_UNREAD_SHOWN);
+    }
   }
 
   getProfile(): Profile {

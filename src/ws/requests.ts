@@ -1,4 +1,5 @@
 import { isUploadId } from "../media/service.js";
+import type { Mention } from "../model/dto.js";
 
 export const MAX_HISTORY_LIMIT = 100;
 
@@ -6,6 +7,10 @@ const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
 // LINE mids: u(ser), c(group/room), r(oom), s/m (OpenChat: observed as "m") followed by an opaque alphanumeric id.
 const CHAT_ID = /^[ucrsm][A-Za-z0-9]{10,64}$/;
 const CURSOR = /^[A-Za-z0-9+/=_:.-]{1,1024}$/;
+// Talk member mids ("u…") and OpenChat member mids ("p…").
+const MEMBER_ID = /^[up][A-Za-z0-9]{10,64}$/;
+const MESSAGE_ID = /^\d{1,24}$/;
+export const MAX_MENTIONS = 20;
 
 export type Parsed<T> = { ok: true; value: T } | { ok: false; requestId?: string };
 
@@ -17,7 +22,7 @@ export interface HistoryRequest {
 }
 
 export type SendRequest = { requestId: string; chatId: string } & (
-  | { kind: "text"; text: string }
+  | { kind: "text"; text: string; mentions: Mention[]; replyTo?: string }
   | { kind: "image"; uploadId: string }
   | { kind: "sticker"; packageId: number; stickerId: number }
 );
@@ -46,17 +51,40 @@ export function parseHistory(frame: Record<string, unknown>, defaultLimit: numbe
   return { ok: true, value: { ...base, limit, ...(typeof frame.before === "string" ? { before: frame.before } : {}) } };
 }
 
+/** Mentions must be sorted, non-overlapping ranges that each start on an "@" inside the text. */
+function parseMentions(value: unknown, text: string): Mention[] | undefined {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_MENTIONS) return undefined;
+  const mentions: Mention[] = [];
+  let previousEnd = 0;
+  for (const entry of value as unknown[]) {
+    if (!entry || typeof entry !== "object") return undefined;
+    const { userId, start, end } = entry as Record<string, unknown>;
+    if (typeof userId !== "string" || !MEMBER_ID.test(userId)) return undefined;
+    if (typeof start !== "number" || typeof end !== "number" || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return undefined;
+    if (start < previousEnd || end <= start || end > text.length || text[start] !== "@") return undefined;
+    mentions.push({ userId, start, end });
+    previousEnd = end;
+  }
+  return mentions;
+}
+
 export function parseSend(frame: Record<string, unknown>, textMaxLength: number): Parsed<SendRequest> {
   const base = header(frame);
   if (!base) return { ok: false, ...(requestIdOf(frame) ? { requestId: requestIdOf(frame)! } : {}) };
   const refuse: Parsed<SendRequest> = { ok: false, requestId: base.requestId };
-  const { text, mediaId, sticker } = frame;
+  const { text, mediaId, sticker, mentions, replyTo } = frame;
   // Exactly one payload: a frame that mixes kinds is ambiguous, so nothing is sent.
   if ([text, mediaId, sticker].filter((part) => part !== undefined).length !== 1) return refuse;
+  // Mentions and replies decorate a text message; on anything else they make the frame ambiguous.
+  if (text === undefined && (mentions !== undefined || replyTo !== undefined)) return refuse;
   if (text !== undefined) {
     // Length is capped before any trimming so the limit cannot be dodged with padding.
     if (typeof text !== "string" || text.length > textMaxLength || text.trim().length === 0) return refuse;
-    return { ok: true, value: { ...base, kind: "text", text } };
+    const parsedMentions = parseMentions(mentions, text);
+    if (!parsedMentions) return refuse;
+    if (replyTo !== undefined && (typeof replyTo !== "string" || !MESSAGE_ID.test(replyTo))) return refuse;
+    return { ok: true, value: { ...base, kind: "text", text, mentions: parsedMentions, ...(typeof replyTo === "string" ? { replyTo } : {}) } };
   }
   if (mediaId !== undefined) {
     if (typeof mediaId !== "string" || !isUploadId(mediaId)) return refuse;

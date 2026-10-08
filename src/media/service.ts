@@ -10,7 +10,8 @@ export type AvatarHost = "profile" | "obs";
 /** The slice of the LINE adapter that media needs; keeps this module free of linejs types. */
 export interface MediaSource {
   fetchSticker(stickerId: string, animated: boolean): Promise<MediaBytes | undefined>;
-  fetchAvatar(host: AvatarHost, hash: string): Promise<MediaBytes | undefined>;
+  /** `full` asks for the original picture instead of the small preview used in lists. */
+  fetchAvatar(host: AvatarHost, hash: string, full: boolean): Promise<MediaBytes | undefined>;
   /** Tab icon of an owned sticker package. */
   fetchStickerPack(packageId: string): Promise<MediaBytes | undefined>;
   /** Image, video or audio attached to a message the adapter has seen; undefined when unknown or too large. */
@@ -19,7 +20,8 @@ export interface MediaSource {
 
 const STICKER_ID = /^sticker-(\d{1,12})(-a)?$/;
 const STICKER_PACK_ID = /^stickerpack-(\d{1,12})$/;
-const AVATAR_ID = /^avatar-([po])-([A-Za-z0-9_-]{8,200})$/;
+// "avatarfull-" is the same picture at original size (for the enlarged view).
+const AVATAR_ID = /^avatar(full)?-([po])-([A-Za-z0-9_-]{8,200})$/;
 const MESSAGE_ID = /^msg-(\d{1,24})$/;
 
 /** Maps the hash LINE reports for a picture to the id the browser may request. */
@@ -72,7 +74,7 @@ export class MediaService {
     const pack = STICKER_PACK_ID.exec(id);
     if (pack) return this.source.fetchStickerPack(pack[1]!);
     const avatar = AVATAR_ID.exec(id);
-    if (avatar) return this.source.fetchAvatar(avatar[1] === "p" ? "profile" : "obs", avatar[2]!);
+    if (avatar) return this.source.fetchAvatar(avatar[2] === "p" ? "profile" : "obs", avatar[3]!, avatar[1] !== undefined);
     return this.source.fetchMessageMedia(MESSAGE_ID.exec(id)![1]!);
   }
 
