@@ -40,7 +40,7 @@
     </main>
 
     <div id="app" hidden>
-      <aside class="sidebar" aria-label="聊天室清單">
+      <aside id="sidebar" class="sidebar" aria-label="聊天室清單">
         <header class="me">
           <span id="me-avatar" class="avatar-slot"></span>
           <strong id="me-name"></strong>
@@ -55,8 +55,10 @@
         <ul id="channels" role="listbox" aria-label="清單"></ul>
         <p id="channels-empty" hidden>尚無聊天室。</p>
       </aside>
+      <div id="drawer-backdrop" hidden></div>
       <section class="conversation" aria-label="訊息">
         <header class="conversation-head">
+          <button id="menu" type="button" class="ghost" aria-label="開啟選單" aria-controls="sidebar" aria-expanded="false">☰</button>
           <span id="channel-avatar" class="avatar-slot"></span>
           <h2 id="channel-title">選擇一個聊天室</h2>
           <span id="channel-meta"></span>

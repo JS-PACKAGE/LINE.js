@@ -139,6 +139,8 @@ dialog#confirm::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
 #notice { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 30; display: flex; align-items: center; gap: 12px; max-width: min(640px, calc(100vw - 24px)); padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 8px 28px #0000002e; font-size: 14px; line-height: 1.5; }
 #notice a { color: var(--accent); white-space: nowrap; }
 #notice button { padding: 6px 14px; white-space: nowrap; }
+#menu { display: none; padding: 6px 10px; font-size: 18px; line-height: 1; }
+#drawer-backdrop { display: none; }
 #notice .ghost:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
 #offline { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 24px; background: #0b1511e6; color: #e2eee8; text-align: center; backdrop-filter: blur(4px); }
 #offline[hidden] { display: none; }
@@ -156,6 +158,9 @@ dialog#confirm::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
 @media (max-width: 720px) {
   #login { margin: 4vh auto; padding: 18px; }
   #login section { padding: 20px; }
-  #app { grid-template-columns: 1fr; grid-template-rows: 40vh 1fr; }
-  .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+  #app { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+  .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 50; width: min(320px, 86vw); border-right: 1px solid var(--line); box-shadow: 8px 0 28px #0000002e; transform: translateX(-102%); visibility: hidden; transition: transform .2s ease, visibility .2s; }
+  #app[data-drawer="open"] .sidebar { transform: none; visibility: visible; }
+  #drawer-backdrop:not([hidden]) { display: block; position: fixed; inset: 0; z-index: 40; background: #0b151166; }
+  #menu { display: inline-flex; }
 }

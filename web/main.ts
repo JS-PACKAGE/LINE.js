@@ -35,6 +35,21 @@ const tabFriends = $<HTMLButtonElement>("#tab-friends");
 const chatsUnread = $<HTMLSpanElement>("#chats-unread");
 const notice = createUpdateNotice($<HTMLElement>("#notice"));
 const offline = $<HTMLElement>("#offline");
+const menuButton = $<HTMLButtonElement>("#menu");
+const drawerBackdrop = $<HTMLElement>("#drawer-backdrop");
+
+// Below 720px the sidebar is an off-canvas drawer opened from the hamburger button.
+function setDrawer(open: boolean): void {
+  app.dataset.drawer = open ? "open" : "closed";
+  drawerBackdrop.hidden = !open;
+  menuButton.ariaExpanded = String(open);
+  menuButton.ariaLabel = open ? "關閉選單" : "開啟選單";
+}
+menuButton.addEventListener("click", () => setDrawer(app.dataset.drawer !== "open"));
+drawerBackdrop.addEventListener("click", () => setDrawer(false));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && app.dataset.drawer === "open") setDrawer(false);
+});
 
 const KIND_LABEL: Record<Channel["kind"], string> = { user: "好友", group: "群組", room: "聊天室", square: "社群" };
 const LISTEN_LABEL: Record<ListenState, string> = { starting: "啟動中", listening: "即時接收中", reconnecting: "LINE 重新連線中" };
@@ -128,6 +143,7 @@ function enterChat(profile: Profile): void {
   clearSecrets();
   login.hidden = true;
   app.hidden = false;
+  if (!selected) setDrawer(true);
   meName.textContent = profile.displayName;
   meAvatar.replaceChildren(createAvatar(profile.pictureId, profile.displayName, { zoomable: true }));
   logoutButton.disabled = false;
@@ -692,6 +708,7 @@ function selectChannel(item: EventTarget | null): void {
     unreadFrom = count > 0 && count <= list.length ? { channelId: id, messageId: list[list.length - count]!.messageId, count } : undefined;
   }
   selected = id;
+  setDrawer(false);
   delete unread[id];
   opened.add(id);
   composer.setChannel(id);
