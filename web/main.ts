@@ -19,6 +19,10 @@ const channelsEmpty = $<HTMLParagraphElement>("#channels-empty");
 const channelTitle = $<HTMLHeadingElement>("#channel-title");
 const channelMeta = $<HTMLSpanElement>("#channel-meta");
 const messageList = $<HTMLDivElement>("#messages");
+const logoutButton = $<HTMLButtonElement>("#logout");
+const tabChats = $<HTMLButtonElement>("#tab-chats");
+const tabFriends = $<HTMLButtonElement>("#tab-friends");
+const chatsUnread = $<HTMLSpanElement>("#chats-unread");
 
 const KIND_LABEL: Record<Channel["kind"], string> = { user: "好友", group: "群組", room: "聊天室", square: "社群" };
 const LISTEN_LABEL: Record<ListenState, string> = { starting: "啟動中", listening: "即時接收中", reconnecting: "LINE 重新連線中" };
@@ -33,6 +37,7 @@ let signedIn = false;
 let channels: Channel[] = [];
 let messages: Record<string, Message[]> = {};
 let unread: Record<string, number> = {};
+let tab: "chats" | "friends" = "chats";
 let selected: string | undefined;
 
 function send(frame: ClientFrame): void {
@@ -63,7 +68,10 @@ function applyAuthState(state: AuthState): void {
     // Session lost after login: fall back to the login view instead of a dead chat.
     channels = [];
     messages = {};
+    unread = {};
     selected = undefined;
+    tab = "chats";
+    filter.value = "";
   }
   clearSecrets();
   if (state === "restoring") showLogin("正在復用 session…", false);
@@ -78,6 +86,7 @@ function enterChat(name: string): void {
   login.hidden = true;
   app.hidden = false;
   meName.textContent = name;
+  logoutButton.disabled = false;
   renderChannels();
   renderMessages();
 }
@@ -88,9 +97,28 @@ function formatTime(timestamp: number): string {
   return date.toLocaleString("zh-TW", sameDay ? { hour: "2-digit", minute: "2-digit" } : { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+// A friend belongs to the 聊天 tab only once there is a conversation with them;
+// groups, rooms and OpenChats are always conversations.
+function hasConversation(channel: Channel): boolean {
+  return channel.kind !== "user" || channel.lastMessageAt !== undefined || (messages[channel.channelId]?.length ?? 0) > 0;
+}
+
+function renderTabs(): void {
+  for (const [button, name] of [[tabChats, "chats"], [tabFriends, "friends"]] as const) {
+    button.ariaSelected = String(tab === name);
+    button.tabIndex = tab === name ? 0 : -1;
+  }
+  const total = channels.filter(hasConversation).reduce((sum, channel) => sum + (unread[channel.channelId] ?? 0), 0);
+  chatsUnread.hidden = total === 0;
+  chatsUnread.textContent = total > 99 ? "99+" : String(total);
+}
+
 function renderChannels(): void {
   const keyword = filter.value.trim().toLocaleLowerCase();
-  const visible = channels.filter((channel) => channel.name.toLocaleLowerCase().includes(keyword));
+  const inTab = channels.filter((channel) => (tab === "friends" ? channel.kind === "user" : hasConversation(channel)));
+  const visible = inTab.filter((channel) => channel.name.toLocaleLowerCase().includes(keyword));
+  // Conversations keep the server's activity order; the friend list reads alphabetically.
+  if (tab === "friends") visible.sort((a, b) => a.name.localeCompare(b.name, "zh-TW"));
   channelList.replaceChildren(...visible.map((channel) => {
     const item = document.createElement("li");
     item.role = "option";
@@ -100,9 +128,12 @@ function renderChannels(): void {
     const name = document.createElement("span");
     name.className = "channel-name";
     name.textContent = channel.name;
-    const kind = document.createElement("small");
-    kind.textContent = KIND_LABEL[channel.kind] + (channel.memberCount ? ` · ${channel.memberCount} 人` : "");
-    item.append(name, kind);
+    item.append(name);
+    if (tab === "chats") {
+      const kind = document.createElement("small");
+      kind.textContent = KIND_LABEL[channel.kind] + (channel.memberCount ? ` · ${channel.memberCount} 人` : "");
+      item.append(kind);
+    }
     const count = unread[channel.channelId];
     if (count) {
       const badge = document.createElement("span");
@@ -112,8 +143,13 @@ function renderChannels(): void {
     }
     return item;
   }));
+  filter.placeholder = tab === "friends" ? "搜尋好友" : "搜尋聊天";
+  channelList.ariaLabel = tab === "friends" ? "好友" : "聊天";
   channelsEmpty.hidden = visible.length > 0;
-  channelsEmpty.textContent = channels.length === 0 ? "載入聊天室中…若長時間沒有內容，請在 LINE 傳送一則訊息。" : "沒有符合的聊天室。";
+  if (channels.length === 0) channelsEmpty.textContent = "載入中…若長時間沒有內容，請在 LINE 傳送一則訊息。";
+  else if (keyword) channelsEmpty.textContent = "沒有符合的結果。";
+  else channelsEmpty.textContent = tab === "friends" ? "尚無好友。" : "尚無聊天。";
+  renderTabs();
 }
 
 function messageNode(message: Message): HTMLElement {
@@ -214,6 +250,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       listenState.dataset.state = frame.state;
       return;
     case "error":
+      logoutButton.disabled = false;
       if (signedIn) channelMeta.textContent = frame.message;
       else status.textContent = frame.message;
       return;
@@ -248,6 +285,30 @@ start.addEventListener("click", () => {
 });
 
 filter.addEventListener("input", renderChannels);
+
+function switchTab(next: "chats" | "friends"): void {
+  if (tab === next) return;
+  tab = next;
+  filter.value = "";
+  renderChannels();
+}
+tabChats.addEventListener("click", () => switchTab("chats"));
+tabFriends.addEventListener("click", () => switchTab("friends"));
+for (const button of [tabChats, tabFriends]) {
+  button.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const next = tab === "chats" ? "friends" : "chats";
+    switchTab(next);
+    (next === "chats" ? tabChats : tabFriends).focus();
+  });
+}
+
+logoutButton.addEventListener("click", () => {
+  if (!window.confirm("登出後會清除本機登入資料並登出此裝置，下次需重新掃碼。確定要登出嗎？")) return;
+  logoutButton.disabled = true;
+  send({ type: "auth:logout" });
+});
 
 function selectChannel(item: EventTarget | null): void {
   const id = (item as HTMLElement | null)?.closest<HTMLElement>("li")?.dataset.channelId;

@@ -26,9 +26,14 @@
         <header class="me">
           <strong id="me-name"></strong>
           <span id="listen-state" class="pill"></span>
+          <button id="logout" type="button" class="ghost">登出</button>
         </header>
-        <input id="filter" type="search" placeholder="搜尋聊天室" aria-label="搜尋聊天室" autocomplete="off" />
-        <ul id="channels" role="listbox" aria-label="聊天室"></ul>
+        <div class="tabs" role="tablist" aria-label="清單類型">
+          <button id="tab-chats" class="tab" type="button" role="tab" aria-selected="true" aria-controls="channels">聊天<span id="chats-unread" class="tab-badge" hidden></span></button>
+          <button id="tab-friends" class="tab" type="button" role="tab" aria-selected="false" aria-controls="channels" tabindex="-1">好友</button>
+        </div>
+        <input id="filter" type="search" placeholder="搜尋聊天" aria-label="搜尋" autocomplete="off" />
+        <ul id="channels" role="listbox" aria-label="清單"></ul>
         <p id="channels-empty" hidden>尚無聊天室。</p>
       </aside>
       <section class="conversation" aria-label="訊息">
