@@ -12,10 +12,14 @@ export type ServerFrame =
   | { type: "message"; message: Message }
   | { type: "message:edit"; message: Message }
   | { type: "status"; state: ListenState }
+  | { type: "history"; requestId: string; chatId: string; messages: Message[]; hasMore: boolean; cursor?: string }
+  | { type: "sent"; requestId: string; messageId: string }
   | { type: "error"; requestId?: string; code: string; message: string };
 
 export type ClientFrame =
   | { type: "auth:start" }
   | { type: "auth:logout" }
+  | { type: "history:fetch"; requestId: string; chatId: string; limit?: number; before?: string }
+  | { type: "message:send"; requestId: string; chatId: string; text?: string; mediaId?: string; sticker?: { packageId: number; stickerId: number } }
   | { type: "channels:refresh" }
   | { type: "ping" };

@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 export interface MediaBytes {
   mime: string;
   bytes: Buffer;
@@ -22,6 +24,7 @@ export function isMediaId(id: string): boolean {
 export class MediaService {
   private cache = new Map<string, MediaBytes>();
   private inflight = new Map<string, Promise<MediaBytes | undefined>>();
+  private uploads = new Map<string, { media: MediaBytes; expires: number }>();
   private size = 0;
 
   constructor(private readonly maxBytes: number, private readonly source: StickerSource) {}
@@ -58,8 +61,51 @@ export class MediaService {
     }
   }
 
+  /** Holds an uploaded image until the browser references it from `message:send`. */
+  putUpload(media: MediaBytes, now = Date.now()): string {
+    this.pruneUploads(now);
+    const id = `upload-${randomBytes(16).toString("hex")}`;
+    this.uploads.set(id, { media, expires: now + UPLOAD_TTL_MS });
+    return id;
+  }
+
+  getUpload(id: string, now = Date.now()): MediaBytes | undefined {
+    this.pruneUploads(now);
+    return this.uploads.get(id)?.media;
+  }
+
+  dropUpload(id: string): void {
+    this.uploads.delete(id);
+  }
+
+  private pruneUploads(now: number): void {
+    for (const [id, entry] of this.uploads) if (entry.expires <= now) this.uploads.delete(id);
+    // Make room for one more: oldest first (Map iterates in insertion order).
+    for (const id of this.uploads.keys()) {
+      if (this.uploads.size < MAX_PENDING_UPLOADS) break;
+      this.uploads.delete(id);
+    }
+  }
+
   clear(): void {
     this.cache.clear();
+    this.uploads.clear();
     this.size = 0;
   }
+}
+
+const UPLOAD_ID = /^upload-[a-f0-9]{32}$/;
+const UPLOAD_TTL_MS = 10 * 60 * 1000;
+const MAX_PENDING_UPLOADS = 8;
+
+export function isUploadId(id: string): boolean {
+  return UPLOAD_ID.test(id);
+}
+
+/** Trusts file contents, not the client's Content-Type: only formats LINE displays are accepted. */
+export function sniffImage(bytes: Buffer): "image/png" | "image/jpeg" | "image/gif" | undefined {
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes.length >= 6 && (bytes.subarray(0, 6).toString("latin1") === "GIF87a" || bytes.subarray(0, 6).toString("latin1") === "GIF89a")) return "image/gif";
+  return undefined;
 }

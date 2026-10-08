@@ -32,6 +32,10 @@ export class ChatStore {
     return this.channels[channelId] !== undefined;
   }
 
+  channelOf(channelId: string): Channel | undefined {
+    return this.channels[channelId];
+  }
+
   /** Returns false when the message is an identical duplicate. */
   upsert(message: Message, edited: boolean): boolean {
     const list = this.messages[message.channelId] ?? [];

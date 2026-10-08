@@ -9,6 +9,17 @@ export interface Channel {
   lastMessageAt?: number;
 }
 
+/** What the adapter needs to address a conversation. */
+export type ChannelRef = Pick<Channel, "channelId" | "kind">;
+
+export interface HistoryPage {
+  /** Oldest first. */
+  messages: Message[];
+  hasMore: boolean;
+  /** Opaque cursor to pass back as `before` for the next older page. */
+  cursor?: string;
+}
+
 export interface Message {
   messageId: string;
   channelId: string;

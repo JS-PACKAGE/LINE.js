@@ -11,9 +11,15 @@ import { LoginController } from "../dist/line/login.js";
 import { ChatStore } from "../dist/model/store.js";
 import { MediaService } from "../dist/media/service.js";
 
+export const CHAT = `c${"a".repeat(32)}`;
+
 class FakeProvider {
   restoreResult = true;
-  channels = [{ channelId: "c1", kind: "group", name: "測試群組" }];
+  channels = [{ channelId: "c1", kind: "group", name: "測試群組" }, { channelId: CHAT, kind: "group", name: "真實格式群組" }];
+  history = { messages: [], hasMore: false };
+  historyError = undefined;
+  calls = [];
+  sendError = undefined;
   async restoreSession() { return this.restoreResult; }
   loginQR(callbacks) { this.callbacks = callbacks; return new Promise((resolve) => { this.finish = resolve; }); }
   getProfile() { return { userId: "u-me", displayName: "測試帳號" }; }
@@ -26,6 +32,29 @@ class FakeProvider {
     if (id === "404") return undefined;
     if (id === "500") throw new Error("upstream down");
     return { mime: "image/png", bytes: Buffer.from(`png-${id}`) };
+  }
+  async fetchHistory(channel, limit, before) {
+    this.calls.push(["history", channel, limit, before]);
+    if (this.historyError) throw this.historyError;
+    return this.history;
+  }
+  outgoing(channel, fields) {
+    return { messageId: `sent-${this.calls.length}`, channelId: channel.channelId, channelKind: channel.kind, senderId: "u-me", senderName: "測試帳號", contentType: "NONE", createdAt: Date.now(), ...fields };
+  }
+  async sendText(channel, text) {
+    this.calls.push(["text", channel, text]);
+    if (this.sendError) throw this.sendError;
+    return this.outgoing(channel, { text });
+  }
+  async sendSticker(channel, packageId, stickerId) {
+    this.calls.push(["sticker", channel, packageId, stickerId]);
+    if (this.sendError) throw this.sendError;
+    return this.outgoing(channel, { contentType: "STICKER", mediaId: `sticker-${stickerId}` });
+  }
+  async sendImage(channel, image) {
+    this.calls.push(["image", channel, image.mime, image.bytes.length]);
+    if (this.sendError) throw this.sendError;
+    return { messageId: "image-1" };
   }
 }
 
@@ -41,13 +70,18 @@ async function start(t, { restore = true } = {}) {
   const port = await freePort();
   const root = await mkdtemp(join(tmpdir(), "linejs-hub-"));
   await writeFile(join(root, "index.html"), "<!doctype html><title>test</title>");
-  const config = { server: { host: "127.0.0.1", port }, limits: { frameMaxBytes: 1024 } };
+  const config = {
+    server: { host: "127.0.0.1", port },
+    history: { defaultLimit: 50 },
+    limits: { frameMaxBytes: 1024, textMaxLength: 20, sendsPerSecond: 5, uploadMaxBytes: 2048, uploadsPerMinute: 3 },
+  };
   const provider = new FakeProvider();
   provider.restoreResult = restore;
   const login = new LoginController(provider);
   const store = new ChatStore(500);
-  const web = createWebServer(config, root, new MediaService(1024, provider));
-  const hub = createHub({ server: web.server, authorizeUpgrade: web.authorizeUpgrade, config, login, provider, store, serverVersion: "test" });
+  const media = new MediaService(1024, provider);
+  const web = createWebServer(config, root, media);
+  const hub = createHub({ server: web.server, authorizeUpgrade: web.authorizeUpgrade, config, login, provider, store, media, serverVersion: "test" });
   await new Promise((resolve) => web.server.listen(port, "127.0.0.1", resolve));
   t.after(async () => {
     hub.close();
@@ -56,7 +90,7 @@ async function start(t, { restore = true } = {}) {
     await rm(root, { recursive: true, force: true });
   });
   const cookie = (await fetch(`http://127.0.0.1:${port}/`)).headers.get("set-cookie").split(";")[0];
-  return { port, cookie, login, hub, provider };
+  return { port, cookie, login, hub, provider, media, store };
 }
 
 function connect(port, headers) {
@@ -157,7 +191,7 @@ test("malformed, unknown and oversized frames are rejected without leaking detai
   await client.opened;
   client.socket.send("not json");
   assert.equal((await client.until((frame) => frame.type === "error")).code, "INVALID_REQUEST");
-  client.socket.send(JSON.stringify({ type: "history:fetch" }));
+  client.socket.send(JSON.stringify({ type: "history:purge" }));
   assert.equal((await client.until((frame) => frame.code === "UNKNOWN_TYPE")).message, "不支援的請求類型。");
   const closed = new Promise((resolve) => client.socket.once("close", resolve));
   client.socket.send(JSON.stringify({ type: "ping", pad: "x".repeat(2048) }));
@@ -230,4 +264,163 @@ test("media route serves stickers only to the browser that holds the cookie and 
   assert.equal(broken.status, 502);
   assert.deepEqual(await broken.json(), { code: "MEDIA_UNAVAILABLE" });
   assert.equal((await fetch(`${base}sticker-123`, { method: "POST", headers: { Cookie: cookie } })).status, 405);
+});
+
+async function signedIn(t, options) {
+  const env = await start(t, options);
+  await env.login.restore();
+  const client = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => client.socket.close());
+  await client.opened;
+  await client.until((frame) => frame.type === "channels" && frame.channels.some((channel) => channel.channelId === CHAT));
+  const request = (frame) => client.socket.send(JSON.stringify(frame));
+  return { ...env, client, request };
+}
+
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 7)]);
+
+async function upload(env, body, headers = {}) {
+  return fetch(`http://127.0.0.1:${env.port}/media/upload`, {
+    method: "POST",
+    headers: { Cookie: env.cookie, Origin: `http://127.0.0.1:${env.port}`, "Content-Type": "image/png", ...headers },
+    body,
+  });
+}
+
+const older = (id, createdAt) => ({ messageId: id, channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: `舊訊息 ${id}`, contentType: "NONE", createdAt });
+
+test("history is fetched with the default or requested limit, paged by cursor, and kept in memory for reconnects", async (t) => {
+  const env = await signedIn(t);
+  env.provider.history = { messages: [older("h1", 10), older("h2", 20)], hasMore: true, cursor: "123:456" };
+  env.request({ type: "history:fetch", requestId: "r1", chatId: CHAT });
+  const page = await env.client.until((frame) => frame.type === "history" && frame.requestId === "r1");
+  assert.deepEqual(page.messages.map((message) => message.messageId), ["h1", "h2"]);
+  assert.equal(page.hasMore, true);
+  assert.equal(page.cursor, "123:456");
+  env.request({ type: "history:fetch", requestId: "r2", chatId: CHAT, limit: 20, before: "123:456" });
+  await env.client.until((frame) => frame.type === "history" && frame.requestId === "r2");
+  assert.deepEqual(env.provider.calls.map(([, , limit, before]) => [limit, before]), [[50, undefined], [20, "123:456"]]);
+  assert.deepEqual(env.provider.calls[0][1], { channelId: CHAT, kind: "group" });
+
+  const late = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => late.socket.close());
+  await late.opened;
+  await late.until((frame) => frame.type === "message" && frame.message.messageId === "h2");
+});
+
+test("malformed history requests are refused before LINE is contacted; failures never leak internals", async (t) => {
+  const env = await signedIn(t);
+  const bad = [
+    { requestId: "a1", chatId: CHAT, limit: 0 }, { requestId: "a2", chatId: CHAT, limit: 101 }, { requestId: "a3", chatId: CHAT, limit: 1.5 },
+    { requestId: "a4", chatId: CHAT, before: "x y" }, { requestId: "a5", chatId: CHAT, before: 5 }, { requestId: "a6", chatId: "../etc" }, { chatId: CHAT },
+  ];
+  for (const frame of bad) env.request({ type: "history:fetch", ...frame });
+  await env.client.until(() => env.client.frames.filter((frame) => frame.code === "INVALID_REQUEST").length === bad.length);
+  assert.equal(env.client.frames.filter((frame) => frame.code === "INVALID_REQUEST").length, bad.length);
+  assert.ok(env.client.frames.some((frame) => frame.code === "INVALID_REQUEST" && frame.requestId === "a2"));
+  assert.equal(env.provider.calls.length, 0);
+
+  env.request({ type: "history:fetch", requestId: "u1", chatId: `c${"b".repeat(32)}` });
+  assert.equal((await env.client.until((frame) => frame.requestId === "u1")).code, "UNKNOWN_CHAT");
+  assert.equal(env.provider.calls.length, 0);
+
+  env.provider.historyError = new Error("LINE said no: token=secret-token");
+  env.request({ type: "history:fetch", requestId: "f1", chatId: CHAT });
+  const failure = await env.client.until((frame) => frame.requestId === "f1");
+  assert.equal(failure.code, "HISTORY_FAILED");
+  assert.ok(!JSON.stringify(failure).includes("secret"));
+});
+
+test("text and sticker sends are validated, acknowledged to the sender and shown to every client once", async (t) => {
+  const env = await signedIn(t);
+  const other = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => other.socket.close());
+  await other.opened;
+  await other.until((frame) => frame.type === "auth:ready");
+
+  env.request({ type: "message:send", requestId: "t1", chatId: CHAT, text: "哈囉" });
+  const ack = await env.client.until((frame) => frame.type === "sent" && frame.requestId === "t1");
+  const shown = await other.until((frame) => frame.type === "message" && frame.message.text === "哈囉");
+  assert.equal(shown.message.messageId, ack.messageId);
+  assert.ok(!other.frames.some((frame) => frame.type === "sent"), "the ack is for the sender only");
+
+  env.request({ type: "message:send", requestId: "s1", chatId: CHAT, sticker: { packageId: 11537, stickerId: 52002734 } });
+  await env.client.until((frame) => frame.type === "sent" && frame.requestId === "s1");
+  assert.deepEqual(env.provider.calls.slice(-1)[0].slice(2), [11537, 52002734]);
+
+  const before = env.provider.calls.length;
+  const refused = [
+    { requestId: "b1", text: "x".repeat(21) },
+    { requestId: "b4", text: "hi", sticker: { packageId: 1, stickerId: 1 } },
+    { requestId: "c2", mediaId: "../../session.json" },
+  ];
+  // The full validation matrix lives in requests.test.mjs; every frame here also spends send budget.
+  for (const frame of refused) env.request({ type: "message:send", chatId: CHAT, ...frame });
+  await env.client.until((frame) => frame.requestId === "c2");
+  assert.equal(env.client.frames.filter((frame) => frame.code === "INVALID_REQUEST").length, refused.length);
+  assert.equal(env.provider.calls.length, before, "nothing invalid reaches LINE");
+});
+
+test("a failed send reports a generic error for its request id and the sending rate is capped per connection", async (t) => {
+  const env = await signedIn(t);
+  env.request({ type: "message:send", requestId: "n1", chatId: `c${"b".repeat(32)}`, text: "hi" });
+  assert.equal((await env.client.until((frame) => frame.requestId === "n1")).code, "UNKNOWN_CHAT");
+  env.provider.sendError = new Error("LINE rejected: access token abc123");
+  env.request({ type: "message:send", requestId: "e1", chatId: CHAT, text: "hi" });
+  const failure = await env.client.until((frame) => frame.requestId === "e1");
+  assert.equal(failure.code, "SEND_FAILED");
+  assert.ok(!JSON.stringify(failure).includes("abc123"));
+  assert.ok(!env.client.frames.some((frame) => frame.type === "message" && frame.message.text === "hi"), "a failed send is never shown as delivered");
+
+  env.provider.sendError = undefined;
+  for (let index = 0; index < 8; index += 1) env.request({ type: "message:send", requestId: `burst${index}`, chatId: CHAT, text: `m${index}` });
+  await env.client.until((frame) => frame.requestId === "burst7");
+  const limited = env.client.frames.filter((frame) => frame.code === "RATE_LIMITED");
+  assert.ok(limited.length >= 3, "more than 5 sends per second are refused");
+  assert.ok(limited.every((frame) => frame.requestId?.startsWith("burst")));
+  assert.ok(env.provider.calls.filter(([kind]) => kind === "text").length <= 5 + 1);
+});
+
+test("an uploaded image is sent once; unknown, expired or reused uploads are refused", async (t) => {
+  const env = await signedIn(t);
+  const response = await upload(env, PNG);
+  assert.equal(response.status, 200);
+  const { mediaId } = await response.json();
+  assert.match(mediaId, /^upload-[a-f0-9]{32}$/);
+
+  env.request({ type: "message:send", requestId: "i1", chatId: CHAT, mediaId });
+  const ack = await env.client.until((frame) => frame.type === "sent" && frame.requestId === "i1");
+  assert.equal(ack.messageId, "image-1");
+  assert.deepEqual(env.provider.calls.slice(-1)[0], ["image", { channelId: CHAT, kind: "group" }, "image/png", PNG.length]);
+
+  env.request({ type: "message:send", requestId: "i2", chatId: CHAT, mediaId });
+  assert.equal((await env.client.until((frame) => frame.requestId === "i2")).code, "UPLOAD_EXPIRED");
+  env.request({ type: "message:send", requestId: "i3", chatId: CHAT, mediaId: `upload-${"0".repeat(32)}` });
+  assert.equal((await env.client.until((frame) => frame.requestId === "i3")).code, "UPLOAD_EXPIRED");
+
+  const kept = (await (await upload(env, PNG)).json()).mediaId;
+  env.provider.sendError = new Error("down");
+  env.request({ type: "message:send", requestId: "i4", chatId: CHAT, mediaId: kept });
+  assert.equal((await env.client.until((frame) => frame.requestId === "i4")).code, "SEND_FAILED");
+  env.provider.sendError = undefined;
+  env.request({ type: "message:send", requestId: "i5", chatId: CHAT, mediaId: kept });
+  await env.client.until((frame) => frame.type === "sent" && frame.requestId === "i5");
+});
+
+test("the upload route only accepts same-origin, cookie-bound, real, small images at a limited rate", async (t) => {
+  const env = await start(t);
+  assert.equal((await upload(env, PNG, { Cookie: "" })).status, 403, "no cookie");
+  assert.equal((await upload(env, PNG, { Origin: "http://evil.example" })).status, 403, "foreign origin");
+  assert.equal((await upload(env, PNG, { "Content-Type": "text/plain" })).status, 415);
+  assert.equal((await upload(env, Buffer.alloc(3000, 1))).status, 413, "over the configured size");
+  const fake = await upload(env, Buffer.from("<svg onload=alert(1)>"));
+  assert.equal(fake.status, 400, "contents are sniffed, the declared type is not trusted");
+  assert.deepEqual(await fake.json(), { code: "INVALID_IMAGE" });
+  for (const bytes of [Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0]), Buffer.from("GIF89a....")]) {
+    assert.equal((await upload(env, bytes, { "Content-Type": "image/jpeg" })).status, 200);
+  }
+  // 3 counted attempts (1 invalid + 2 accepted) exhaust the budget of 3 per minute.
+  const limited = await upload(env, PNG);
+  assert.equal(limited.status, 429);
+  assert.deepEqual(await limited.json(), { code: "RATE_LIMITED" });
 });

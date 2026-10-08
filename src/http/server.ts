@@ -3,7 +3,8 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import type { Config } from "../config.js";
-import { isMediaId, type MediaService } from "../media/service.js";
+import { SlidingWindowLimiter } from "../limit.js";
+import { isMediaId, sniffImage, type MediaService } from "../media/service.js";
 
 export interface WebServer {
   server: Server;
@@ -32,6 +33,56 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
     return hasBrowserCookie(request);
   }
 
+  // Uploads are rare and single-user: one budget for the whole (single-browser) server.
+  const uploadLimiter = new SlidingWindowLimiter(config.limits.uploadsPerMinute, 60_000);
+
+  async function handleUpload(request: IncomingMessage, response: ServerResponse, host: string): Promise<void> {
+    // Same-origin and cookie-bound: another website must not be able to queue images for sending.
+    if (request.headers.origin !== `http://${host}` || !hasBrowserCookie(request)) {
+      json(response, 403, { code: "FORBIDDEN" });
+      return;
+    }
+    if (!(request.headers["content-type"] ?? "").startsWith("image/")) {
+      json(response, 415, { code: "UNSUPPORTED_MEDIA_TYPE" });
+      return;
+    }
+    const declared = Number(request.headers["content-length"]);
+    if (!Number.isSafeInteger(declared) || declared <= 0) {
+      json(response, 400, { code: "INVALID_REQUEST" });
+      return;
+    }
+    const tooLarge = (): void => {
+      response.writeHead(413, { "Content-Type": "application/json; charset=utf-8", Connection: "close" });
+      response.end(JSON.stringify({ code: "TOO_LARGE" }), () => request.destroy());
+    };
+    if (declared > config.limits.uploadMaxBytes) {
+      tooLarge();
+      return;
+    }
+    if (!uploadLimiter.allow()) {
+      json(response, 429, { code: "RATE_LIMITED" });
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of request as AsyncIterable<Buffer>) {
+      total += chunk.length;
+      // Content-Length can lie; the byte count we actually receive is what is capped.
+      if (total > config.limits.uploadMaxBytes) {
+        tooLarge();
+        return;
+      }
+      chunks.push(chunk);
+    }
+    const bytes = Buffer.concat(chunks);
+    const detected = sniffImage(bytes);
+    if (!detected) {
+      json(response, 400, { code: "INVALID_IMAGE" });
+      return;
+    }
+    json(response, 200, { mediaId: media.putUpload({ mime: detected, bytes }) });
+  }
+
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("X-Content-Type-Options", "nosniff");
@@ -42,11 +93,15 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
       json(response, 403, { code: "FORBIDDEN" });
       return;
     }
+    const url = new URL(request.url ?? "/", `http://${host}`);
+    if (request.method === "POST" && url.pathname === "/media/upload") {
+      await handleUpload(request, response, host);
+      return;
+    }
     if (request.method !== "GET" && request.method !== "HEAD") {
       json(response, 405, { code: "METHOD_NOT_ALLOWED" });
       return;
     }
-    const url = new URL(request.url ?? "/", `http://${host}`);
     if (url.pathname.startsWith("/media/")) {
       const id = url.pathname.slice("/media/".length);
       if (!hasBrowserCookie(request) || !isMediaId(id)) {

@@ -37,6 +37,7 @@ async function main(): Promise<void> {
     authorizeUpgrade: web.authorizeUpgrade,
     config,
     login,
+    media,
     provider,
     store,
     serverVersion: manifest.version,
