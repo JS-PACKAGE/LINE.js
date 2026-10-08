@@ -2,11 +2,11 @@
 
 本機 TypeScript LINE 網頁客戶端，以釘選的 [@evex/linejs v3.4.2](https://github.com/evex-dev/linejs/tree/v3.4.2) 連線 LINE，經 WebSocket 同步頻道與訊息、同埠 HTTP 提供網頁。
 
-> 開發狀態：QR 登入、session 復用、頻道清單與**即時訊息接收**已可用；登入成功後網頁自動切換到聊天視窗。歷史載入、發送與圖片／貼圖顯示尚未實作（Phase 3）。Gate 1 以次要帳號掃碼的驗收仍待小語確認。
+> 開發狀態：QR 登入／登出、session 復用、頻道清單（好友與聊天分頁、大頭照）、即時與歷史訊息、文字／圖片／貼圖發送、收到的圖片／GIF／影片／語音內嵌顯示、他人已讀與未讀數已可用。Gate 1 以次要帳號掃碼的驗收仍待小語確認。
 
 ## 定案用途與範圍
 
-完整目標包含 QR 掃碼登入、session 復用、好友／群組／聊天室／社群清單、即時訊息及編輯事件、歷史分頁、文字／圖片／貼圖發送與顯示。影片、語音、檔案僅顯示佔位。不提供公開部署、多帳號、通話或套件發布；尚未交付的功能以 Gate 狀態為準。
+完整目標包含 QR 掃碼登入／登出、session 復用、好友／群組／聊天室／社群清單、即時訊息及編輯事件、歷史分頁、文字／圖片／貼圖發送，以及圖片／GIF／影片／語音／貼圖的顯示。檔案僅顯示佔位。不提供公開部署、多帳號、通話或套件發布；尚未交付的功能以 Gate 狀態為準。
 
 本作品使用非官方 LINE API，可能造成帳號限制或封鎖。**請先用次要帳號驗證**，不要直接以主帳號測試。
 
@@ -20,7 +20,7 @@ flowchart LR
     Backend <-->|同埠 HTTP 靜態頁與媒體| Browser
 ```
 
-後端僅綁定 `127.0.0.1`，預設埠 `3789`。後端 `tsc` 建置至 `dist/`；前端 Vite 建置至 `dist/web/`。訊息只存記憶體（每頻道最多 500 則，同 id 去重，編輯覆寫），不使用資料庫；媒體 LRU 於 Phase 3 實作。
+後端僅綁定 `127.0.0.1`，預設埠 `3789`。後端 `tsc` 建置至 `dist/`；前端 Vite 建置至 `dist/web/`。訊息只存記憶體（每頻道最多 500 則，同 id 去重，編輯覆寫），不使用資料庫；貼圖、大頭照與收到的媒體經後端以 LRU（預設 200MB）快取後由同埠 HTTP 提供。
 
 ## 環境需求
 
@@ -41,7 +41,7 @@ npm run build
 npm start
 ```
 
-開啟 `http://127.0.0.1:3789`。有可復用的 `session.json` 時直接進入聊天視窗；否則點「產生登入 QR code」，用次要帳號掃描並確認畫面 PIN。QR URL 與 PIN 只經 WebSocket 送給按下按鈕的那個連線一次，不入日誌或檔案；重新整理不會重播。失敗不自動循環，須再按按鈕。聊天視窗左側為好友／群組／聊天室／社群，右側顯示即時收到的訊息（影片、語音、檔案等僅顯示類型佔位）。
+開啟 `http://127.0.0.1:3789`。有可復用的 `session.json` 時直接進入聊天視窗；否則點「產生登入 QR code」，用次要帳號掃描並確認畫面 PIN。QR URL 與 PIN 只經 WebSocket 送給按下按鈕的那個連線一次，不入日誌或檔案；重新整理不會重播。失敗不自動循環，須再按按鈕。左側分「聊天」與「好友」兩個分頁（含大頭照與未讀數）；右側為訊息：連續同一人的訊息合併顯示頭像與名稱、往上捲動載入更早的歷史、自己發的訊息顯示「已讀」或「已讀 N」、開啟有未讀的聊天會標出未讀分隔線。可傳送文字（Enter 送出、Shift+Enter 換行）、圖片與貼圖（輸入貼圖包 ID 與貼圖 ID）；收到的圖片／GIF 直接顯示（點擊放大）、影片按下播放才載入、語音可直接播放。檔案等僅顯示類型佔位。右上「登出」會先跳出確認框，確認後撤銷 LINE 端登入並清除 `session.json` 與快取。
 
 `session.json` 包含憑證與 E2EE key material，必須以權限 `600` 保存，不得分享或提交。`config.yaml` 為個人設定，不入版本控制。
 
@@ -55,7 +55,7 @@ npm start
 
 ## 設定
 
-`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`limits`。目前先驗證全部欄位；歷史、訊息與媒體限制於後續 Gate 實作套用。
+`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`limits`（`limits.downloadMaxBytes` 可省略，舊設定檔照常運作）。
 
 - 監聽 host：`127.0.0.1`；不得改成 `0.0.0.0` 或對外提供服務。
 - port：預設 `3789`，可調整；host 與 port 從 `config.yaml` 讀取，程式不得寫死。
@@ -63,7 +63,8 @@ npm start
 - 歷史筆數：預設 50，單次最多 100。
 - 每頻道訊息快取：最多 500 則；媒體 LRU：預設 200MB。
 - WS frame：最多 256KB；文字：最多 8000 字。
-- 發送：每 WS 連線最多每秒 5 次；圖片上傳：每檔最多 10MB、每連線每分鐘最多 5 次。
+- 發送：每 WS 連線最多每秒 5 次；圖片上傳：每檔最多 10MB（僅 PNG／JPEG／GIF）、每連線每分鐘最多 5 次。
+- 收到的媒體：每個最多 50MB（`limits.downloadMaxBytes`），超過者只顯示類型標籤。
 
 ## 通訊協定
 
@@ -80,14 +81,17 @@ npm start
 | Server → Client | `channels` | 頻道 snapshot；新增頻道或刷新後重送 |
 | Server → Client | `message` / `message:edit` | 即時訊息與覆寫既有訊息 |
 | Server → Client | `status` / `error` | LINE 監聽狀態與 generic 錯誤 |
-| Client → Server | `auth:start` | 開始 QR 登入（僅 `idle`／`error` 時有效） |
+| Server → Client | `history` / `sent` | 歷史一頁（含 `cursor`）／發送確認 |
+| Server → Client | `read` | 他人已讀位置（開啟聊天的快照與即時增量） |
+| Client → Server | `auth:start` / `auth:logout` | 開始 QR 登入／登出 |
+| Client → Server | `history:fetch` / `message:send` | 載入歷史一頁／發送文字、圖片（先 `POST /media/upload`）或貼圖 |
 | Client → Server | `channels:refresh` / `ping` | 重新載入頻道／連線保活 |
 
-後續 Gate 才提供：`history:fetch`／`history`、`message:send`／`sent`、`GET /media/:mediaId`、`POST /media/upload`。WS 不傳媒體位元組。
+HTTP：`GET /media/:mediaId`（貼圖、大頭照、收到的圖片／影片／語音；支援 Range）與 `POST /media/upload`（圖片上傳）皆需瀏覽器 cookie 與同源。WS 不傳媒體位元組。
 
 ## 建置與驗證
 
-以下命令已提供；`npm test` 會先建置，再以隔離的假 provider 測試設定、session、登入狀態、訊息快取與 WS（升級驗證、QR 只送發起者、去重／編輯、畸形與超大 frame）：
+以下命令已提供；`npm test` 會先建置，再以隔離的假 provider 測試設定、session、登入／登出、訊息快取、歷史與發送驗證與限流、媒體路由（含 Range）、已讀與 WS 安全：
 
 ```sh
 npm run typecheck
@@ -98,7 +102,7 @@ npm audit
 
 測試使用 `node --test` 與 Mock Provider；Mock 不代替真實 LINE 驗收。Gate 1 需要次要帳號掃碼後 60 秒內收到一則真實訊息，Gate 2–4 另驗證網頁同步、歷史、發送與媒體。全部 Gate 及驗收條件見 [PLAN.md](PLAN.md)。
 
-已驗證：typecheck、build、18 項測試、`npm audit` 無 high；真實 LINE 帳號的 session 復用、398 個頻道清單載入、網頁自動進入聊天視窗，以及好友／群組／社群的即時訊息廣播。尚未驗證：次要帳號首次掃碼完整流程（需手機）、listen 中斷後的退避重連。
+已驗證：typecheck、build、51 項測試、`npm audit` 無 high。真實 LINE 帳號：session 復用、頻道清單、好友／群組／社群的即時訊息、talk 歷史分頁（無重複、有序、可翻到底）、OpenChat 歷史分頁、大頭照與非好友名稱查詢、OpenChat 圖片下載與顯示、網頁上重新掃碼登入（服務日誌出現 QR 登入流程，換成另一個帳號）。瀏覽器以假 provider 驗證：往上翻頁、輸入與發送流程、貼圖面板、圖片上傳、頭像與備援字母、已讀／未讀標示、圖片放大、影片（Range）與語音播放、確認對話框。**尚未驗證**（需要對真實聯絡人產生副作用或對應的真實訊息）：真實的文字／貼圖／圖片發送、LINE 端登出的伺服器確認、E2EE 圖片的接收解密、1:1 已讀事件欄位格式（已知形狀不符時會忽略）、GIF 與影片的真實來源、listen 中斷後的退避重連。
 
 ## 開發規範與授權
 
