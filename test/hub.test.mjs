@@ -41,6 +41,22 @@ class FakeProvider {
     if (id === "404") return undefined;
     return { mime: "video/mp4", bytes: Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypisom"), Buffer.from(`-${id}-0123456789`)]) };
   }
+  stickerPackages = [];
+  stickersError = undefined;
+  async fetchStickerPackages() {
+    this.calls.push(["stickers"]);
+    if (this.stickersError) throw this.stickersError;
+    return this.stickerPackages;
+  }
+  async fetchStickerPack(id) {
+    if (id === "404") return undefined;
+    return { mime: "image/png", bytes: Buffer.from(`icon-${id}`) };
+  }
+  markError = undefined;
+  async markRead(channel, messageId) {
+    this.calls.push(["read", channel, messageId]);
+    if (this.markError) throw this.markError;
+  }
   readPositions = [];
   readError = undefined;
   async fetchReadPositions(channel) {
@@ -81,13 +97,14 @@ async function freePort() {
   return port;
 }
 
-async function start(t, { restore = true } = {}) {
+async function start(t, { restore = true, readReceipts = true } = {}) {
   const port = await freePort();
   const root = await mkdtemp(join(tmpdir(), "linejs-hub-"));
   await writeFile(join(root, "index.html"), "<!doctype html><title>test</title>");
   const config = {
     server: { host: "127.0.0.1", port },
     history: { defaultLimit: 50 },
+    chat: { sendReadReceipts: readReceipts },
     limits: { frameMaxBytes: 1024, textMaxLength: 20, sendsPerSecond: 5, uploadMaxBytes: 2048, uploadsPerMinute: 3 },
   };
   const provider = new FakeProvider();
@@ -522,4 +539,76 @@ test("received media is served with byte ranges and is never cached by the brows
   for (const bad of ["msg-", "msg-12a", "msg-1234567890123456789012345", "msg-100-p"]) {
     assert.equal((await fetch(`http://127.0.0.1:${port}/media/${bad}`, headers())).status, 404, bad);
   }
+});
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
+const readCalls = (env) => env.provider.calls.filter(([kind]) => kind === "read");
+
+test("an open chat is reported read once per position, only for messages the server has shown", async (t) => {
+  const env = await signedIn(t);
+  env.provider.history = { messages: [older("1001", 10), older("1002", 20), older("1003", 30)], hasMore: false };
+  env.request({ type: "history:fetch", requestId: "r1", chatId: CHAT });
+  await env.client.until((frame) => frame.type === "history");
+
+  env.request({ type: "chat:read", chatId: CHAT, messageId: "1002" });
+  await settle();
+  assert.deepEqual(readCalls(env), [["read", { channelId: CHAT, kind: "group" }, "1002"]]);
+  for (const messageId of ["1002", "1001"]) env.request({ type: "chat:read", chatId: CHAT, messageId });
+  await settle();
+  assert.equal(readCalls(env).length, 1, "the same or an older position is not sent again");
+
+  const refused = [
+    { chatId: CHAT, messageId: "9999" }, { chatId: `c${"b".repeat(32)}`, messageId: "1003" },
+    { chatId: CHAT, messageId: "12ab" }, { chatId: "../x", messageId: "1003" }, { chatId: CHAT },
+  ];
+  for (const frame of refused) env.request({ type: "chat:read", ...frame });
+  await settle();
+  assert.equal(readCalls(env).length, 1, "unknown messages, chats and malformed frames never reach LINE");
+  assert.ok(!env.client.frames.some((frame) => frame.type === "error"), "the browser is not told about refused read reports");
+  // The per-connection limiter (10/s, shared with history) has seen a burst above; let its window pass.
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  env.provider.markError = new Error("token=secret-token");
+  env.request({ type: "chat:read", chatId: CHAT, messageId: "1003" });
+  await settle();
+  env.provider.markError = undefined;
+  env.request({ type: "chat:read", chatId: CHAT, messageId: "1003" });
+  await settle();
+  assert.deepEqual(readCalls(env).map(([, , id]) => id), ["1002", "1003", "1003"], "a failed report is retried, not remembered");
+  assert.ok(!env.client.frames.some((frame) => frame.type === "error"));
+});
+
+test("read reports are not sent to LINE when receipts are switched off", async (t) => {
+  const env = await signedIn(t, { readReceipts: false });
+  env.provider.history = { messages: [older("1001", 10)], hasMore: false };
+  env.request({ type: "history:fetch", requestId: "r1", chatId: CHAT });
+  await env.client.until((frame) => frame.type === "history");
+  env.request({ type: "chat:read", chatId: CHAT, messageId: "1001" });
+  await settle();
+  assert.equal(readCalls(env).length, 0);
+});
+
+test("owned sticker packages are listed on request, with generic errors and validated request ids", async (t) => {
+  const env = await signedIn(t);
+  env.provider.stickerPackages = [{ packageId: 11537, name: "測試貼圖", stickerIds: [1, 2, 3], animated: true }];
+  env.request({ type: "stickers:list", requestId: "s1" });
+  const listed = await env.client.until((frame) => frame.type === "stickers" && frame.requestId === "s1");
+  assert.deepEqual(listed.packages, env.provider.stickerPackages);
+
+  env.provider.stickersError = new Error("LINE said no: token=secret-token");
+  env.request({ type: "stickers:list", requestId: "s2" });
+  const failure = await env.client.until((frame) => frame.requestId === "s2");
+  assert.equal(failure.code, "STICKERS_FAILED");
+  assert.ok(!JSON.stringify(failure).includes("secret"));
+
+  env.request({ type: "stickers:list", requestId: "bad id!" });
+  env.request({ type: "stickers:list" });
+  await env.client.until(() => env.client.frames.filter((frame) => frame.code === "INVALID_REQUEST").length === 2);
+
+  const base = `http://127.0.0.1:${env.port}/media/`;
+  const icon = await fetch(`${base}stickerpack-11537`, { headers: { Cookie: env.cookie } });
+  assert.equal(icon.status, 200);
+  assert.equal(await icon.text(), "icon-11537");
+  assert.equal((await fetch(`${base}stickerpack-404`, { headers: { Cookie: env.cookie } })).status, 404);
+  assert.equal((await fetch(`${base}stickerpack-11537`)).status, 404, "no cookie");
+  assert.equal((await fetch(`${base}stickerpack-1x`, { headers: { Cookie: env.cookie } })).status, 404);
 });

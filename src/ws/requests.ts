@@ -67,3 +67,16 @@ export function parseSend(frame: Record<string, unknown>, textMaxLength: number)
   if (!positiveInteger(packageId) || !positiveInteger(stickerId)) return refuse;
   return { ok: true, value: { ...base, kind: "sticker", packageId, stickerId } };
 }
+
+export interface ReadRequest {
+  chatId: string;
+  messageId: string;
+}
+
+/** "I have read this chat up to this message" — the id must be LINE's numeric message id. */
+export function parseChatRead(frame: Record<string, unknown>): Parsed<ReadRequest> {
+  const { chatId, messageId } = frame;
+  if (typeof chatId !== "string" || !CHAT_ID.test(chatId)) return { ok: false };
+  if (typeof messageId !== "string" || !/^\d{1,24}$/.test(messageId)) return { ok: false };
+  return { ok: true, value: { chatId, messageId } };
+}

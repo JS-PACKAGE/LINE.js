@@ -22,6 +22,10 @@ function source(sizes = {}) {
       calls.push(["msg", id]);
       return png(sizes[id] ?? 10);
     },
+    async fetchStickerPack(id) {
+      calls.push(["pack", id]);
+      return png(sizes[id] ?? 10);
+    },
   };
 }
 

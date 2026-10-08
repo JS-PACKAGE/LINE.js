@@ -8,7 +8,7 @@ import type { MediaService } from "../media/service.js";
 import type { ChannelKind, Message, ReadPosition } from "../model/dto.js";
 import type { ChatStore } from "../model/store.js";
 import type { ClientFrame, ListenState, ServerFrame } from "./protocol.js";
-import { parseHistory, parseSend, requestIdOf } from "./requests.js";
+import { parseChatRead, parseHistory, parseSend, requestIdOf } from "./requests.js";
 
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const HISTORY_PER_SECOND = 10;
@@ -45,6 +45,7 @@ const GENERIC = {
   RATE_LIMITED: "操作太頻繁，請稍後再試。",
   UNKNOWN_CHAT: "找不到這個聊天室。",
   UPLOAD_EXPIRED: "圖片已過期，請重新選擇。",
+  STICKERS_FAILED: "無法載入貼圖清單，請稍後重試。",
 } as const;
 
 export function createHub(options: HubOptions): Hub {
@@ -53,6 +54,8 @@ export function createHub(options: HubOptions): Hub {
   let status: ListenState = "starting";
   let refreshing: Promise<void> | undefined;
   let refreshTimer: NodeJS.Timeout | undefined;
+  // Newest message id per chat already reported as read, so each position is sent to LINE once.
+  const markedRead = new Map<string, bigint>();
 
   function send(socket: WebSocket, frame: ServerFrame): void {
     if (socket.readyState !== WebSocket.OPEN) return;
@@ -148,6 +151,39 @@ export function createHub(options: HubOptions): Hub {
     broadcast({ type: kind === "edit" ? "message:edit" : "message", message: stored });
   }
 
+  // The browser reports "I read this chat up to here" and gets no answer: a bad or refused frame is dropped.
+  async function handleChatRead(frame: Record<string, unknown>): Promise<void> {
+    const parsed = parseChatRead(frame);
+    if (!parsed.ok || !config.chat.sendReadReceipts || login.state !== "ready") return;
+    const { chatId, messageId } = parsed.value;
+    const channel = store.channelOf(chatId);
+    // Only messages this server has itself shown can be acknowledged.
+    if (!channel || !store.get(messageId, chatId)) return;
+    const id = BigInt(messageId);
+    const known = markedRead.get(chatId);
+    if (known !== undefined && id <= known) return;
+    markedRead.set(chatId, id);
+    try {
+      await provider.markRead({ channelId: chatId, kind: channel.kind }, messageId);
+    } catch (error) {
+      if (known === undefined) markedRead.delete(chatId);
+      else markedRead.set(chatId, known);
+      logFailure("READ_MARK_FAILED", error);
+    }
+  }
+
+  async function handleStickers(socket: WebSocket, frame: Record<string, unknown>): Promise<void> {
+    const requestId = requestIdOf(frame);
+    if (!requestId || login.state !== "ready") return fail(socket, "INVALID_REQUEST", requestId);
+    try {
+      const packages = await provider.fetchStickerPackages();
+      if (login.state === "ready") send(socket, { type: "stickers", requestId, packages });
+    } catch (error) {
+      logFailure("STICKERS_FAILED", error);
+      fail(socket, "STICKERS_FAILED", requestId);
+    }
+  }
+
   function sendChannels(socket: WebSocket): void {
     send(socket, { type: "channels", channels: store.snapshotChannels() });
   }
@@ -183,6 +219,7 @@ export function createHub(options: HubOptions): Hub {
       clearTimeout(refreshTimer);
       store.clear();
       media.clear();
+      markedRead.clear();
       status = "starting";
     }
     broadcast({ type: "auth:state", state });
@@ -230,6 +267,14 @@ export function createHub(options: HubOptions): Hub {
         case "channels:refresh":
           if (login.state === "ready") void refreshChannels();
           else fail(socket, "INVALID_REQUEST");
+          return;
+        case "chat:read":
+          // Silent on purpose (see handleChatRead); the shared limiter keeps a script from hammering LINE.
+          if (historyLimiter.allow()) void handleChatRead(frame as Record<string, unknown>);
+          return;
+        case "stickers:list":
+          if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else void handleStickers(socket, frame as Record<string, unknown>);
           return;
         case "history:fetch":
           if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));

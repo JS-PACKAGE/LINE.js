@@ -11,11 +11,14 @@ export type AvatarHost = "profile" | "obs";
 export interface MediaSource {
   fetchSticker(stickerId: string, animated: boolean): Promise<MediaBytes | undefined>;
   fetchAvatar(host: AvatarHost, hash: string): Promise<MediaBytes | undefined>;
+  /** Tab icon of an owned sticker package. */
+  fetchStickerPack(packageId: string): Promise<MediaBytes | undefined>;
   /** Image, video or audio attached to a message the adapter has seen; undefined when unknown or too large. */
   fetchMessageMedia(messageId: string): Promise<MediaBytes | undefined>;
 }
 
 const STICKER_ID = /^sticker-(\d{1,12})(-a)?$/;
+const STICKER_PACK_ID = /^stickerpack-(\d{1,12})$/;
 const AVATAR_ID = /^avatar-([po])-([A-Za-z0-9_-]{8,200})$/;
 const MESSAGE_ID = /^msg-(\d{1,24})$/;
 
@@ -28,7 +31,7 @@ export function avatarMediaId(host: AvatarHost, hash: string | undefined): strin
 
 /** Media ids that the server is willing to resolve; anything else is rejected before any lookup. */
 export function isMediaId(id: string): boolean {
-  return STICKER_ID.test(id) || AVATAR_ID.test(id) || MESSAGE_ID.test(id);
+  return STICKER_ID.test(id) || STICKER_PACK_ID.test(id) || AVATAR_ID.test(id) || MESSAGE_ID.test(id);
 }
 
 /**
@@ -66,6 +69,8 @@ export class MediaService {
   private load(id: string): Promise<MediaBytes | undefined> {
     const sticker = STICKER_ID.exec(id);
     if (sticker) return this.source.fetchSticker(sticker[1]!, sticker[2] !== undefined);
+    const pack = STICKER_PACK_ID.exec(id);
+    if (pack) return this.source.fetchStickerPack(pack[1]!);
     const avatar = AVATAR_ID.exec(id);
     if (avatar) return this.source.fetchAvatar(avatar[1] === "p" ? "profile" : "obs", avatar[2]!);
     return this.source.fetchMessageMedia(MESSAGE_ID.exec(id)![1]!);

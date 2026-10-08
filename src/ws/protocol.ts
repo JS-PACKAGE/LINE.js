@@ -1,4 +1,4 @@
-import type { AuthState, Channel, Message, Profile, ReadPosition } from "../model/dto.js";
+import type { AuthState, Channel, Message, Profile, ReadPosition, StickerPackage } from "../model/dto.js";
 
 export type ListenState = "starting" | "listening" | "reconnecting";
 
@@ -15,6 +15,7 @@ export type ServerFrame =
   | { type: "history"; requestId: string; chatId: string; messages: Message[]; hasMore: boolean; cursor?: string }
   | { type: "sent"; requestId: string; messageId: string }
   | { type: "read"; chatId: string; positions: ReadPosition[] }
+  | { type: "stickers"; requestId: string; packages: StickerPackage[] }
   | { type: "error"; requestId?: string; code: string; message: string };
 
 export type ClientFrame =
@@ -22,5 +23,7 @@ export type ClientFrame =
   | { type: "auth:logout" }
   | { type: "history:fetch"; requestId: string; chatId: string; limit?: number; before?: string }
   | { type: "message:send"; requestId: string; chatId: string; text?: string; mediaId?: string; sticker?: { packageId: number; stickerId: number } }
+  | { type: "chat:read"; chatId: string; messageId: string }
+  | { type: "stickers:list"; requestId: string }
   | { type: "channels:refresh" }
   | { type: "ping" };

@@ -27,6 +27,16 @@ export interface ReadPosition {
   messageId: string;
 }
 
+export type MemberRole = "admin" | "coAdmin";
+
+/** A sticker package the account owns, with the stickers that can be sent from it. */
+export interface StickerPackage {
+  packageId: number;
+  name: string;
+  stickerIds: number[];
+  animated: boolean;
+}
+
 export interface Message {
   messageId: string;
   channelId: string;
@@ -34,6 +44,8 @@ export interface Message {
   senderId: string;
   senderName: string;
   senderPictureId?: string;
+  /** OpenChat only: the sender manages this community. */
+  senderRole?: MemberRole;
   text?: string;
   contentType: string;
   createdAt: number;

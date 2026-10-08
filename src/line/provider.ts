@@ -1,9 +1,12 @@
 import { Client } from "@evex/linejs";
 import { BaseClient, type Device, type FetchLike } from "@evex/linejs/base";
+import { LINEStruct } from "@evex/linejs/thrift";
 import type { Message as LineMessage, SquareMessage as LineSquareMessage } from "@evex/linejs-types";
 import { avatarMediaId, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
-import type { Channel, ChannelRef, HistoryPage, Message, Profile, ReadPosition } from "../model/dto.js";
+import type { Channel, ChannelRef, HistoryPage, MemberRole, Message, Profile, ReadPosition, StickerPackage } from "../model/dto.js";
+import { memberRole } from "./members.js";
 import { parseReadOperation, parseReadRanges } from "./read.js";
+import { parseOwnedProducts, parsePackageMeta, type PackageMeta } from "./stickers.js";
 import { SessionStorage } from "./session.js";
 
 export interface QRCallbacks {
@@ -31,6 +34,12 @@ export interface LineProvider {
   fetchSticker(stickerId: string, animated: boolean): Promise<MediaBytes | undefined>;
   fetchAvatar(host: AvatarHost, hash: string): Promise<MediaBytes | undefined>;
   fetchMessageMedia(messageId: string): Promise<MediaBytes | undefined>;
+  /** Tab icon of an owned sticker package. */
+  fetchStickerPack(packageId: string): Promise<MediaBytes | undefined>;
+  /** Sticker packages the account owns, each with its sendable sticker ids. */
+  fetchStickerPackages(): Promise<StickerPackage[]>;
+  /** Tells LINE the account has read the chat up to `messageId` (the other side sees "read"). */
+  markRead(channel: ChannelRef, messageId: string): Promise<void>;
   /** Where other members have read up to; empty when LINE has none (or the chat type has no receipts). */
   fetchReadPositions(channel: ChannelRef): Promise<ReadPosition[]>;
   fetchChannels(): Promise<Channel[]>;
@@ -56,12 +65,15 @@ const MAX_LOOKUPS_PER_CALL = 100;
 const LOOKUP_TIMEOUT_MS = 5000;
 const LOOKUP_RETRY_MS = 5 * 60 * 1000;
 const TALK_USER_MID = /^u[0-9a-f]{32}$/;
+const STICKER_PACKS_CACHE_MS = 10 * 60 * 1000;
+const PACK_META_CONCURRENCY = 4;
 
 /** What the UI shows for a person. `settled` means LINE answered a profile lookup (or the friend list did). */
 interface MemberProfile {
   name: string;
   pictureId?: string;
   settled: boolean;
+  role?: MemberRole;
 }
 
 /** The LINE message kinds shown inline (numeric forms appear in some payloads). */
@@ -86,6 +98,7 @@ export class EvexLineProvider implements LineProvider {
   private lookupMisses = new Map<string, number>();
   private deliveries: Promise<void> = Promise.resolve();
   private squareCache = new Map<string, { at: number; messages: Message[] }>();
+  private stickerPackages?: { at: number; packages: StickerPackage[] };
   // Messages whose media the browser may ask for, newest last. Requests are only honoured for
   // messages seen here, so the browser cannot use this session to probe arbitrary LINE objects.
   private mediaOrigins = new Map<string, { raw: LineMessage; square: boolean }>();
@@ -249,6 +262,7 @@ export class EvexLineProvider implements LineProvider {
       senderId: fields.senderId,
       senderName: this.profiles.get(fields.senderId)?.name ?? UNKNOWN_MEMBER,
       ...(this.profiles.get(fields.senderId)?.pictureId ? { senderPictureId: this.profiles.get(fields.senderId)!.pictureId } : {}),
+      ...(this.profiles.get(fields.senderId)?.role ? { senderRole: this.profiles.get(fields.senderId)!.role } : {}),
       ...(isText && text ? { text } : {}),
       contentType,
       createdAt: Number.isFinite(created) && created > 0 ? created : Date.now(),
@@ -289,6 +303,75 @@ export class EvexLineProvider implements LineProvider {
     const mime = sniffImage(bytes);
     if (!mime || bytes.length > STICKER_MAX_BYTES) throw new Error("AVATAR_BAD_CONTENT");
     return { mime, bytes };
+  }
+
+  async fetchStickerPack(packageId: string): Promise<MediaBytes | undefined> {
+    for (const name of ["tab_on.png", "main.png"]) {
+      const response = await fetch(`https://stickershop.line-scdn.net/stickershop/v1/product/${packageId}/android/${name}`, {
+        signal: AbortSignal.timeout(STICKER_TIMEOUT_MS),
+        redirect: "error",
+      });
+      if (response.status === 404 || response.status === 403) continue;
+      if (!response.ok) throw new Error("STICKER_PACK_FETCH_FAILED");
+      const bytes = Buffer.from(await response.arrayBuffer());
+      const mime = sniffImage(bytes);
+      if (!mime || bytes.length > STICKER_MAX_BYTES) throw new Error("STICKER_PACK_BAD_CONTENT");
+      return { mime, bytes };
+    }
+    return undefined;
+  }
+
+  /**
+   * The packages come from the account's own product list (so only owned stickers are offered);
+   * sticker ids and titles come from the public CDN metadata, falling back to LINE's id ranges.
+   */
+  async fetchStickerPackages(): Promise<StickerPackage[]> {
+    const client = this.requireClient();
+    if (this.stickerPackages && Date.now() - this.stickerPackages.at < STICKER_PACKS_CACHE_MS) return this.stickerPackages.packages;
+    const result: unknown = await client.base.request.request(
+      LINEStruct.getOwnedProductSummaries_args({ shopId: "stickershop", offset: 0, limit: 200, locale: { language: "zh", country: "TW" }, request: {} }),
+      "getOwnedProductSummaries",
+      4,
+      true,
+      "/TSHOP4",
+    );
+    const owned = parseOwnedProducts(result);
+    const packages: StickerPackage[] = [];
+    for (let offset = 0; offset < owned.length; offset += PACK_META_CONCURRENCY) {
+      const batch = await Promise.all(owned.slice(offset, offset + PACK_META_CONCURRENCY).map(async (product): Promise<StickerPackage | undefined> => {
+        const meta = await this.fetchPackageMeta(product.packageId);
+        const stickerIds = meta?.stickerIds ?? product.rangeStickerIds;
+        if (stickerIds.length === 0) return undefined;
+        return { packageId: product.packageId, name: meta?.name || product.name || `貼圖包 ${product.packageId}`, stickerIds, animated: meta?.animated ?? false };
+      }));
+      for (const entry of batch) if (entry) packages.push(entry);
+    }
+    if (this.client === client) this.stickerPackages = { at: Date.now(), packages };
+    return packages;
+  }
+
+  private async fetchPackageMeta(packageId: number): Promise<PackageMeta | undefined> {
+    try {
+      const response = await fetch(`https://stickershop.line-scdn.net/stickershop/v1/product/${packageId}/android/productInfo.meta`, {
+        signal: AbortSignal.timeout(STICKER_TIMEOUT_MS),
+        redirect: "error",
+      });
+      if (!response.ok) return undefined;
+      const text = await response.text();
+      return text.length > 1_000_000 ? undefined : parsePackageMeta(JSON.parse(text));
+    } catch {
+      // The id ranges from the product list still give a usable (if untitled) package.
+      return undefined;
+    }
+  }
+
+  async markRead(channel: ChannelRef, messageId: string): Promise<void> {
+    const client = this.requireClient();
+    if (channel.kind === "square") {
+      await client.base.square.markAsRead({ request: { squareChatMid: channel.channelId, messageId } });
+      return;
+    }
+    await client.base.talk.sendChatChecked({ chatMid: channel.channelId, lastMessageId: messageId, seq: await client.base.getReqseq() });
   }
 
   /**
@@ -351,8 +434,8 @@ export class EvexLineProvider implements LineProvider {
     return parseReadRanges(result, this.getProfile().userId);
   }
 
-  private rememberProfile(mid: string, name: string, pictureId: string | undefined, settled: boolean): void {
-    this.profiles.set(mid, { name: name || UNKNOWN_MEMBER, ...(pictureId ? { pictureId } : {}), settled });
+  private rememberProfile(mid: string, name: string, pictureId: string | undefined, settled: boolean, role?: MemberRole): void {
+    this.profiles.set(mid, { name: name || UNKNOWN_MEMBER, ...(pictureId ? { pictureId } : {}), ...(role ? { role } : {}), settled });
   }
 
   private rememberName(mid: string, name: string): void {
@@ -402,7 +485,7 @@ export class EvexLineProvider implements LineProvider {
       await Promise.all(mids.slice(offset, offset + SQUARE_LOOKUP_CONCURRENCY).map(async (mid) => {
         try {
           const { squareMember } = await client.base.square.getSquareMember({ squareMemberMid: mid });
-          if (this.client === client) this.rememberProfile(mid, squareMember.displayName, avatarMediaId("obs", squareMember.profileImageObsHash), true);
+          if (this.client === client) this.rememberProfile(mid, squareMember.displayName, avatarMediaId("obs", squareMember.profileImageObsHash), true, memberRole(squareMember.role));
         } catch {
           // Unresolved mids get a retry delay in resolveMembers.
         }
@@ -644,6 +727,7 @@ export class EvexLineProvider implements LineProvider {
     this.profiles.clear();
     this.lookupMisses.clear();
     this.mediaOrigins.clear();
+    this.stickerPackages = undefined;
     this.squareCache.clear();
     this.retryDelay = 1000;
     if (!base) return;

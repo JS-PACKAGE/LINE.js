@@ -9,6 +9,7 @@ export interface Config {
   line: { device: Device };
   history: { defaultLimit: number };
   cache: { messagesPerChannel: number; mediaMaxBytes: number };
+  chat: { sendReadReceipts: boolean };
   limits: {
     frameMaxBytes: number;
     textMaxLength: number;
@@ -55,6 +56,9 @@ export async function loadConfig(root = process.cwd()): Promise<Config> {
   const history = record(data.history);
   const cache = record(data.cache);
   const limits = record(data.limits);
+  // Optional section: configs written before it existed keep working with the default (on).
+  const chat = data.chat === undefined ? {} : record(data.chat);
+  if (chat.sendReadReceipts !== undefined && typeof chat.sendReadReceipts !== "boolean") throw new Error("CONFIG_INVALID");
   if (server.host !== "127.0.0.1") throw new Error("CONFIG_LOOPBACK_REQUIRED");
   const devices: readonly string[] = [
     "ANDROIDSECONDARY", "DESKTOPWIN", "DESKTOPMAC", "ANDROID", "IOS", "IOSIPAD", "WATCHOS", "WEAROS",
@@ -68,6 +72,7 @@ export async function loadConfig(root = process.cwd()): Promise<Config> {
       messagesPerChannel: integer(cache.messagesPerChannel, 500),
       mediaMaxBytes: integer(cache.mediaMaxBytes, Number.MAX_SAFE_INTEGER),
     },
+    chat: { sendReadReceipts: (chat.sendReadReceipts as boolean | undefined) ?? true },
     limits: {
       frameMaxBytes: integer(limits.frameMaxBytes, 256 * 1024),
       textMaxLength: integer(limits.textMaxLength, 8000),
