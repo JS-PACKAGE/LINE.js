@@ -192,6 +192,17 @@ function renderChannels(): void {
     const name = document.createElement("span");
     name.className = "channel-name";
     name.textContent = channel.name;
+    item.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      showMenu(event.clientX, event.clientY, [{
+        label: "顯示頻道 ID",
+        action: () => {
+          void confirmDialog({ title: channel.name, message: channel.channelId, confirmLabel: "複製 ID", cancelLabel: "關閉" }).then((copy) => {
+            if (copy) void navigator.clipboard?.writeText(channel.channelId).catch(() => {});
+          });
+        },
+      }]);
+    });
     item.append(createAvatar(channel.pictureId, channel.name), name);
     if (tab === "chats") {
       const kind = document.createElement("small");
