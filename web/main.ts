@@ -6,6 +6,7 @@ import { createComposer } from "./composer.js";
 import { confirmDialog } from "./dialog.js";
 import { createAvatar } from "./avatar.js";
 import { mediaElement } from "./media.js";
+import { linkifiedNodes } from "./links.js";
 import { createRoleBadge } from "./badge.js";
 import { showMenu, type MenuItem } from "./menu.js";
 import { registerServiceWorker } from "./pwa.js";
@@ -258,7 +259,7 @@ function messageBody(message: Message): HTMLElement {
   }
   const body = document.createElement("p");
   if (message.text) {
-    body.textContent = message.text;
+    body.append(...linkifiedNodes(message.text));
   } else {
     body.className = "placeholder";
     body.textContent = `［${CONTENT_LABEL[message.contentType] ?? "不支援的內容"}］`;
