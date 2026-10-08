@@ -339,7 +339,13 @@ export function createHub(options: HubOptions): Hub {
       botWss.handleUpgrade(request, socket, head, (ws) => botWss.emit("connection", ws, request));
       return;
     }
-    if (path !== "/ws" || !authorizeUpgrade(request)) return refuse(socket, "403 Forbidden");
+    if (path !== "/ws") return refuse(socket, "403 Forbidden");
+    if (!authorizeUpgrade(request)) {
+      // Names and flags only, never the cookie value: enough to tell a rewritten Host from a missing cookie behind a proxy.
+      const { host, origin, cookie } = request.headers;
+      console.warn(`WS_UPGRADE_REFUSED host=${String(host).slice(0, 100)} origin=${String(origin).slice(0, 100)} cookie=${cookie?.includes("linejs_browser=") ? "yes" : "no"}`);
+      return refuse(socket, "403 Forbidden");
+    }
     wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws, request));
   });
 
