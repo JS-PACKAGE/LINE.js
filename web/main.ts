@@ -7,6 +7,8 @@ import { confirmDialog } from "./dialog.js";
 import { createAvatar } from "./avatar.js";
 import { mediaElement } from "./media.js";
 import { createRoleBadge } from "./badge.js";
+import { showMenu, type MenuItem } from "./menu.js";
+import { registerServiceWorker } from "./pwa.js";
 
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const login = $<HTMLElement>("#login");
@@ -44,6 +46,11 @@ let signedIn = false;
 let channels: Channel[] = [];
 let messages: Record<string, Message[]> = {};
 let unread: Record<string, number> = {};
+// Chats opened (read) on this page, and chats whose unread count this page has changed itself:
+// for every other chat the badge follows LINE's own count from the channel list.
+let opened = new Set<string>();
+let liveCounted = new Set<string>();
+let lastChannelRefresh = Date.now();
 let tab: "chats" | "friends" = "chats";
 let selected: string | undefined;
 let myUserId: string | undefined;
@@ -92,6 +99,8 @@ function applyAuthState(state: AuthState): void {
     channels = [];
     messages = {};
     unread = {};
+    opened = new Set();
+    liveCounted = new Set();
     selected = undefined;
     tab = "chats";
     filter.value = "";
@@ -115,7 +124,7 @@ function enterChat(profile: Profile): void {
   login.hidden = true;
   app.hidden = false;
   meName.textContent = profile.displayName;
-  meAvatar.replaceChildren(createAvatar(profile.pictureId, profile.displayName));
+  meAvatar.replaceChildren(createAvatar(profile.pictureId, profile.displayName, { zoomable: true }));
   logoutButton.disabled = false;
   renderChannels();
   renderMessages();
@@ -233,17 +242,52 @@ function readCount(message: Message): number | undefined {
   return Object.values(readPositions[message.channelId] ?? {}).filter((position) => position >= id).length;
 }
 
-/** "已讀" goes on the newest of a run of my messages that share the same read count, like LINE does. */
+/** "已讀" (1:1) or "已讀 N" (groups) under each of my messages that someone has read. */
 function readLabels(list: Message[]): (string | undefined)[] {
-  const labels: (string | undefined)[] = new Array<string | undefined>(list.length);
-  let later: number | undefined;
-  for (let index = list.length - 1; index >= 0; index -= 1) {
-    const count = readCount(list[index]!);
-    if (count === undefined) continue;
-    if (count > 0 && count !== later) labels[index] = list[index]!.channelKind === "user" ? "已讀" : `已讀 ${count}`;
-    later = count;
+  return list.map((message) => {
+    const count = readCount(message);
+    if (!count) return undefined;
+    return message.channelKind === "user" ? "已讀" : `已讀 ${count}`;
+  });
+}
+
+/** One-line text for quoting a message: its text, or the label of what it carries. */
+function previewOf(message: Message): string {
+  const text = message.text?.replace(/\s+/g, " ").trim();
+  return text ? (text.length > 60 ? `${text.slice(0, 60)}…` : text) : `［${CONTENT_LABEL[message.contentType] ?? "訊息"}］`;
+}
+
+/** Can this person be tagged? Anyone but me in a group, room or OpenChat. */
+function taggable(message: Message): boolean {
+  return message.channelKind !== "user" && message.senderId !== myUserId && message.senderId !== "";
+}
+
+function openMessageMenu(message: Message, x: number, y: number): void {
+  const items: MenuItem[] = [];
+  // Replies point at LINE's numeric message id; local placeholders have none yet.
+  if (/^\d{1,24}$/.test(message.messageId)) {
+    items.push({ label: "回覆", action: () => composer.setReply({ messageId: message.messageId, senderName: message.senderName, preview: previewOf(message) }) });
   }
-  return labels;
+  if (taggable(message)) items.push({ label: `@ 提及 ${message.senderName}`, action: () => composer.insertMention({ userId: message.senderId, name: message.senderName }) });
+  if (message.text) items.push({ label: "複製文字", action: () => { void navigator.clipboard?.writeText(message.text!).catch(() => {}); } });
+  showMenu(x, y, items);
+}
+
+function quoteNode(message: Message): HTMLElement {
+  const original = (messages[message.channelId] ?? []).find((entry) => entry.messageId === message.replyTo);
+  const quote = document.createElement("button");
+  quote.type = "button";
+  quote.className = "reply-quote";
+  quote.textContent = original ? `${original.senderName}：${previewOf(original)}` : "回覆一則較早的訊息";
+  quote.disabled = !original;
+  quote.addEventListener("click", () => {
+    const target = [...messageList.querySelectorAll<HTMLElement>(".message")].find((node) => node.dataset.messageId === message.replyTo);
+    if (!target) return;
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    target.classList.add("flash");
+    setTimeout(() => target.classList.remove("flash"), 1500);
+  });
+  return quote;
 }
 
 function messageNode(message: Message, previous: Message | undefined, readLabel: string | undefined): HTMLElement {
@@ -251,6 +295,10 @@ function messageNode(message: Message, previous: Message | undefined, readLabel:
   const item = document.createElement("article");
   item.className = continued ? "message continued" : "message";
   item.dataset.messageId = message.messageId;
+  item.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    openMessageMenu(message, event.clientX, event.clientY);
+  });
   const main = document.createElement("div");
   main.className = "message-main";
   const when = formatTime(message.createdAt) + (message.editedAt ? "（已編輯）" : "");
@@ -258,15 +306,30 @@ function messageNode(message: Message, previous: Message | undefined, readLabel:
     const head = document.createElement("header");
     const sender = document.createElement("strong");
     sender.textContent = message.senderName;
+    if (taggable(message)) {
+      // Clicking another person's name tags them in the composer.
+      const tag = (): void => composer.insertMention({ userId: message.senderId, name: message.senderName });
+      sender.className = "mentionable";
+      sender.role = "button";
+      sender.tabIndex = 0;
+      sender.title = `@ 提及 ${message.senderName}`;
+      sender.addEventListener("click", tag);
+      sender.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        tag();
+      });
+    }
     head.append(sender);
     if (message.senderRole) head.append(createRoleBadge(message.senderRole));
     main.append(head);
-    item.append(createAvatar(message.senderPictureId, message.senderName));
+    item.append(createAvatar(message.senderPictureId, message.senderName, { zoomable: true }));
   } else {
     // Same sender just above: no repeated avatar or name.
     item.append(document.createElement("span"));
   }
   // The time sits after the message, like LINE does.
+  if (message.replyTo) main.append(quoteNode(message));
   const row = document.createElement("div");
   row.className = "message-row";
   const time = document.createElement("time");
@@ -286,7 +349,7 @@ function messageNode(message: Message, previous: Message | undefined, readLabel:
 function renderMessages(anchor: "bottom" | "keep" | "prepend" = "bottom"): void {
   const channel = channels.find((entry) => entry.channelId === selected);
   channelTitle.textContent = channel?.name ?? "選擇一個聊天室";
-  channelAvatar.replaceChildren(...(channel ? [createAvatar(channel.pictureId, channel.name)] : []));
+  channelAvatar.replaceChildren(...(channel ? [createAvatar(channel.pictureId, channel.name, { zoomable: true })] : []));
   channelMeta.textContent = channel ? KIND_LABEL[channel.kind] : "";
   const list = selected ? (messages[selected] ?? []) : [];
   const state = selected ? historyOf[selected] : undefined;
@@ -397,7 +460,14 @@ function reportRead(): void {
     const id = BigInt(newest.messageId);
     const known = reportedRead[selected];
     if (known !== undefined && id <= known) return;
-    if (send({ type: "chat:read", chatId: selected, messageId: newest.messageId })) reportedRead[selected] = id;
+    if (send({ type: "chat:read", chatId: selected, messageId: newest.messageId })) {
+      reportedRead[selected] = id;
+      // What was just reported as read is no longer unread, whether it arrived while hidden or not.
+      if (unread[selected]) {
+        delete unread[selected];
+        renderChannels();
+      }
+    }
   }, 400);
 }
 
@@ -410,6 +480,8 @@ async function handle(frame: ServerFrame): Promise<void> {
       unreadFrom = undefined;
       messages = {};
       unread = {};
+      opened = new Set();
+      liveCounted = new Set();
       historyOf = {};
       pendingHistory = {};
       reportedRead = {};
@@ -432,6 +504,11 @@ async function handle(frame: ServerFrame): Promise<void> {
       return;
     case "channels":
       channels = frame.channels;
+      for (const channel of channels) {
+        if (channel.channelId === selected || opened.has(channel.channelId) || liveCounted.has(channel.channelId)) continue;
+        if (channel.unreadCount) unread[channel.channelId] = channel.unreadCount;
+        else delete unread[channel.channelId];
+      }
       if (selected && !channels.some((channel) => channel.channelId === selected)) {
         selected = undefined;
         composer.setChannel(undefined);
@@ -445,8 +522,10 @@ async function handle(frame: ServerFrame): Promise<void> {
     case "message:edit": {
       const { message } = frame;
       upsertMessage(message);
-      if (frame.type === "message" && message.channelId !== selected && message.senderId !== myUserId) {
+      // A replayed snapshot message is old news. A new one counts unless the reader is looking at that chat right now.
+      if (frame.type === "message" && !frame.replay && message.senderId !== myUserId && (message.channelId !== selected || document.visibilityState !== "visible")) {
         unread[message.channelId] = (unread[message.channelId] ?? 0) + 1;
+        liveCounted.add(message.channelId);
       }
       renderChannels();
       return;
@@ -567,6 +646,7 @@ function selectChannel(item: EventTarget | null): void {
   }
   selected = id;
   delete unread[id];
+  opened.add(id);
   composer.setChannel(id);
   renderChannels();
   renderMessages();
@@ -588,7 +668,18 @@ messageList.addEventListener("scroll", () => {
   if (selected && state?.loaded && state.hasMore && !state.loading && !state.failed && messageList.scrollTop < 80) requestHistory(selected);
 });
 
-document.addEventListener("visibilitychange", reportRead);
+document.addEventListener("visibilitychange", () => {
+  reportRead();
+  // Reads done elsewhere (the phone) only show up in LINE's counts: refresh them when the page comes back.
+  if (document.visibilityState === "visible" && Date.now() - lastChannelRefresh > 60_000 && send({ type: "channels:refresh" })) lastChannelRefresh = Date.now();
+});
+// Right-click belongs to the app (message menu); the browser's own menu is locked everywhere
+// except in text fields, where it is still needed for paste. This is convenience, not security.
+document.addEventListener("contextmenu", (event) => {
+  if ((event.target as Element | null)?.closest("input, textarea, [contenteditable]")) return;
+  event.preventDefault();
+});
+registerServiceWorker();
 setInterval(() => send({ type: "ping" }), 30_000);
 window.addEventListener("pagehide", clearSecrets);
 connect();

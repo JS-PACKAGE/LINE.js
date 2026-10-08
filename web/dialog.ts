@@ -49,8 +49,11 @@ export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
   return promise;
 }
 
-/** Full-size view of an image from the chat; any click or Esc closes it. */
-export function showImage(src: string): void {
+/**
+ * Full-size view of an image from the chat; any click or Esc closes it.
+ * `fallback` is shown instead when `src` cannot be loaded (e.g. the original avatar is gone).
+ */
+export function showImage(src: string, fallback?: string): void {
   const viewer = document.querySelector<HTMLDialogElement>("#viewer")!;
   const image = viewer.querySelector<HTMLImageElement>("img")!;
   if (!viewer.dataset.ready) {
@@ -58,6 +61,10 @@ export function showImage(src: string): void {
     viewer.addEventListener("click", () => viewer.close());
     viewer.addEventListener("close", () => image.removeAttribute("src"));
   }
+  image.onerror = () => {
+    image.onerror = null;
+    if (fallback) image.src = fallback;
+  };
   image.src = src;
   viewer.showModal();
 }

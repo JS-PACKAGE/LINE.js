@@ -1,10 +1,20 @@
-import type { StickerPackage } from "../src/model/dto.js";
+import type { Mention, StickerPackage } from "../src/model/dto.js";
 import type { ClientFrame } from "../src/ws/protocol.js";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif"];
 const RESPONSE_TIMEOUT_MS = 30_000;
 const STICKER_ID = /^\d{1,12}$/;
+// Matches the server's limits (text length, tags per message); the server enforces them again.
+const MAX_TEXT_LENGTH = 8000;
+const MAX_MENTIONS = 20;
+
+/** The message a reply answers, as shown in the quote bar. */
+export interface ReplyTarget {
+  messageId: string;
+  senderName: string;
+  preview: string;
+}
 
 type SendKind = "text" | "image" | "sticker";
 
@@ -12,6 +22,10 @@ export interface Composer {
   /** Which conversation the composer writes to; undefined disables it. */
   setChannel(channelId: string | undefined): void;
   setConnected(connected: boolean): void;
+  /** Puts "@name" at the caret and remembers who it refers to, so the sent message carries a real mention. */
+  insertMention(person: { userId: string; name: string }): void;
+  /** Quotes a message: the next text message is sent as a reply to it. */
+  setReply(target: ReplyTarget | undefined): void;
   /** Returns true when the ack belonged to this composer. */
   handleSent(requestId: string): boolean;
   /** Returns true when the sticker list answered a request of this composer. */
@@ -34,6 +48,9 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
   const attachmentInfo = query<HTMLSpanElement>("#attachment-info");
   const attachmentSend = query<HTMLButtonElement>("#attachment-send");
   const attachmentCancel = query<HTMLButtonElement>("#attachment-cancel");
+  const replyBar = query<HTMLDivElement>("#reply-bar");
+  const replyPreview = query<HTMLSpanElement>("#reply-preview");
+  const replyCancel = query<HTMLButtonElement>("#reply-cancel");
   const stickerToggle = query<HTMLButtonElement>("#sticker-toggle");
   const panel = query<HTMLDivElement>("#sticker-panel");
   const tabs = query<HTMLDivElement>("#sticker-tabs");
@@ -51,6 +68,9 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
   // An image waiting to be sent (pasted, dropped); `followUpText` sends the draft right after it.
   let staged: { file: File; url: string } | undefined;
   let followUpText = false;
+  let replyTarget: ReplyTarget | undefined;
+  // People tagged through insertMention; only those whose "@name" is still in the text are sent.
+  let mentioned: { userId: string; name: string }[] = [];
   let packages: StickerPackage[] | undefined;
   let stickerRequest: string | undefined;
   let activePackage: number | undefined;
@@ -100,9 +120,40 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     refresh();
   }
 
+  function renderReply(): void {
+    replyBar.hidden = replyTarget === undefined;
+    replyPreview.textContent = replyTarget ? `${replyTarget.senderName}：${replyTarget.preview}` : "";
+  }
+
+  function clearReply(): void {
+    replyTarget = undefined;
+    renderReply();
+  }
+
+  /** Every "@name" still in the text that was inserted by a mention click, as non-overlapping ranges. */
+  function mentionRanges(text: string): Mention[] {
+    const found: Mention[] = [];
+    for (const person of mentioned) {
+      const token = `@${person.name}`;
+      for (let at = text.indexOf(token); at !== -1; at = text.indexOf(token, at + token.length)) {
+        found.push({ userId: person.userId, start: at, end: at + token.length });
+      }
+    }
+    // Earliest first; for the same start the longer name wins ("@Amy Lee" over "@Amy"); overlaps are dropped.
+    found.sort((a, b) => a.start - b.start || b.end - a.end);
+    const ranges: Mention[] = [];
+    for (const range of found) if (range.start >= (ranges.at(-1)?.end ?? 0)) ranges.push(range);
+    return ranges.slice(0, MAX_MENTIONS);
+  }
+
   function submitText(): void {
     if (draft.value.trim() === "") return;
-    dispatch("text", { text: draft.value });
+    const mentions = mentionRanges(draft.value);
+    dispatch("text", {
+      text: draft.value,
+      ...(mentions.length > 0 ? { mentions } : {}),
+      ...(replyTarget ? { replyTo: replyTarget.messageId } : {}),
+    });
   }
 
   function imageProblem(candidate: File): string | undefined {
@@ -173,7 +224,13 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       submit();
+    } else if (event.key === "Escape" && replyTarget) {
+      clearReply();
     }
+  });
+  replyCancel.addEventListener("click", () => {
+    clearReply();
+    draft.focus();
   });
   draft.addEventListener("input", resizeDraft);
 
@@ -298,12 +355,34 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
 
   refresh();
   return {
+    insertMention(person) {
+      if (draft.disabled) return;
+      const token = `@${person.name}`;
+      const start = draft.selectionStart ?? draft.value.length;
+      const end = draft.selectionEnd ?? start;
+      const before = draft.value.slice(0, start);
+      const inserted = `${before === "" || /\s$/.test(before) ? "" : " "}${token} `;
+      if (draft.value.length - (end - start) + inserted.length > MAX_TEXT_LENGTH) return showNote("訊息太長，無法再加入 @。", true);
+      draft.value = `${before}${inserted}${draft.value.slice(end)}`;
+      if (!mentioned.some((entry) => entry.userId === person.userId && entry.name === person.name)) mentioned.push(person);
+      draft.setSelectionRange(start + inserted.length, start + inserted.length);
+      draft.focus();
+      resizeDraft();
+    },
+    setReply(target) {
+      if (draft.disabled && target) return;
+      replyTarget = target;
+      renderReply();
+      if (target) draft.focus();
+    },
     setChannel(next) {
       if (next === channelId) return;
       channelId = next;
       // A draft (and a staged image) belongs to the conversation it was written in.
       draft.value = "";
       clearStaged();
+      clearReply();
+      mentioned = [];
       resizeDraft();
       showNote("");
       refresh();
@@ -325,6 +404,8 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
       finish();
       if (kind === "text") {
         draft.value = "";
+        clearReply();
+        mentioned = [];
         resizeDraft();
       }
       if (kind === "sticker") panel.hidden = true;
@@ -361,6 +442,8 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
       channelId = undefined;
       draft.value = "";
       clearStaged();
+      clearReply();
+      mentioned = [];
       packages = undefined;
       stickerRequest = undefined;
       renderStickers();
