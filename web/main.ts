@@ -6,6 +6,7 @@ import { createComposer } from "./composer.js";
 import { confirmDialog } from "./dialog.js";
 import { createAvatar } from "./avatar.js";
 import { mediaElement } from "./media.js";
+import { createRoleBadge } from "./badge.js";
 
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const login = $<HTMLElement>("#login");
@@ -50,6 +51,9 @@ let myUserId: string | undefined;
 let readPositions: Record<string, Record<string, bigint>> = {};
 // Where the "未讀" divider sits in the chat that was just opened; dropped when switching chats.
 let unreadFrom: { channelId: string; messageId: string; count: number } | undefined;
+// Newest message id per chat already reported to the server as read.
+let reportedRead: Record<string, bigint> = {};
+let readTimer: ReturnType<typeof setTimeout> | undefined;
 
 interface HistoryState { cursor?: string; hasMore: boolean; loading: boolean; loaded: boolean; failed: boolean }
 let historyOf: Record<string, HistoryState> = {};
@@ -93,6 +97,7 @@ function applyAuthState(state: AuthState): void {
     filter.value = "";
     historyOf = {};
     pendingHistory = {};
+    reportedRead = {};
     readPositions = {};
     unreadFrom = undefined;
     composer.reset();
@@ -119,7 +124,9 @@ function enterChat(profile: Profile): void {
 function formatTime(timestamp: number): string {
   const date = new Date(timestamp);
   const sameDay = date.toDateString() === new Date().toDateString();
-  return date.toLocaleString("zh-TW", sameDay ? { hour: "2-digit", minute: "2-digit" } : { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  // hourCycle h23 (not hour12:false) so midnight reads 00:xx rather than 24:xx.
+  const clock = { hour: "2-digit", minute: "2-digit", hourCycle: "h23" } as const;
+  return date.toLocaleString("zh-TW", sameDay ? clock : { month: "numeric", day: "numeric", ...clock });
 }
 
 // A friend belongs to the 聊天 tab only once there is a conversation with them;
@@ -247,22 +254,25 @@ function messageNode(message: Message, previous: Message | undefined, readLabel:
   const main = document.createElement("div");
   main.className = "message-main";
   const when = formatTime(message.createdAt) + (message.editedAt ? "（已編輯）" : "");
-  const body = messageBody(message);
-  if (continued) {
-    // Same sender just above: no repeated avatar/name, the time stays reachable on hover.
-    body.title = when;
-    item.append(document.createElement("span"));
-  } else {
+  if (!continued) {
     const head = document.createElement("header");
     const sender = document.createElement("strong");
     sender.textContent = message.senderName;
-    const time = document.createElement("time");
-    time.textContent = when;
-    head.append(sender, time);
+    head.append(sender);
+    if (message.senderRole) head.append(createRoleBadge(message.senderRole));
     main.append(head);
     item.append(createAvatar(message.senderPictureId, message.senderName));
+  } else {
+    // Same sender just above: no repeated avatar or name.
+    item.append(document.createElement("span"));
   }
-  main.append(body);
+  // The time sits after the message, like LINE does.
+  const row = document.createElement("div");
+  row.className = "message-row";
+  const time = document.createElement("time");
+  time.textContent = when;
+  row.append(messageBody(message), time);
+  main.append(row);
   if (readLabel) {
     const read = document.createElement("small");
     read.className = "read-state";
@@ -363,6 +373,7 @@ function applyHistory(frame: Extract<ServerFrame, { type: "history" }>): void {
   renderMessages(firstPage ? "bottom" : "prepend");
   // A short conversation never scrolls, so the scroll trigger would never fire: keep filling the view.
   if (state.hasMore && frame.messages.length > 0 && messageList.scrollHeight <= messageList.clientHeight + 40) requestHistory(channelId);
+  reportRead();
 }
 
 function upsertMessage(message: Message): void {
@@ -370,6 +381,24 @@ function upsertMessage(message: Message): void {
   mergeMessage(message);
   // Your own message always jumps into view, even when you were reading older history.
   if (message.channelId === selected) renderMessages(nearBottom || message.senderId === myUserId ? "bottom" : "keep");
+  if (message.channelId === selected) reportRead();
+}
+
+/**
+ * Tells the server (and through it LINE) that the open chat is read up to its newest message.
+ * Only while the page is visible, debounced, and once per position.
+ */
+function reportRead(): void {
+  clearTimeout(readTimer);
+  readTimer = setTimeout(() => {
+    if (!selected || document.visibilityState !== "visible") return;
+    const newest = [...(messages[selected] ?? [])].reverse().find((message) => /^\d{1,24}$/.test(message.messageId));
+    if (!newest) return;
+    const id = BigInt(newest.messageId);
+    const known = reportedRead[selected];
+    if (known !== undefined && id <= known) return;
+    if (send({ type: "chat:read", chatId: selected, messageId: newest.messageId })) reportedRead[selected] = id;
+  }, 400);
 }
 
 async function handle(frame: ServerFrame): Promise<void> {
@@ -383,6 +412,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       unread = {};
       historyOf = {};
       pendingHistory = {};
+      reportedRead = {};
       return;
     case "auth:state":
       applyAuthState(frame.state);
@@ -435,6 +465,9 @@ async function handle(frame: ServerFrame): Promise<void> {
     }
     case "sent":
       composer.handleSent(frame.requestId);
+      return;
+    case "stickers":
+      composer.handleStickers(frame.requestId, frame.packages);
       return;
     case "status":
       listenState.textContent = LISTEN_LABEL[frame.state];
@@ -538,6 +571,7 @@ function selectChannel(item: EventTarget | null): void {
   renderChannels();
   renderMessages();
   if (!historyOf[id]?.loaded) requestHistory(id);
+  reportRead();
 }
 channelList.addEventListener("click", (event) => selectChannel(event.target));
 channelList.addEventListener("keydown", (event) => {
@@ -554,6 +588,7 @@ messageList.addEventListener("scroll", () => {
   if (selected && state?.loaded && state.hasMore && !state.loading && !state.failed && messageList.scrollTop < 80) requestHistory(selected);
 });
 
+document.addEventListener("visibilitychange", reportRead);
 setInterval(() => send({ type: "ping" }), 30_000);
 window.addEventListener("pagehide", clearSecrets);
 connect();

@@ -47,11 +47,24 @@
         <form id="composer" class="composer" autocomplete="off">
           <p id="composer-note" role="status" aria-live="polite" hidden></p>
           <div id="sticker-panel" role="dialog" aria-label="傳送貼圖" hidden>
-            <label>貼圖包 ID<input id="sticker-package" inputmode="numeric" maxlength="12" /></label>
-            <label>貼圖 ID<input id="sticker-id" inputmode="numeric" maxlength="12" /></label>
-            <img id="sticker-preview" alt="貼圖預覽" hidden />
-            <button id="sticker-send" type="button">送出貼圖</button>
-            <small>填入 LINE 貼圖商店的貼圖包與貼圖 ID；需為此帳號可使用的貼圖，預覽僅供參考。</small>
+            <div id="sticker-tabs" role="tablist" aria-label="我的貼圖包"></div>
+            <div id="sticker-grid" role="group" aria-label="貼圖"></div>
+            <p id="sticker-state" role="status"></p>
+            <details id="sticker-manual">
+              <summary>用 ID 手動送出</summary>
+              <div class="sticker-manual-row">
+                <label>貼圖包 ID<input id="sticker-package" inputmode="numeric" maxlength="12" /></label>
+                <label>貼圖 ID<input id="sticker-id" inputmode="numeric" maxlength="12" /></label>
+                <img id="sticker-preview" alt="貼圖預覽" hidden />
+                <button id="sticker-send" type="button">送出貼圖</button>
+              </div>
+            </details>
+          </div>
+          <div id="attachment" class="attachment" hidden>
+            <img alt="待送出的圖片" />
+            <span id="attachment-info"></span>
+            <button id="attachment-send" type="button">送出圖片</button>
+            <button id="attachment-cancel" type="button" class="ghost">取消</button>
           </div>
           <div class="composer-row">
             <button id="attach" type="button" class="ghost" aria-label="傳送圖片">圖片</button>

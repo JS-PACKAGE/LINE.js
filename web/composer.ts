@@ -1,3 +1,4 @@
+import type { StickerPackage } from "../src/model/dto.js";
 import type { ClientFrame } from "../src/ws/protocol.js";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -13,29 +14,46 @@ export interface Composer {
   setConnected(connected: boolean): void;
   /** Returns true when the ack belonged to this composer. */
   handleSent(requestId: string): boolean;
+  /** Returns true when the sticker list answered a request of this composer. */
+  handleStickers(requestId: string, packages: StickerPackage[]): boolean;
   /** Returns true when the error belonged to this composer (so the caller need not show it). */
   handleError(requestId: string | undefined, message: string): boolean;
   reset(): void;
 }
 
 export function createComposer(send: (frame: ClientFrame) => boolean): Composer {
-  const form = document.querySelector<HTMLFormElement>("#composer")!;
-  const note = document.querySelector<HTMLParagraphElement>("#composer-note")!;
-  const draft = document.querySelector<HTMLTextAreaElement>("#draft")!;
-  const sendButton = document.querySelector<HTMLButtonElement>("#send")!;
-  const attach = document.querySelector<HTMLButtonElement>("#attach")!;
-  const file = document.querySelector<HTMLInputElement>("#file")!;
-  const stickerToggle = document.querySelector<HTMLButtonElement>("#sticker-toggle")!;
-  const panel = document.querySelector<HTMLDivElement>("#sticker-panel")!;
-  const packageInput = document.querySelector<HTMLInputElement>("#sticker-package")!;
-  const stickerInput = document.querySelector<HTMLInputElement>("#sticker-id")!;
-  const preview = document.querySelector<HTMLImageElement>("#sticker-preview")!;
-  const stickerSend = document.querySelector<HTMLButtonElement>("#sticker-send")!;
+  const query = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
+  const form = query<HTMLFormElement>("#composer");
+  const note = query<HTMLParagraphElement>("#composer-note");
+  const draft = query<HTMLTextAreaElement>("#draft");
+  const sendButton = query<HTMLButtonElement>("#send");
+  const attach = query<HTMLButtonElement>("#attach");
+  const file = query<HTMLInputElement>("#file");
+  const attachmentBox = query<HTMLDivElement>("#attachment");
+  const attachmentImage = query<HTMLImageElement>("#attachment img");
+  const attachmentInfo = query<HTMLSpanElement>("#attachment-info");
+  const attachmentSend = query<HTMLButtonElement>("#attachment-send");
+  const attachmentCancel = query<HTMLButtonElement>("#attachment-cancel");
+  const stickerToggle = query<HTMLButtonElement>("#sticker-toggle");
+  const panel = query<HTMLDivElement>("#sticker-panel");
+  const tabs = query<HTMLDivElement>("#sticker-tabs");
+  const grid = query<HTMLDivElement>("#sticker-grid");
+  const stickerState = query<HTMLParagraphElement>("#sticker-state");
+  const packageInput = query<HTMLInputElement>("#sticker-package");
+  const stickerInput = query<HTMLInputElement>("#sticker-id");
+  const preview = query<HTMLImageElement>("#sticker-preview");
+  const stickerSend = query<HTMLButtonElement>("#sticker-send");
 
   let channelId: string | undefined;
   let connected = false;
   let pending: { requestId: string; kind: SendKind; timer: ReturnType<typeof setTimeout> } | undefined;
   let uploading = false;
+  // An image waiting to be sent (pasted, dropped); `followUpText` sends the draft right after it.
+  let staged: { file: File; url: string } | undefined;
+  let followUpText = false;
+  let packages: StickerPackage[] | undefined;
+  let stickerRequest: string | undefined;
+  let activePackage: number | undefined;
 
   function showNote(text: string, isError = false): void {
     note.textContent = text;
@@ -49,9 +67,11 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     draft.disabled = !usable;
     sendButton.disabled = !idle;
     attach.disabled = !idle;
+    attachmentSend.disabled = !idle;
     stickerToggle.disabled = !usable;
     stickerSend.disabled = !idle;
-    draft.placeholder = usable ? "輸入訊息（Enter 送出，Shift+Enter 換行）" : connected ? "選擇聊天室後即可發送訊息" : "與本機服務連線中斷…";
+    panel.dataset.busy = String(!idle);
+    draft.placeholder = usable ? "輸入訊息（Enter 送出，Shift+Enter 換行；可直接貼上圖片）" : connected ? "選擇聊天室後即可發送訊息" : "與本機服務連線中斷…";
     if (!usable) panel.hidden = true;
     stickerToggle.ariaExpanded = String(!panel.hidden);
   }
@@ -85,32 +105,13 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     dispatch("text", { text: draft.value });
   }
 
-  function resizeDraft(): void {
-    draft.style.height = "auto";
-    draft.style.height = `${Math.min(draft.scrollHeight, 140)}px`;
+  function imageProblem(candidate: File): string | undefined {
+    if (!IMAGE_TYPES.includes(candidate.type)) return "僅支援 PNG、JPEG、GIF 圖片。";
+    if (candidate.size > MAX_IMAGE_BYTES) return "圖片超過 10MB 上限。";
+    return undefined;
   }
 
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    submitText();
-  });
-
-  draft.addEventListener("keydown", (event) => {
-    // Enter while composing (IME) confirms a candidate; it must not send.
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-      event.preventDefault();
-      submitText();
-    }
-  });
-  draft.addEventListener("input", resizeDraft);
-
-  attach.addEventListener("click", () => file.click());
-  file.addEventListener("change", async () => {
-    const picked = file.files?.[0];
-    file.value = "";
-    if (!picked) return;
-    if (!IMAGE_TYPES.includes(picked.type)) return showNote("僅支援 PNG、JPEG、GIF 圖片。", true);
-    if (picked.size > MAX_IMAGE_BYTES) return showNote("圖片超過 10MB 上限。", true);
+  async function uploadAndSend(picked: File, thenText: boolean): Promise<void> {
     uploading = true;
     showNote("上傳圖片中…");
     refresh();
@@ -122,6 +123,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
       }
       const { mediaId } = (await response.json()) as { mediaId: string };
       uploading = false;
+      followUpText = thenText;
       dispatch("image", { mediaId });
     } catch (error) {
       showNote(error instanceof Error && error.message.endsWith("。") ? error.message : "圖片上傳失敗。", true);
@@ -129,12 +131,151 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
       uploading = false;
       refresh();
     }
+  }
+
+  function clearStaged(): void {
+    if (staged) URL.revokeObjectURL(staged.url);
+    staged = undefined;
+    followUpText = false;
+    attachmentImage.removeAttribute("src");
+    attachmentBox.hidden = true;
+  }
+
+  function stage(candidate: File): void {
+    const problem = imageProblem(candidate);
+    if (problem) return showNote(problem, true);
+    clearStaged();
+    staged = { file: candidate, url: URL.createObjectURL(candidate) };
+    attachmentImage.src = staged.url;
+    attachmentInfo.textContent = `${candidate.name && candidate.name !== "image.png" ? candidate.name : "貼上的圖片"}（${Math.max(1, Math.round(candidate.size / 1024))} KB）`;
+    attachmentBox.hidden = false;
+    showNote("");
+    draft.focus();
+  }
+
+  function submit(): void {
+    if (staged) void uploadAndSend(staged.file, draft.value.trim() !== "");
+    else submitText();
+  }
+
+  function resizeDraft(): void {
+    draft.style.height = "auto";
+    draft.style.height = `${Math.min(draft.scrollHeight, 140)}px`;
+  }
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submit();
   });
+
+  draft.addEventListener("keydown", (event) => {
+    // Enter while composing (IME) confirms a candidate; it must not send.
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      submit();
+    }
+  });
+  draft.addEventListener("input", resizeDraft);
+
+  // Pasting media: an image on the clipboard becomes a preview that is sent on request. Text pastes untouched.
+  draft.addEventListener("paste", (event) => {
+    const files = [...(event.clipboardData?.files ?? [])];
+    if (files.length === 0 || event.clipboardData?.getData("text/plain")) return;
+    event.preventDefault();
+    const image = files.find((candidate) => candidate.type.startsWith("image/"));
+    if (!image) return showNote("貼上的內容不是圖片；目前只能傳送 PNG、JPEG、GIF 圖片。", true);
+    stage(image);
+    if (files.length > 1) showNote("一次只能送出一張圖片，已使用第一張。");
+  });
+
+  form.addEventListener("dragover", (event) => {
+    if ([...(event.dataTransfer?.types ?? [])].includes("Files")) event.preventDefault();
+  });
+  form.addEventListener("drop", (event) => {
+    const dropped = event.dataTransfer?.files?.[0];
+    if (!dropped) return;
+    event.preventDefault();
+    stage(dropped);
+  });
+
+  attachmentSend.addEventListener("click", submit);
+  attachmentCancel.addEventListener("click", () => {
+    clearStaged();
+    draft.focus();
+  });
+
+  attach.addEventListener("click", () => file.click());
+  file.addEventListener("change", () => {
+    const picked = file.files?.[0];
+    file.value = "";
+    if (!picked) return;
+    const problem = imageProblem(picked);
+    if (problem) return showNote(problem, true);
+    void uploadAndSend(picked, false);
+  });
+
+  function sendOwned(packageId: number, stickerId: number): void {
+    if (pending || uploading) return;
+    dispatch("sticker", { sticker: { packageId, stickerId } });
+  }
+
+  function renderStickers(): void {
+    tabs.replaceChildren();
+    grid.replaceChildren();
+    if (!packages) return;
+    stickerState.textContent = packages.length === 0 ? "此帳號沒有可用的貼圖包；可用下方「用 ID 手動送出」。" : "";
+    if (!packages.some((entry) => entry.packageId === activePackage)) activePackage = packages[0]?.packageId;
+    for (const entry of packages) {
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = "sticker-tab";
+      tab.role = "tab";
+      tab.ariaSelected = String(entry.packageId === activePackage);
+      tab.title = entry.name;
+      tab.ariaLabel = entry.name;
+      const icon = document.createElement("img");
+      icon.alt = "";
+      icon.loading = "lazy";
+      icon.src = `/media/stickerpack-${entry.packageId}`;
+      tab.append(icon);
+      tab.addEventListener("click", () => {
+        activePackage = entry.packageId;
+        renderStickers();
+      });
+      tabs.append(tab);
+    }
+    const active = packages.find((entry) => entry.packageId === activePackage);
+    if (!active) return;
+    for (const stickerId of active.stickerIds) {
+      const cell = document.createElement("button");
+      cell.type = "button";
+      cell.className = "sticker-cell";
+      cell.ariaLabel = `${active.name} 貼圖 ${stickerId}`;
+      const image = document.createElement("img");
+      image.alt = "";
+      image.loading = "lazy";
+      image.src = `/media/sticker-${stickerId}`;
+      cell.append(image);
+      cell.addEventListener("click", () => sendOwned(active.packageId, stickerId));
+      grid.append(cell);
+    }
+  }
+
+  function loadStickers(): void {
+    if (packages || stickerRequest) return;
+    const requestId = crypto.randomUUID();
+    if (!send({ type: "stickers:list", requestId })) {
+      stickerState.textContent = "尚未連線，請稍後再試。";
+      return;
+    }
+    stickerRequest = requestId;
+    stickerState.textContent = "載入我的貼圖中…";
+  }
 
   stickerToggle.addEventListener("click", () => {
     panel.hidden = !panel.hidden;
     refresh();
-    if (!panel.hidden) packageInput.focus();
+    if (!panel.hidden) loadStickers();
   });
 
   function updatePreview(): void {
@@ -160,15 +301,22 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     setChannel(next) {
       if (next === channelId) return;
       channelId = next;
-      // A draft belongs to the conversation it was written in.
+      // A draft (and a staged image) belongs to the conversation it was written in.
       draft.value = "";
+      clearStaged();
       resizeDraft();
       showNote("");
       refresh();
     },
     setConnected(next) {
       connected = next;
-      if (!next) finish();
+      if (!next) {
+        finish();
+        // The sticker list is fetched again after a reconnect (the server may be a different session).
+        packages = undefined;
+        stickerRequest = undefined;
+        renderStickers();
+      }
       refresh();
     },
     handleSent(requestId) {
@@ -180,14 +328,30 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
         resizeDraft();
       }
       if (kind === "sticker") panel.hidden = true;
+      const sendText = kind === "image" && followUpText;
+      if (kind === "image") clearStaged();
       showNote(kind === "image" ? "圖片已送出。" : "");
       refresh();
       draft.focus();
+      if (sendText) submitText();
+      return true;
+    },
+    handleStickers(requestId, list) {
+      if (stickerRequest !== requestId) return false;
+      stickerRequest = undefined;
+      packages = list;
+      renderStickers();
       return true;
     },
     handleError(requestId, message) {
+      if (requestId && requestId === stickerRequest) {
+        stickerRequest = undefined;
+        stickerState.textContent = `${message}（關閉再開啟面板可重試）`;
+        return true;
+      }
       if (!requestId || pending?.requestId !== requestId) return false;
       finish();
+      followUpText = false;
       showNote(message, true);
       return true;
     },
@@ -196,6 +360,10 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
       uploading = false;
       channelId = undefined;
       draft.value = "";
+      clearStaged();
+      packages = undefined;
+      stickerRequest = undefined;
+      renderStickers();
       packageInput.value = "";
       stickerInput.value = "";
       preview.hidden = true;
