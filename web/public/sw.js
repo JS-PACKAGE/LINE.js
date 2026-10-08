@@ -8,7 +8,10 @@
 // cookie the WebSocket needs, so a stale cached page must never win while the server is up. The
 // cached copy is only the offline fallback (the app then reports that the local service is down).
 
-const CACHE = "linejs-static-v1";
+// The page registers this script as /sw.js?v=<release>. The release names the cache, so installing a
+// new release's worker leaves the old release's files behind and `activate` deletes that cache.
+const RELEASE = new URL(self.location.href).searchParams.get("v") ?? "";
+const CACHE = `linejs-static-${/^[\w.-]{1,32}$/.test(RELEASE) ? RELEASE : "unversioned"}`;
 const SHELL = ["/", "/manifest.webmanifest", "/favicon.ico", "/icons/icon-192.png", "/icons/icon-512.png"];
 
 self.addEventListener("install", (event) => {

@@ -135,6 +135,10 @@ dialog#confirm::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
 .dialog-actions button { height: 40px; min-width: 84px; }
 #confirm-ok.danger { background: #b3261e; }
 #confirm-ok.danger:focus-visible { outline-color: #e8908a; }
+#notice { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 30; display: flex; align-items: center; gap: 12px; max-width: min(640px, calc(100vw - 24px)); padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 8px 28px #0000002e; font-size: 14px; line-height: 1.5; }
+#notice a { color: var(--accent); white-space: nowrap; }
+#notice button { padding: 6px 14px; white-space: nowrap; }
+#notice .ghost:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
 @media (prefers-color-scheme: dark) {
   :root { color: #e2eee8; background: #101b17; --line: #304b3c; --muted: #95b0a1; --surface: #172720; --soft: #213a2e; }
   .eyebrow { color: #8abd9f; }

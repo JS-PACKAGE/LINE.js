@@ -91,7 +91,7 @@ test("the server serves the PWA files with the right types and lets the worker a
 });
 
 /** Loads sw.js into a sandbox with a fake cache and returns handles to drive its events. */
-async function loadWorker() {
+async function loadWorker(search = "") {
   const source = await readFile(new URL("sw.js", PUBLIC), "utf8");
   const listeners = {};
   const stores = new Map();
@@ -116,7 +116,7 @@ async function loadWorker() {
   };
   const state = { fetch: async () => { throw new Error("offline"); }, claimed: false, skipped: false };
   const self = {
-    location: new URL("http://127.0.0.1:3789/"),
+    location: new URL(`http://127.0.0.1:3789/sw.js${search}`),
     addEventListener: (type, handler) => { listeners[type] = handler; },
     skipWaiting: async () => { state.skipped = true; },
     clients: { claim: async () => { state.claimed = true; } },
@@ -188,12 +188,21 @@ test("hashed build files are served from the cache and filled on first use", asy
   assert.deepEqual(worker.cacheCalls, [], "only same-origin responses are stored");
 });
 
-test("a new worker version removes its own old caches and nobody else's", async () => {
-  const worker = await loadWorker();
-  worker.stores.set("linejs-static-v0", new Map());
+test("a new release's worker keeps only its own cache and removes every other release's, never anyone else's", async () => {
+  const worker = await loadWorker("?v=0.2.0");
+  worker.stores.set("linejs-static-0.1.0", new Map());
+  worker.stores.set("linejs-static-unversioned", new Map());
   worker.stores.set("unrelated-cache", new Map());
   await worker.wait("install");
   await worker.wait("activate");
-  assert.deepEqual([...worker.stores.keys()].sort(), ["linejs-static-v1", "unrelated-cache"]);
+  assert.deepEqual([...worker.stores.keys()].sort(), ["linejs-static-0.2.0", "unrelated-cache"]);
   assert.equal(worker.state.claimed, true);
+});
+
+test("a missing or hostile release parameter falls back to one fixed cache name", async () => {
+  for (const search of ["", "?v=", "?v=../../x", "?v=a%20b", `?v=${"9".repeat(40)}`]) {
+    const worker = await loadWorker(search);
+    await worker.wait("install");
+    assert.deepEqual([...worker.stores.keys()], ["linejs-static-unversioned"], search);
+  }
 });

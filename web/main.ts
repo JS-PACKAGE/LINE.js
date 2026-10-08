@@ -9,6 +9,7 @@ import { mediaElement } from "./media.js";
 import { createRoleBadge } from "./badge.js";
 import { showMenu, type MenuItem } from "./menu.js";
 import { registerServiceWorker } from "./pwa.js";
+import { createUpdateNotice } from "./update.js";
 
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const login = $<HTMLElement>("#login");
@@ -32,6 +33,7 @@ const logoutButton = $<HTMLButtonElement>("#logout");
 const tabChats = $<HTMLButtonElement>("#tab-chats");
 const tabFriends = $<HTMLButtonElement>("#tab-friends");
 const chatsUnread = $<HTMLSpanElement>("#chats-unread");
+const notice = createUpdateNotice($<HTMLElement>("#notice"));
 
 const KIND_LABEL: Record<Channel["kind"], string> = { user: "好友", group: "群組", room: "聊天室", square: "社群" };
 const LISTEN_LABEL: Record<ListenState, string> = { starting: "啟動中", listening: "即時接收中", reconnecting: "LINE 重新連線中" };
@@ -60,6 +62,8 @@ let readPositions: Record<string, Record<string, bigint>> = {};
 let unreadFrom: { channelId: string; messageId: string; count: number } | undefined;
 // Newest message id per chat already reported to the server as read.
 let reportedRead: Record<string, bigint> = {};
+// True while the page and the service speak incompatible protocols: no frame but the next hello is trusted.
+let halted = false;
 let readTimer: ReturnType<typeof setTimeout> | undefined;
 
 interface HistoryState { cursor?: string; hasMore: boolean; loading: boolean; loaded: boolean; failed: boolean }
@@ -201,10 +205,6 @@ function keepPinned(): void {
   if (pinnedToBottom) messageList.scrollTop = messageList.scrollHeight;
 }
 
-function messageBody(message: Message): HTMLElement {
-  if (message.decryptFailed) {
-    const body = document.createElement("p");
-    body.className = "placeholder";
 // Sending is the one moment the reader certainly wants the newest line, wherever they had scrolled
 // to and whoever's id the echo carries (communities use another sender id): jump there and stay
 // pinned while pictures and stickers finish loading.
@@ -214,6 +214,10 @@ function scrollToLatest(): void {
   requestAnimationFrame(keepPinned);
 }
 
+function messageBody(message: Message): HTMLElement {
+  if (message.decryptFailed) {
+    const body = document.createElement("p");
+    body.className = "placeholder";
     body.textContent = "無法解密此訊息";
     return body;
   }
@@ -225,11 +229,11 @@ function scrollToLatest(): void {
     image.src = `/media/${message.mediaId}`;
     image.alt = "貼圖";
     image.loading = "lazy";
+    image.addEventListener("load", keepPinned);
     image.addEventListener("error", () => {
       // The CDN may not have this sticker (or is unreachable): fall back to the type label.
       const fallback = document.createElement("p");
       fallback.className = "placeholder";
-    image.addEventListener("load", keepPinned);
       fallback.textContent = "［貼圖］";
       image.replaceWith(fallback);
     });
@@ -482,21 +486,25 @@ function reportRead(): void {
 }
 
 async function handle(frame: ServerFrame): Promise<void> {
+  if (halted && frame.type !== "hello") return;
   switch (frame.type) {
     case "hello":
+      halted = !notice.hello(frame);
+      if (halted) return;
       // The server replays the full snapshot after every (re)connect.
       channels = [];
       readPositions = {};
       unreadFrom = undefined;
       messages = {};
-      halted = !notice.hello(frame);
-      if (halted) return;
       unread = {};
       opened = new Set();
       liveCounted = new Set();
       historyOf = {};
       pendingHistory = {};
       reportedRead = {};
+      return;
+    case "update:available":
+      notice.available(frame);
       return;
     case "auth:state":
       applyAuthState(frame.state);
@@ -555,7 +563,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       return;
     }
     case "sent":
-      composer.handleSent(frame.requestId);
+      if (composer.handleSent(frame.requestId)) scrollToLatest();
       return;
     case "stickers":
       composer.handleStickers(frame.requestId, frame.packages);
@@ -585,9 +593,29 @@ async function handle(frame: ServerFrame): Promise<void> {
   }
 }
 
+// The browser cookie that authorizes the socket is new for every service process, so a tab that
+// outlives a restart (an update!) is refused for good. After a few refusals, reload the page if
+// the service itself answers; once per half minute, so a service that is truly down is not looped on.
+let refusedConnects = 0;
+async function recoverStalePage(): Promise<void> {
+  const last = Number(sessionStorage.getItem("linejs-recover") ?? 0);
+  if (Date.now() - last < 30_000) return;
+  try {
+    if ((await fetch("/", { cache: "no-store" })).ok) {
+      sessionStorage.setItem("linejs-recover", String(Date.now()));
+      location.reload();
+    }
+  } catch {
+    // The service is down: keep retrying the socket.
+  }
+}
+
 function connect(): void {
   socket = new WebSocket(`ws://${location.host}/ws`);
+  let opened = false;
   socket.addEventListener("open", () => {
+    opened = true;
+    refusedConnects = 0;
     reconnectDelay = 1000;
     composer.setConnected(true);
   });
@@ -603,6 +631,7 @@ function connect(): void {
     composer.setConnected(false);
     if (signedIn) listenState.textContent = "與本機服務斷線，重新連線中…";
     else showLogin("無法連線至本機服務，正在重新連線…", false);
+    if (!opened && ++refusedConnects >= 3) void recoverStalePage();
     setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 10_000);
   });

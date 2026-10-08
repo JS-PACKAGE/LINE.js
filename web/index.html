@@ -13,6 +13,12 @@
     <script type="module" src="/main.ts"></script>
   </head>
   <body>
+    <div id="notice" role="status" aria-live="polite" hidden>
+      <span id="notice-text"></span>
+      <a id="notice-link" target="_blank" rel="noopener noreferrer" hidden>版本說明</a>
+      <button id="notice-action" type="button" hidden>重新整理</button>
+      <button id="notice-close" type="button" class="ghost" aria-label="關閉通知" hidden>✕</button>
+    </div>
     <main id="login">
       <header><span class="eyebrow">LOCAL LINE CLIENT</span><h1>LINE.js</h1></header>
       <p class="intro">訊息留在本機，連線從這裡開始。</p>
