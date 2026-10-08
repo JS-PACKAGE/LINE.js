@@ -168,6 +168,17 @@ test("upgrade is refused for wrong Origin, missing cookie or wrong path", async 
   await assert.rejects(new Promise((resolve, reject) => { wrongPath.once("open", resolve); wrongPath.once("error", reject); }));
 });
 
+test("behind a TLS-terminating proxy an https Origin for the same host gets in, any other host or scheme does not", async (t) => {
+  const { port, cookie } = await start(t);
+  const proxied = (origin) => connect(port, { Host: "line.example.com", Origin: origin, Cookie: cookie });
+  const accepted = proxied("https://line.example.com");
+  t.after(() => accepted.socket.close());
+  await accepted.opened;
+  for (const origin of ["https://evil.example", "https://line.example.com.evil.example", "ftp://line.example.com", "null"]) {
+    await assert.rejects(proxied(origin).opened, (error) => error.status === 403, origin);
+  }
+});
+
 test("a restored session receives ready state, profile, channels and cached messages on connect", async (t) => {
   const { port, cookie, login, hub } = await start(t);
   await login.restore();

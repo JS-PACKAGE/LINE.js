@@ -653,7 +653,7 @@ async function recoverStalePage(): Promise<void> {
 }
 
 function connect(): void {
-  socket = new WebSocket(`ws://${location.host}/ws`);
+  socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   let opened = false;
   socket.addEventListener("open", () => {
     opened = true;

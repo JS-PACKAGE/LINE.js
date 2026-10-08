@@ -198,7 +198,7 @@ Media   { mediaId, mime, size, kind: "image"｜"sticker"｜"video"｜"audio" }
 1. 監聽位址以 `config.yaml` 為準（v1.11 裁示：不強制 127.0.0.1）；預設與範本維持 `127.0.0.1`，不得為 `0.0.0.0`；非本機迴路時啟動警告。`Host` 標頭不檢查（任何 IP／網域皆可；代價是不防 DNS rebinding），Origin／cookie／Token 照常。
 2. QR URL 與 PIN **一次性顯示、不入日誌、不落盤**。
 3. `session.json` 含憑證與 E2EE key material：chmod **600**、列入 `.gitignore`、不入日誌、不分享。
-4. 網頁 WS 升級須 `Origin` 等於 `http://<Host 標頭>` 並帶瀏覽器 cookie；其餘來源拒絕升級。
+4. 網頁 WS 升級須 `Origin`（`http`／`https`）的主機部分等於 `Host` 標頭並帶瀏覽器 cookie；其餘來源拒絕升級。
 5. 每連線頻率限制：`message:send` ≤ 5/秒；`POST /media/upload` ≤ 10MB/檔、≤ 5 次/分鐘；frame ≤ 256KB。
 6. 媒體快取上限預設 200MB（LRU）；收到的媒體須先出現在已見訊息中才可請求，單檔上限預設 50MB，類型以內容判斷（不含 SVG／HTML）。
 7. 輸入驗證：`chatId` 格式（`u／c／r／s／m` 開頭，`m` 為 OpenChat）、`text` ≤ 8000 字、`limit` ≤ 100、`packageId`／`stickerId` 限正整數、上傳媒體以內容判斷（圖片 PNG／JPEG／GIF；影片 MP4／MOV）。

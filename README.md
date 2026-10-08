@@ -81,7 +81,7 @@ npm start
 
 ## 通訊協定
 
-同埠 `ws://<host>:<port>/ws`（預設 `ws://127.0.0.1:3789/ws`），JSON frames，單 frame 上限由 `limits.frameMaxBytes`（≤256KB）決定。升級須同時符合：路徑 `/ws`、`Origin` 與 `Host` 相同、並帶有首頁下發的 HttpOnly／SameSite=Strict 瀏覽器 cookie；否則回 403。完整負載見 [PLAN.md 第四節](PLAN.md)。
+同埠 `ws://<host>:<port>/ws`（預設 `ws://127.0.0.1:3789/ws`；經 TLS 反向代理或自訂網域時網頁自動改用 `wss://`），JSON frames，單 frame 上限由 `limits.frameMaxBytes`（≤256KB）決定。升級須同時符合：路徑 `/ws`、`Origin`（`http` 或 `https`）的主機與 `Host` 相同、並帶有首頁下發的 HttpOnly／SameSite=Strict 瀏覽器 cookie；否則回 403。反向代理須轉發 WebSocket 升級標頭並保留原始 `Host`（nginx：`proxy_set_header Host $host;`、`proxy_set_header Upgrade $http_upgrade;`、`proxy_set_header Connection "upgrade";`）。完整負載見 [PLAN.md 第四節](PLAN.md)。
 
 已提供：
 

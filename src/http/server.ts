@@ -9,7 +9,7 @@ import type { ApiTokenStore } from "./apiToken.js";
 
 export interface WebServer {
   server: Server;
-  /** Origin must equal the request's own origin and the per-process browser cookie must match; used for the WS upgrade. */
+  /** Origin (http or https) must have the request's own Host and the per-process browser cookie must match; used for the WS upgrade. */
   authorizeUpgrade(request: IncomingMessage): boolean;
   /** Bot endpoint: no Origin (so never a web page) and a valid `Authorization: Bearer` token. */
   authorizeApiUpgrade(request: IncomingMessage): boolean;
@@ -36,9 +36,21 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
     return /^[a-f0-9]{64}$/.test(cookie) && timingSafeEqual(Buffer.from(cookie), Buffer.from(browserToken));
   }
 
+  // Behind a TLS-terminating reverse proxy or tunnel the page (and so Origin) is https while this server only sees
+  // plain http, so the scheme cannot be pinned; the host part must still equal the Host the request came in under.
+  function sameOrigin(request: IncomingMessage): boolean {
+    const { host, origin } = request.headers;
+    if (!host || !origin) return false;
+    try {
+      const parsed = new URL(origin);
+      return (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.host === host.toLowerCase();
+    } catch {
+      return false;
+    }
+  }
+
   function authorizeUpgrade(request: IncomingMessage): boolean {
-    const host = request.headers.host;
-    if (!host || request.headers.origin !== `http://${host}`) return false;
+    if (!sameOrigin(request)) return false;
     return hasBrowserCookie(request);
   }
 
@@ -53,9 +65,9 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
   // Uploads are rare and single-user: one budget for the whole (single-browser) server.
   const uploadLimiter = new SlidingWindowLimiter(config.limits.uploadsPerMinute, 60_000);
 
-  async function handleUpload(request: IncomingMessage, response: ServerResponse, host: string): Promise<void> {
+  async function handleUpload(request: IncomingMessage, response: ServerResponse): Promise<void> {
     // Same-origin and cookie-bound: another website must not be able to queue media for sending.
-    if (request.headers.origin !== `http://${host}` || !hasBrowserCookie(request)) {
+    if (!sameOrigin(request) || !hasBrowserCookie(request)) {
       json(response, 403, { code: "FORBIDDEN" });
       return;
     }
@@ -121,7 +133,7 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
     }
     const url = new URL(request.url ?? "/", `http://${host}`);
     if (request.method === "POST" && url.pathname === "/media/upload") {
-      await handleUpload(request, response, host);
+      await handleUpload(request, response);
       return;
     }
     if (request.method !== "GET" && request.method !== "HEAD") {
