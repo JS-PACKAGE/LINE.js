@@ -81,6 +81,7 @@ dialog#viewer button { position: fixed; top: 14px; right: 18px; background: #000
 .unread-divider { display: flex; align-items: center; gap: 12px; color: var(--accent); font-size: 12px; font-weight: 600; }
 .unread-divider::before, .unread-divider::after { content: ""; flex: 1; height: 1px; background: currentColor; opacity: .35; }
 .message-main p.placeholder, .empty { color: var(--muted); font-style: italic; }
+.system-event { margin: 4px auto; padding: 3px 12px; max-width: 90%; border-radius: 999px; background: var(--soft); color: var(--muted); font-size: 12px; text-align: center; overflow-wrap: anywhere; }
 .sticker { display: block; width: 140px; max-width: 60%; height: auto; margin-top: 6px; }
 .empty { margin: auto; text-align: center; }
 .history-note { text-align: center; color: var(--muted); font-size: 13px; padding: 4px 0 8px; }

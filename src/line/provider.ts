@@ -7,6 +7,7 @@ import type { Channel, ChannelRef, HistoryPage, MemberRole, Mention, Message, Pr
 import { memberRole, mentionMetadata, replyTarget } from "./members.js";
 import { parseReadOperation, parseReadRanges } from "./read.js";
 import { parseOwnedProducts, parsePackageMeta, type PackageMeta } from "./stickers.js";
+import { chatEventMids, chatEventText, isChatEvent } from "./chatEvent.js";
 import { SessionStorage } from "./session.js";
 
 export interface QRCallbacks {
@@ -188,9 +189,9 @@ export class EvexLineProvider implements LineProvider {
     const profile = this.getProfile();
     this.rememberProfile(profile.userId, profile.displayName, profile.pictureId, true);
     // Sender lookups are asynchronous; chaining keeps messages in arrival order.
-    const deliver = (source: "talk" | "square", senderMid: string, convert: () => Message, kind: "new" | "edit") => {
+    const deliver = (source: "talk" | "square", senderMid: string, convert: () => Message, kind: "new" | "edit", extraMids: string[] = []) => {
       this.deliveries = this.deliveries.then(async () => {
-        await this.resolveMembers(client, source, [senderMid]);
+        await this.resolveMembers(client, source, [senderMid, ...extraMids]);
         if (this.client !== client) return;
         let message: Message;
         try {
@@ -203,7 +204,7 @@ export class EvexLineProvider implements LineProvider {
         this.events.onMessage(message, kind);
       });
     };
-    client.on("message", (message) => deliver("talk", message.raw.from, () => this.talkToMessage(message.raw, profile.userId), "new"));
+    client.on("message", (message) => deliver("talk", message.raw.from, () => this.talkToMessage(message.raw, profile.userId), "new", chatEventMids(message.raw.contentMetadata)));
     client.on("message:edit", (message) => deliver("talk", message.raw.from, () => this.talkToMessage(message.raw, profile.userId), "edit"));
     client.on("square:message", (message) => deliver("square", message.raw.message.from, () => this.squareToMessage(message.raw), "new"));
     client.on("event", (operation) => {
@@ -225,10 +226,14 @@ export class EvexLineProvider implements LineProvider {
     const type = String(raw.toType);
     const channelKind = type === "USER" || type === "0" ? "user" : type === "ROOM" || type === "1" ? "room" : "group";
     const channelId = channelKind === "user" && raw.from === myMid ? raw.to : channelKind === "user" ? raw.from : raw.to;
+    const contentType = String(raw.contentType);
+    const eventText = isChatEvent(contentType) && channelKind !== "user"
+      ? chatEventText(raw.contentMetadata, channelKind === "room" ? "聊天室" : "群組", (mid) => this.profiles.get(mid)?.name ?? UNKNOWN_MEMBER)
+      : undefined;
     return this.toMessage({
-      id: raw.id, channelId, channelKind, senderId: raw.from, text: raw.text, contentType: String(raw.contentType),
+      id: raw.id, channelId, channelKind, senderId: raw.from, text: raw.text, contentType,
       createdTime: raw.createdTime, encrypted: undecryptable || (raw.chunks?.length ?? 0) > 0, metadata: raw.contentMetadata,
-      mediaId: this.rememberMedia(raw, false), replyTo: replyTarget(raw.messageRelationType, raw.relatedMessageId),
+      mediaId: this.rememberMedia(raw, false), replyTo: replyTarget(raw.messageRelationType, raw.relatedMessageId), eventText,
     });
   }
 
@@ -254,7 +259,7 @@ export class EvexLineProvider implements LineProvider {
   private toMessage(fields: {
     id: unknown; channelId: string; channelKind: Message["channelKind"]; senderId: string;
     text: string | undefined; contentType: string; createdTime: unknown; encrypted: boolean;
-    metadata: Record<string, string> | undefined; mediaId?: string | undefined; replyTo?: string | undefined;
+    metadata: Record<string, string> | undefined; mediaId?: string | undefined; replyTo?: string | undefined; eventText?: string | undefined;
   }): Message {
     const { text } = fields;
     // Numeric content types are normalised so the browser only ever sees one spelling.
@@ -272,8 +277,8 @@ export class EvexLineProvider implements LineProvider {
       senderName: this.profiles.get(fields.senderId)?.name ?? UNKNOWN_MEMBER,
       ...(this.profiles.get(fields.senderId)?.pictureId ? { senderPictureId: this.profiles.get(fields.senderId)!.pictureId } : {}),
       ...(this.profiles.get(fields.senderId)?.role ? { senderRole: this.profiles.get(fields.senderId)!.role } : {}),
-      ...(isText && text ? { text } : {}),
-      contentType,
+      ...(isText && text ? { text } : fields.eventText ? { text: fields.eventText } : {}),
+      contentType: isChatEvent(contentType) ? "CHATEVENT" : contentType,
       createdAt: Number.isFinite(created) && created > 0 ? created : Date.now(),
       ...(mediaId ? { mediaId } : {}),
       ...(fields.replyTo ? { replyTo: fields.replyTo } : {}),
@@ -549,7 +554,7 @@ export class EvexLineProvider implements LineProvider {
       }
       readable.push({ raw: decoded, undecryptable });
     }
-    await this.resolveMembers(client, "talk", readable.map((entry) => entry.raw.from));
+    await this.resolveMembers(client, "talk", readable.flatMap((entry) => [entry.raw.from, ...chatEventMids(entry.raw.contentMetadata)]));
     const myMid = this.getProfile().userId;
     const messages = readable.map((entry) => this.talkToMessage(entry.raw, myMid, entry.undecryptable));
     messages.sort((a, b) => a.createdAt - b.createdAt);

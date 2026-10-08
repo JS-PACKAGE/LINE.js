@@ -54,7 +54,7 @@ document.addEventListener("keydown", (event) => {
 const KIND_LABEL: Record<Channel["kind"], string> = { user: "好友", group: "群組", room: "聊天室", square: "社群" };
 const LISTEN_LABEL: Record<ListenState, string> = { starting: "啟動中", listening: "即時接收中", reconnecting: "LINE 重新連線中" };
 const CONTENT_LABEL: Record<string, string> = {
-  IMAGE: "圖片", VIDEO: "影片", AUDIO: "語音", FILE: "檔案", STICKER: "貼圖", LOCATION: "位置", CONTACT: "聯絡人", FLEX: "卡片訊息",
+  IMAGE: "圖片", VIDEO: "影片", AUDIO: "語音", FILE: "檔案", STICKER: "貼圖", LOCATION: "位置", CONTACT: "聯絡人", FLEX: "卡片訊息", CHATEVENT: "系統訊息",
 };
 
 let socket: WebSocket | undefined;
@@ -322,7 +322,14 @@ function quoteNode(message: Message): HTMLElement {
 }
 
 function messageNode(message: Message, previous: Message | undefined, readLabel: string | undefined): HTMLElement {
-  const continued = previous?.senderId === message.senderId && message.createdAt - previous.createdAt < CONTINUE_WITHIN_MS;
+  if (message.contentType === "CHATEVENT" && message.text) {
+    const notice = document.createElement("p");
+    notice.className = "system-event";
+    notice.dataset.messageId = message.messageId;
+    notice.textContent = message.text;
+    return notice;
+  }
+  const continued = previous?.contentType !== "CHATEVENT" && previous?.senderId === message.senderId && message.createdAt - previous.createdAt < CONTINUE_WITHIN_MS;
   const item = document.createElement("article");
   item.className = continued ? "message continued" : "message";
   item.dataset.messageId = message.messageId;
