@@ -1,6 +1,6 @@
 {
   "name": "line-js-local-client",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "private": true,
   "description": "Local-only LINE web client",
   "license": "Apache-2.0",
