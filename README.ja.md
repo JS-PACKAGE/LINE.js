@@ -102,7 +102,7 @@ PWA としてインストールできます（ブラウザーの「安裝」（�
 | Client → Server | `history:fetch` / `message:send` | 履歴 1 ページの取得／テキスト、画像（先に `POST /media/upload`）、スタンプの送信 |
 | Client → Server | `stickers:list` → `stickers` | このアカウントの所有済みスタンプパックとスタンプ id の取得 |
 | Client → Server | `chat:read` | 指定メッセージまでの既読通知（応答なし。サーバーが表示済みのメッセージに限り、各位置につき 1 回のみ送信） |
-| Client → Server | `message:send`（`mentions`／`replyTo`） | テキスト送信に @ メンションと返信先を添付可能（右クリックメニュー：「回覆」（返信）、「@ 提及」（@ メンション）、「複製文字」（テキストをコピー）） |
+| Client → Server | `message:send`（`mentions`／`replyTo`） | テキスト送信に @ メンションと返信先を添付可能（右クリックメニュー：「回覆」（返信）、「@ 提及」（@ メンション）、「複製文字」（テキストをコピー）；画像には「複製圖片」（画像をコピー）と「下載圖片」（画像をダウンロード）、動画には「下載影片」（動画をダウンロード）も表示） |
 | Client → Server | `channels:refresh` / `ping` | チャンネルの再取得／接続維持 |
 | Server → Client | `api:state` / `api:token` | ボット API の状態（Web ページのみ）／新しく生成した Token（要求元の接続のみに 1 回限り送信） |
 | Client → Server | `api:token:create` / `api:token:revoke` | ボット Token の生成・取り消し（Web 接続のみ。ボットは利用不可） |

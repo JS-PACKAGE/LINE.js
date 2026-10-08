@@ -11,6 +11,7 @@ import { createRoleBadge } from "./badge.js";
 import { showMenu, type MenuItem } from "./menu.js";
 import { registerServiceWorker } from "./pwa.js";
 import { createUpdateNotice } from "./update.js";
+import { copyImage, downloadMedia } from "./save.js";
 
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const login = $<HTMLElement>("#login");
@@ -302,6 +303,15 @@ function openMessageMenu(message: Message, x: number, y: number): void {
   }
   if (taggable(message)) items.push({ label: `@ 提及 ${message.senderName}`, action: () => composer.insertMention({ userId: message.senderId, name: message.senderName }) });
   if (message.text) items.push({ label: "複製文字", action: () => { void navigator.clipboard?.writeText(message.text!).catch(() => {}); } });
+  if (message.mediaId && (message.contentType === "IMAGE" || message.contentType === "VIDEO")) {
+    const mediaId = message.mediaId;
+    const isImage = message.contentType === "IMAGE";
+    // Only images can be copied: the clipboard has no video format. It also needs a secure context.
+    if (isImage && typeof ClipboardItem !== "undefined" && navigator.clipboard) {
+      items.push({ label: "複製圖片", action: () => { void copyImage(mediaId).catch(() => {}); } });
+    }
+    items.push({ label: isImage ? "下載圖片" : "下載影片", action: () => { void downloadMedia(mediaId).catch(() => {}); } });
+  }
   showMenu(x, y, items);
 }
 

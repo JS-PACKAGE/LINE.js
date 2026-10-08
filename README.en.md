@@ -102,7 +102,7 @@ Available:
 | Client → Server | `history:fetch` / `message:send` | Load one history page/send text, images (first `POST /media/upload`), or stickers |
 | Client → Server | `stickers:list` → `stickers` | Retrieve sticker packs owned by this account and sticker ids |
 | Client → Server | `chat:read` | Report messages read through a specific message (no response; only messages already displayed by the server, once per position) |
-| Client → Server | `message:send` (`mentions`／`replyTo`) | Text may include @ mentions and a reply target (message context menu: 「回覆」 (Reply), 「@ 提及」 (@ Mention), 「複製文字」 (Copy text)) |
+| Client → Server | `message:send` (`mentions`／`replyTo`) | Text may include @ mentions and a reply target (message context menu: 「回覆」 (Reply), 「@ 提及」 (@ Mention), 「複製文字」 (Copy text); images also offer 「複製圖片」 (Copy image) and 「下載圖片」 (Download image), videos 「下載影片」 (Download video)) |
 | Client → Server | `channels:refresh` / `ping` | Reload channels/keep the connection alive |
 | Server → Client | `api:state` / `api:token` | Bot API state (web interface only)/newly generated Token (sent only once to the requesting connection) |
 | Client → Server | `api:token:create` / `api:token:revoke` | Generate or revoke a bot Token (web connections only, not bots) |
