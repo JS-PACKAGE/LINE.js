@@ -1,9 +1,11 @@
 import QRCode from "qrcode";
 import "./style.css";
-import type { AuthState, Channel, Message } from "../src/model/dto.js";
+import type { AuthState, Channel, Message, Profile } from "../src/model/dto.js";
 import type { ClientFrame, ListenState, ServerFrame } from "../src/ws/protocol.js";
 import { createComposer } from "./composer.js";
 import { confirmDialog } from "./dialog.js";
+import { createAvatar } from "./avatar.js";
+import { mediaElement } from "./media.js";
 
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const login = $<HTMLElement>("#login");
@@ -14,11 +16,13 @@ const qrBox = $<HTMLDivElement>("#qr-box");
 const canvas = $<HTMLCanvasElement>("#qr");
 const pin = $<HTMLParagraphElement>("#pin");
 const meName = $<HTMLElement>("#me-name");
+const meAvatar = $<HTMLSpanElement>("#me-avatar");
 const listenState = $<HTMLSpanElement>("#listen-state");
 const filter = $<HTMLInputElement>("#filter");
 const channelList = $<HTMLUListElement>("#channels");
 const channelsEmpty = $<HTMLParagraphElement>("#channels-empty");
 const channelTitle = $<HTMLHeadingElement>("#channel-title");
+const channelAvatar = $<HTMLSpanElement>("#channel-avatar");
 const channelMeta = $<HTMLSpanElement>("#channel-meta");
 const messageList = $<HTMLDivElement>("#messages");
 const logoutButton = $<HTMLButtonElement>("#logout");
@@ -42,6 +46,10 @@ let unread: Record<string, number> = {};
 let tab: "chats" | "friends" = "chats";
 let selected: string | undefined;
 let myUserId: string | undefined;
+// Other members' read positions per chat (last message each has read), used for "已讀" labels.
+let readPositions: Record<string, Record<string, bigint>> = {};
+// Where the "未讀" divider sits in the chat that was just opened; dropped when switching chats.
+let unreadFrom: { channelId: string; messageId: string; count: number } | undefined;
 
 interface HistoryState { cursor?: string; hasMore: boolean; loading: boolean; loaded: boolean; failed: boolean }
 let historyOf: Record<string, HistoryState> = {};
@@ -85,6 +93,8 @@ function applyAuthState(state: AuthState): void {
     filter.value = "";
     historyOf = {};
     pendingHistory = {};
+    readPositions = {};
+    unreadFrom = undefined;
     composer.reset();
   }
   clearSecrets();
@@ -94,12 +104,13 @@ function applyAuthState(state: AuthState): void {
   else showLogin("登入失敗或 QR 已失效，請重新產生。", true, "重新產生登入 QR code");
 }
 
-function enterChat(name: string): void {
+function enterChat(profile: Profile): void {
   signedIn = true;
   clearSecrets();
   login.hidden = true;
   app.hidden = false;
-  meName.textContent = name;
+  meName.textContent = profile.displayName;
+  meAvatar.replaceChildren(createAvatar(profile.pictureId, profile.displayName));
   logoutButton.disabled = false;
   renderChannels();
   renderMessages();
@@ -142,7 +153,7 @@ function renderChannels(): void {
     const name = document.createElement("span");
     name.className = "channel-name";
     name.textContent = channel.name;
-    item.append(name);
+    item.append(createAvatar(channel.pictureId, channel.name), name);
     if (tab === "chats") {
       const kind = document.createElement("small");
       kind.textContent = KIND_LABEL[channel.kind] + (channel.memberCount ? ` · ${channel.memberCount} 人` : "");
@@ -166,21 +177,24 @@ function renderChannels(): void {
   renderTabs();
 }
 
-function messageNode(message: Message): HTMLElement {
-  const item = document.createElement("article");
-  item.className = "message";
-  item.dataset.messageId = message.messageId;
-  const head = document.createElement("header");
-  const sender = document.createElement("strong");
-  sender.textContent = message.senderName;
-  const time = document.createElement("time");
-  time.textContent = formatTime(message.createdAt) + (message.editedAt ? "（已編輯）" : "");
-  head.append(sender, time);
-  const body = document.createElement("p");
+const CONTINUE_WITHIN_MS = 5 * 60_000;
+
+// True while the reader is at the newest message; media that finishes loading then keeps it in view.
+let pinnedToBottom = true;
+function keepPinned(): void {
+  if (pinnedToBottom) messageList.scrollTop = messageList.scrollHeight;
+}
+
+function messageBody(message: Message): HTMLElement {
   if (message.decryptFailed) {
+    const body = document.createElement("p");
     body.className = "placeholder";
     body.textContent = "無法解密此訊息";
-  } else if (message.mediaId && message.contentType === "STICKER") {
+    return body;
+  }
+  const media = message.mediaId ? mediaElement(message.contentType, message.mediaId, keepPinned) : undefined;
+  if (media) return media;
+  if (message.mediaId && message.contentType === "STICKER") {
     const image = document.createElement("img");
     image.className = "sticker";
     image.src = `/media/${message.mediaId}`;
@@ -193,26 +207,83 @@ function messageNode(message: Message): HTMLElement {
       fallback.textContent = "［貼圖］";
       image.replaceWith(fallback);
     });
-    item.append(head, image);
-    return item;
-  } else if (message.text) {
+    return image;
+  }
+  const body = document.createElement("p");
+  if (message.text) {
     body.textContent = message.text;
   } else {
     body.className = "placeholder";
     body.textContent = `［${CONTENT_LABEL[message.contentType] ?? "不支援的內容"}］`;
   }
-  item.append(head, body);
+  return body;
+}
+
+/** How many other members have read one of my own messages; undefined where receipts do not apply. */
+function readCount(message: Message): number | undefined {
+  if (message.senderId !== myUserId || message.channelKind === "square" || !/^\d{1,20}$/.test(message.messageId)) return undefined;
+  const id = BigInt(message.messageId);
+  return Object.values(readPositions[message.channelId] ?? {}).filter((position) => position >= id).length;
+}
+
+/** "已讀" goes on the newest of a run of my messages that share the same read count, like LINE does. */
+function readLabels(list: Message[]): (string | undefined)[] {
+  const labels: (string | undefined)[] = new Array<string | undefined>(list.length);
+  let later: number | undefined;
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const count = readCount(list[index]!);
+    if (count === undefined) continue;
+    if (count > 0 && count !== later) labels[index] = list[index]!.channelKind === "user" ? "已讀" : `已讀 ${count}`;
+    later = count;
+  }
+  return labels;
+}
+
+function messageNode(message: Message, previous: Message | undefined, readLabel: string | undefined): HTMLElement {
+  const continued = previous?.senderId === message.senderId && message.createdAt - previous.createdAt < CONTINUE_WITHIN_MS;
+  const item = document.createElement("article");
+  item.className = continued ? "message continued" : "message";
+  item.dataset.messageId = message.messageId;
+  const main = document.createElement("div");
+  main.className = "message-main";
+  const when = formatTime(message.createdAt) + (message.editedAt ? "（已編輯）" : "");
+  const body = messageBody(message);
+  if (continued) {
+    // Same sender just above: no repeated avatar/name, the time stays reachable on hover.
+    body.title = when;
+    item.append(document.createElement("span"));
+  } else {
+    const head = document.createElement("header");
+    const sender = document.createElement("strong");
+    sender.textContent = message.senderName;
+    const time = document.createElement("time");
+    time.textContent = when;
+    head.append(sender, time);
+    main.append(head);
+    item.append(createAvatar(message.senderPictureId, message.senderName));
+  }
+  main.append(body);
+  if (readLabel) {
+    const read = document.createElement("small");
+    read.className = "read-state";
+    read.textContent = readLabel;
+    main.append(read);
+  }
+  item.append(main);
   return item;
 }
 
 function renderMessages(anchor: "bottom" | "keep" | "prepend" = "bottom"): void {
   const channel = channels.find((entry) => entry.channelId === selected);
   channelTitle.textContent = channel?.name ?? "選擇一個聊天室";
+  channelAvatar.replaceChildren(...(channel ? [createAvatar(channel.pictureId, channel.name)] : []));
   channelMeta.textContent = channel ? KIND_LABEL[channel.kind] : "";
   const list = selected ? (messages[selected] ?? []) : [];
   const state = selected ? historyOf[selected] : undefined;
   const previousHeight = messageList.scrollHeight;
   const previousTop = messageList.scrollTop;
+  // Re-renders that add a line (a read label, a divider) must not push the newest message out of view.
+  const atBottom = previousHeight - previousTop - messageList.clientHeight < 8;
   if (!channel || list.length === 0) {
     const empty = document.createElement("p");
     empty.className = "empty";
@@ -238,9 +309,19 @@ function renderMessages(anchor: "bottom" | "keep" | "prepend" = "bottom"): void 
     else marker.textContent = "— 已經是最早的訊息 —";
     nodes.push(marker);
   }
-  nodes.push(...list.map(messageNode));
+  const labels = readLabels(list);
+  const divider = unreadFrom?.channelId === selected ? unreadFrom : undefined;
+  list.forEach((message, index) => {
+    if (divider?.messageId === message.messageId) {
+      const line = document.createElement("div");
+      line.className = "unread-divider";
+      line.textContent = `${divider.count} 則未讀訊息`;
+      nodes.push(line);
+    }
+    nodes.push(messageNode(message, list[index - 1], labels[index]));
+  });
   messageList.replaceChildren(...nodes);
-  if (anchor === "bottom") messageList.scrollTop = messageList.scrollHeight;
+  if (anchor === "bottom" || (anchor === "keep" && atBottom)) messageList.scrollTop = messageList.scrollHeight;
   // Older messages were inserted above: keep what the reader was looking at in place.
   else if (anchor === "prepend") messageList.scrollTop = previousTop + (messageList.scrollHeight - previousHeight);
   else messageList.scrollTop = previousTop;
@@ -296,6 +377,8 @@ async function handle(frame: ServerFrame): Promise<void> {
     case "hello":
       // The server replays the full snapshot after every (re)connect.
       channels = [];
+      readPositions = {};
+      unreadFrom = undefined;
       messages = {};
       unread = {};
       historyOf = {};
@@ -315,7 +398,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       return;
     case "auth:ready":
       myUserId = frame.profile.userId;
-      enterChat(frame.profile.displayName);
+      enterChat(frame.profile);
       return;
     case "channels":
       channels = frame.channels;
@@ -341,6 +424,15 @@ async function handle(frame: ServerFrame): Promise<void> {
     case "history":
       applyHistory(frame);
       return;
+    case "read": {
+      const known = (readPositions[frame.chatId] ??= {});
+      for (const position of frame.positions) {
+        const id = BigInt(position.messageId);
+        if (!(position.readerId in known) || id > known[position.readerId]!) known[position.readerId] = id;
+      }
+      if (frame.chatId === selected) renderMessages("keep");
+      return;
+    }
     case "sent":
       composer.handleSent(frame.requestId);
       return;
@@ -435,6 +527,11 @@ logoutButton.addEventListener("click", async () => {
 function selectChannel(item: EventTarget | null): void {
   const id = (item as HTMLElement | null)?.closest<HTMLElement>("li")?.dataset.channelId;
   if (!id) return;
+  if (id !== selected) {
+    const list = messages[id] ?? [];
+    const count = unread[id] ?? 0;
+    unreadFrom = count > 0 && count <= list.length ? { channelId: id, messageId: list[list.length - count]!.messageId, count } : undefined;
+  }
   selected = id;
   delete unread[id];
   composer.setChannel(id);
@@ -451,6 +548,7 @@ channelList.addEventListener("keydown", (event) => {
 });
 
 messageList.addEventListener("scroll", () => {
+  pinnedToBottom = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 80;
   const state = selected ? historyOf[selected] : undefined;
   // Near the top: load the next older page, unless the last attempt failed (then the user retries explicitly).
   if (selected && state?.loaded && state.hasMore && !state.loading && !state.failed && messageList.scrollTop < 80) requestHistory(selected);

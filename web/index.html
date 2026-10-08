@@ -24,6 +24,7 @@
     <div id="app" hidden>
       <aside class="sidebar" aria-label="聊天室清單">
         <header class="me">
+          <span id="me-avatar" class="avatar-slot"></span>
           <strong id="me-name"></strong>
           <span id="listen-state" class="pill"></span>
           <button id="logout" type="button" class="ghost">登出</button>
@@ -38,6 +39,7 @@
       </aside>
       <section class="conversation" aria-label="訊息">
         <header class="conversation-head">
+          <span id="channel-avatar" class="avatar-slot"></span>
           <h2 id="channel-title">選擇一個聊天室</h2>
           <span id="channel-meta"></span>
         </header>
@@ -71,6 +73,11 @@
           <button id="confirm-ok" type="button">確定</button>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="viewer" aria-label="圖片檢視">
+      <img alt="" />
+      <button type="button" class="ghost" aria-label="關閉">✕</button>
     </dialog>
   </body>
 </html>

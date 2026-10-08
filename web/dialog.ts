@@ -48,3 +48,16 @@ export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
   (options.danger ? cancel : ok).focus();
   return promise;
 }
+
+/** Full-size view of an image from the chat; any click or Esc closes it. */
+export function showImage(src: string): void {
+  const viewer = document.querySelector<HTMLDialogElement>("#viewer")!;
+  const image = viewer.querySelector<HTMLImageElement>("img")!;
+  if (!viewer.dataset.ready) {
+    viewer.dataset.ready = "1";
+    viewer.addEventListener("click", () => viewer.close());
+    viewer.addEventListener("close", () => image.removeAttribute("src"));
+  }
+  image.src = src;
+  viewer.showModal();
+}
