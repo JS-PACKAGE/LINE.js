@@ -69,7 +69,7 @@ npm start
 
 `config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`chat`、`update`、`api`、`limits`（`chat`、`update`、`api` 區段與 `limits.downloadMaxBytes`、`limits.uploadVideoMaxBytes` 可省略，舊設定檔照常運作；`api` 預設關閉）。
 
-- 監聽 host：預設且建議 `127.0.0.1`。以 `config.yaml` 為準，可改為其他主機名稱、IPv4 或 IPv6；程式不再強制本機迴路。網頁沒有帳號密碼，能連到該位址的人就能操作已登入的 LINE 帳號，啟動時非本機位址會印出警告；`Host` 標頭須等於設定的「位址:埠」或 `localhost:埠`。
+- 監聽 host：預設且建議 `127.0.0.1`。以 `config.yaml` 為準，可改為其他主機名稱、IPv4 或 IPv6；程式不再強制本機迴路。網頁沒有帳號密碼，能連到該位址的人就能操作已登入的 LINE 帳號，啟動時非本機位址會印出警告。`Host` 標頭：監聽本機迴路（`127.0.0.1`／`localhost`／`::1`）時須等於設定的「位址:埠」或 `localhost:埠`（防 DNS rebinding）；監聽其他位址（如 `0.0.0.0`）時**不限制 `Host` 名稱**，用任何 IP 或網域名稱連入都可以（`Origin`、cookie 與 Token 檢查不變）。
 - port：預設 `3789`，可調整；host 與 port 從 `config.yaml` 讀取，程式不得寫死。
 - LINE 裝置：預設 `ANDROIDSECONDARY`。
 - 歷史筆數：預設 50，單次最多 100。
@@ -81,7 +81,7 @@ npm start
 
 ## 通訊協定
 
-同埠 `ws://<host>:<port>/ws`（預設 `ws://127.0.0.1:3789/ws`），JSON frames，單 frame 上限由 `limits.frameMaxBytes`（≤256KB）決定。升級須同時符合：路徑 `/ws`、`Host` 為設定的位址、`Origin` 與 `Host` 相同、並帶有首頁下發的 HttpOnly／SameSite=Strict 瀏覽器 cookie；否則回 403。完整負載見 [PLAN.md 第四節](PLAN.md)。
+同埠 `ws://<host>:<port>/ws`（預設 `ws://127.0.0.1:3789/ws`），JSON frames，單 frame 上限由 `limits.frameMaxBytes`（≤256KB）決定。升級須同時符合：路徑 `/ws`、`Host` 合法（見〈設定〉）、`Origin` 與 `Host` 相同、並帶有首頁下發的 HttpOnly／SameSite=Strict 瀏覽器 cookie；否則回 403。完整負載見 [PLAN.md 第四節](PLAN.md)。
 
 已提供：
 
@@ -124,7 +124,7 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 3. 機器人連到 `ws://<host>:<port>/api/ws`（預設 `ws://127.0.0.1:3789/api/ws`），帶標頭 `Authorization: Bearer <Token>`。
 
 **連線規則**
-- 升級須同時符合：`api.enabled`、`Host` 為設定的位址（或 `localhost`）、**不可帶 `Origin`**（瀏覽器的 WebSocket 一定會帶，所以任何網頁都無法使用這個入口，即使 Token 外洩到網頁也一樣）、Token 正確（以固定時間比對）。失敗一律回 403，不透露是哪一項；同時最多 4 個連線，超過回 429。
+- 升級須同時符合：`api.enabled`、`Host` 合法（同網頁，見〈設定〉）、**不可帶 `Origin`**（瀏覽器的 WebSocket 一定會帶，所以任何網頁都無法使用這個入口，即使 Token 外洩到網頁也一樣）、Token 正確（以固定時間比對）。失敗一律回 403，不透露是哪一項；同時最多 4 個連線，超過回 429。
 - 換 Token 或撤銷會**立即**中斷所有機器人連線（close code 1008），舊 Token 不再有效。
 
 **可以做什麼（影格白名單）**

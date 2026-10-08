@@ -17,9 +17,13 @@ export interface WebServer {
 
 export function createWebServer(config: Config, webRoot: string, media: MediaService, apiTokens: ApiTokenStore): WebServer {
   const browserToken = randomBytes(32).toString("hex");
-  // The Host header must name the address configured for this server (or localhost); anything else is a rebinding attempt.
+  // Loopback binds only answer to their own names: any other Host there is a DNS-rebinding attempt. A server the
+  // operator deliberately bound to another address is reached under whatever name or IP the network gives it, so
+  // the Host header cannot be pinned (requests stay same-origin and cookie-bound).
   const authority = config.server.host.includes(":") ? `[${config.server.host}]` : config.server.host;
-  const hosts: Record<string, true> = { [`${authority}:${config.server.port}`]: true, [`localhost:${config.server.port}`]: true };
+  const loopbackHosts: Record<string, true> = { [`${authority}:${config.server.port}`]: true, [`localhost:${config.server.port}`]: true };
+  const loopbackOnly = ["127.0.0.1", "localhost", "::1"].includes(config.server.host);
+  const hostAllowed = (host: string | undefined): host is string => host !== undefined && host !== "" && (!loopbackOnly || loopbackHosts[host] === true);
   const mime: Record<string, string> = {
     ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml",
     ".webmanifest": "application/manifest+json; charset=utf-8", ".png": "image/png", ".ico": "image/x-icon",
@@ -37,7 +41,7 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
 
   function authorizeUpgrade(request: IncomingMessage): boolean {
     const host = request.headers.host;
-    if (!host || hosts[host] !== true || request.headers.origin !== `http://${host}`) return false;
+    if (!hostAllowed(host) || request.headers.origin !== `http://${host}`) return false;
     return hasBrowserCookie(request);
   }
 
@@ -45,7 +49,7 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
     const host = request.headers.host;
     // Browsers always attach Origin to a WebSocket handshake; a bot does not. Refusing it keeps every
     // web page out even if the token ever leaks into one.
-    if (!config.api.enabled || !host || hosts[host] !== true || request.headers.origin !== undefined) return false;
+    if (!config.api.enabled || !hostAllowed(host) || request.headers.origin !== undefined) return false;
     const bearer = /^Bearer (\S+)$/.exec(request.headers.authorization ?? "")?.[1];
     return bearer !== undefined && apiTokens.verify(bearer);
   }
@@ -115,7 +119,7 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
     response.setHeader("Referrer-Policy", "no-referrer");
     response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; manifest-src 'self'; worker-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
     const host = request.headers.host;
-    if (!host || hosts[host] !== true || request.headers["sec-fetch-site"] === "cross-site") {
+    if (!hostAllowed(host) || request.headers["sec-fetch-site"] === "cross-site") {
       json(response, 403, { code: "FORBIDDEN" });
       return;
     }

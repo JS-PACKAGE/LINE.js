@@ -91,6 +91,28 @@ test("the server serves the PWA files with the right types and lets the worker a
   assert.equal(badHost, 403);
 });
 
+test("a server bound beyond loopback answers under any Host name but still refuses cross-site requests", async (t) => {
+  const port = await freePort();
+  const config = { server: { host: "0.0.0.0", port }, history: { defaultLimit: 50 }, chat: { sendReadReceipts: false }, api: { enabled: false }, limits: { frameMaxBytes: 1024, textMaxLength: 20, sendsPerSecond: 5, uploadMaxBytes: 2048, uploadVideoMaxBytes: 4096, uploadsPerMinute: 3, downloadMaxBytes: 1 } };
+  const web = createWebServer(config, new URL(DIST).pathname, new MediaService(1024, {}), new ApiTokenStore("/nonexistent/api-token.json"));
+  await new Promise((resolve) => web.server.listen(port, "127.0.0.1", resolve));
+  t.after(async () => {
+    web.server.closeAllConnections();
+    await new Promise((resolve) => web.server.close(resolve));
+  });
+  const status = (headers) => new Promise((resolve, reject) => {
+    const probe = httpRequest({ host: "127.0.0.1", port, path: "/sw.js", headers }, (response) => {
+      response.resume();
+      resolve(response.statusCode);
+    });
+    probe.on("error", reject);
+    probe.end();
+  });
+  assert.equal(await status({ Host: `192.168.1.20:${port}` }), 200, "LAN address");
+  assert.equal(await status({ Host: `pc.example.lan:${port}` }), 200, "host name");
+  assert.equal(await status({ Host: `192.168.1.20:${port}`, "Sec-Fetch-Site": "cross-site" }), 403, "cross-site stays refused");
+});
+
 /** Loads sw.js into a sandbox with a fake cache and returns handles to drive its events. */
 async function loadWorker(search = "") {
   const source = await readFile(new URL("sw.js", PUBLIC), "utf8");
