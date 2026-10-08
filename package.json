@@ -9,8 +9,9 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json && vite build web --outDir ../dist/web --emptyOutDir",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.web.json",
+    "start": "node dist/main.js",
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {

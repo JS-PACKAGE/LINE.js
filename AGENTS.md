@@ -13,14 +13,14 @@
 
 ## 結構對應
 
-以下為定案目標結構，依 Gate 順序建立，非現有程式清單：
+以下為定案結構；目前 Phase 1 已建立設定、session、LineProvider、HTTP 登入頁與 web。WS、訊息模型、頻道與媒體依後續 Gate 建立，不能將目標結構當作已交付功能。
 
 | 路徑 | 職責 |
 |---|---|
 | `src/line/` | LineProvider、QR 登入、session、LINE 事件、歷史、發送、媒體下載 |
 | `src/ws/` | WS 協定、snapshot、增量、單序廣播佇列、限流 |
 | `src/http/` | 同埠 HTTP、靜態網頁、圖片上傳與媒體位元組 |
-| `src/model/` | Channel／Message／Media DTO、正規化、去重与記憶體快取 |
+| `src/model/` | Channel／Message／Media DTO、正規化、去重與記憶體快取 |
 | `web/` | 繁體中文登入畫面、頻道列表、訊息、歷史、文字／圖片／貼圖輸入 |
 | `dist/` / `dist/web/` | 後端／前端建置輸出，不提交 |
 | `config.example.yaml` | 可提交的預設設定 |
@@ -28,11 +28,10 @@
 
 ## 建置與驗證
 
-Phase 0 僅文件；以下命令為後續階段交付契約，在 scripts 建立前不能執行：
+目前 Phase 1 已提供下列命令。缺少 `config.yaml` 時首次啟動自動建立；已有個人設定時不要用範本覆寫：
 
 ```sh
 npm install
-cp config.example.yaml config.yaml
 npm run typecheck
 npm run build
 npm test
@@ -43,6 +42,8 @@ npm start
 後端 `tsc` 建置，前端 Vite 建置；`npm test` 使用 `node --test` 與 Mock Provider。修改後做針對性驗證並啟動實際程序或操作瀏覽器，不可只憑型別檢查宣告完成。測試應驗證消費者可見行為、邊界、轉移與錯誤，不測程式字串或單純 wiring。
 
 Gate 依 [PLAN.md](PLAN.md) 逐關驗收，不跳關；Gate 0 遠端需存在四件必要文件及前置根檔。Gate 1 必須用**次要帳號** QR 掃碼，60 秒內接收真實訊息並驗證 session 權限。未經實測不得宣稱 Gate 通過。
+
+Phase 1 的 HTTP 登入 spike 將在 Phase 2 改為定案 WS，舊登入路徑須一併刪除。QR／PIN 必須只交給發起登入的分頁一次，其他分頁不得消耗或重播。登入 helper 無法在登入前附加 token 監聽，因此 adapter 使用等價 BaseClient 流程；token listener 必須先註冊。SessionStorage 沿用 FileStorage 契約但覆寫原子持久化，不能吞寫入錯誤。Thrift 以 override 固定修補版 `0.23.0`，不得解除修補而引入已知 high 漏洞。
 
 ## 安全性架構（硬規則）
 

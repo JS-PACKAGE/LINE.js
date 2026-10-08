@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LINE.js — 本機登入</title>
+    <script type="module" src="/main.ts"></script>
+  </head>
+  <body>
+    <main>
+      <header><span class="eyebrow">LOCAL LINE CLIENT</span><h1>LINE.js</h1></header>
+      <p class="intro">訊息留在本機，連線從這裡開始。</p>
+      <section aria-labelledby="login-title">
+        <h2 id="login-title">使用 LINE 掃碼登入</h2>
+        <p class="warning">非官方 LINE API 有帳號限制風險，請先使用次要帳號。</p>
+        <p id="status" role="status" aria-live="polite">正在檢查 session…</p>
+        <div id="qr-box" hidden><canvas id="qr" aria-label="LINE 登入 QR code"></canvas><p>開啟手機 LINE 掃描上方 QR code。</p></div>
+        <p id="pin" hidden></p>
+        <button id="start" type="button" disabled>產生登入 QR code</button>
+        <p id="receipt" hidden></p>
+      </section>
+      <footer>僅限本機 · QR 與 PIN 不記錄、不落盤 · Phase 1 登入驗證</footer>
+    </main>
+  </body>
+</html>
