@@ -17,6 +17,9 @@ class FakeProvider {
   loginQR(callbacks) { this.callbacks = callbacks; return new Promise((resolve) => { this.finish = resolve; }); }
   getProfile() { return { userId: "u-me", displayName: "測試帳號" }; }
   async fetchChannels() { return this.channels; }
+  logoutResult = { remoteRevoked: true };
+  logoutError = undefined;
+  async logout() { if (this.logoutError) throw this.logoutError; return this.logoutResult; }
   async close() {}
 }
 
@@ -153,4 +156,52 @@ test("malformed, unknown and oversized frames are rejected without leaking detai
   const closed = new Promise((resolve) => client.socket.once("close", resolve));
   client.socket.send(JSON.stringify({ type: "ping", pad: "x".repeat(2048) }));
   assert.equal(await closed, 1009);
+});
+
+test("logout clears cached chat, returns every client to idle and reports an unconfirmed remote logout", async (t) => {
+  const { port, cookie, login, hub, provider } = await start(t);
+  await login.restore();
+  hub.handleMessage({ messageId: "m1", channelId: "c1", channelKind: "group", senderId: "u1", senderName: "小明", text: "舊帳號訊息", contentType: "NONE", createdAt: 1 }, "new");
+  const headers = { Origin: `http://127.0.0.1:${port}`, Cookie: cookie };
+  const first = connect(port, headers);
+  const second = connect(port, headers);
+  t.after(() => { first.socket.close(); second.socket.close(); });
+  await Promise.all([first.opened, second.opened]);
+  await first.until((frame) => frame.type === "message");
+  provider.logoutResult = { remoteRevoked: false };
+  first.socket.send(JSON.stringify({ type: "auth:logout" }));
+  await second.until((frame) => frame.type === "auth:state" && frame.state === "idle");
+  const warning = await second.until((frame) => frame.type === "error");
+  assert.equal(warning.code, "LOGOUT_REMOTE_UNCONFIRMED");
+  assert.equal(login.state, "idle");
+  // A client connecting afterwards must see nothing from the previous account.
+  const late = connect(port, headers);
+  t.after(() => late.socket.close());
+  await late.opened;
+  await late.until((frame) => frame.type === "auth:state" && frame.state === "idle");
+  assert.ok(!late.frames.some((frame) => frame.type === "message" || frame.type === "channels" || frame.type === "auth:ready"));
+});
+
+test("logout is refused when nobody is signed in; a failing logout ends in error without leaking details", async (t) => {
+  const idle = await start(t, { restore: false });
+  await idle.login.restore();
+  const stranger = connect(idle.port, { Origin: `http://127.0.0.1:${idle.port}`, Cookie: idle.cookie });
+  t.after(() => stranger.socket.close());
+  await stranger.opened;
+  await stranger.until((frame) => frame.type === "auth:state" && frame.state === "idle");
+  stranger.socket.send(JSON.stringify({ type: "auth:logout" }));
+  assert.equal((await stranger.until((frame) => frame.type === "error")).code, "LOGOUT_UNAVAILABLE");
+
+  const { port, cookie, login, provider } = await start(t);
+  await login.restore();
+  provider.logoutError = new Error("session.json write failed: /secret/path");
+  const client = connect(port, { Origin: `http://127.0.0.1:${port}`, Cookie: cookie });
+  t.after(() => client.socket.close());
+  await client.opened;
+  await client.until((frame) => frame.type === "auth:ready");
+  client.socket.send(JSON.stringify({ type: "auth:logout" }));
+  const failure = await client.until((frame) => frame.code === "LOGOUT_FAILED");
+  assert.ok(!JSON.stringify(failure).includes("secret"));
+  assert.equal(login.state, "error");
+  assert.equal(login.canLogout(), false);
 });

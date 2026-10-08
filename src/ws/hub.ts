@@ -30,6 +30,9 @@ const GENERIC = {
   INVALID_REQUEST: "請求格式不正確。",
   UNKNOWN_TYPE: "不支援的請求類型。",
   LOGIN_UNAVAILABLE: "目前無法開始登入。",
+  LOGOUT_UNAVAILABLE: "目前無法登出。",
+  LOGOUT_FAILED: "登出時發生錯誤，請重新啟動服務後再試。",
+  LOGOUT_REMOTE_UNCONFIRMED: "已清除本機登入資料，但無法確認 LINE 端已登出；請從手機 LINE 的「登入中的裝置」移除此裝置。",
   CHANNELS_FAILED: "無法載入頻道清單，請稍後重試。",
 } as const;
 
@@ -65,7 +68,10 @@ export function createHub(options: HubOptions): Hub {
     // One in-flight refresh serves every requester; LINE is rate sensitive.
     refreshing ??= (async () => {
       try {
-        store.setChannels(await provider.fetchChannels());
+        const channels = await provider.fetchChannels();
+        // A logout while LINE was answering must not repopulate the cleared cache.
+        if (login.state !== "ready") return;
+        store.setChannels(channels);
         broadcast({ type: "channels", channels: store.snapshotChannels() });
       } catch (error) {
         // Internal cause stays in the local log (security rule 8); clients get a generic code.
@@ -85,6 +91,12 @@ export function createHub(options: HubOptions): Hub {
   }
 
   login.subscribe((state) => {
+    if (state !== "ready") {
+      // Logged out or failed: nothing from the previous account may stay in memory or on screen.
+      clearTimeout(refreshTimer);
+      store.clear();
+      status = "starting";
+    }
     broadcast({ type: "auth:state", state });
     if (state !== "ready") return;
     const profile = provider.getProfile();
@@ -127,6 +139,16 @@ export function createHub(options: HubOptions): Hub {
         case "channels:refresh":
           if (login.state === "ready") void refreshChannels();
           else fail(socket, "INVALID_REQUEST");
+          return;
+        case "auth:logout":
+          if (!login.canLogout()) {
+            fail(socket, "LOGOUT_UNAVAILABLE");
+            return;
+          }
+          login.logout().then(
+            (result) => { if (!result.remoteRevoked) broadcast({ type: "error", code: "LOGOUT_REMOTE_UNCONFIRMED", message: GENERIC.LOGOUT_REMOTE_UNCONFIRMED }); },
+            () => { broadcast({ type: "error", code: "LOGOUT_FAILED", message: GENERIC.LOGOUT_FAILED }); },
+          );
           return;
         case "auth:start":
           if (!login.canStartQR()) {

@@ -16,5 +16,6 @@ export type ServerFrame =
 
 export type ClientFrame =
   | { type: "auth:start" }
+  | { type: "auth:logout" }
   | { type: "channels:refresh" }
   | { type: "ping" };

@@ -14,9 +14,15 @@ export interface ProviderEvents {
   onError: (code: "SESSION_WRITE_FAILED" | "LINE_LISTEN_FAILED" | "MESSAGE_PARSE_FAILED") => void;
 }
 
+export interface LogoutResult {
+  /** False when LINE could not confirm the server-side logout; local data is cleared regardless. */
+  remoteRevoked: boolean;
+}
+
 export interface LineProvider {
   restoreSession(): Promise<boolean>;
   loginQR(callbacks: QRCallbacks): Promise<void>;
+  logout(): Promise<LogoutResult>;
   getProfile(): Profile;
   fetchChannels(): Promise<Channel[]>;
   close(): Promise<void>;
@@ -33,6 +39,8 @@ export class EvexLineProvider implements LineProvider {
   private retry?: NodeJS.Timeout;
   private retryDelay = 1000;
   private stopped = false;
+  // While true, token rotations triggered by the logout request itself must not be persisted.
+  private loggingOut = false;
   // Display names learned from the friend list; LINE events carry only mids.
   private names: Record<string, string> = {};
 
@@ -47,6 +55,7 @@ export class EvexLineProvider implements LineProvider {
     const base = new BaseClient({ device: this.device, storage: this.storage, ...(this.fetch ? { fetch: this.fetch } : {}) });
     // Helpers return Client only after login, too late to attach this listener.
     base.on("update:authtoken", (token) => {
+      if (this.base !== base || this.loggingOut) return;
       base.authToken = token;
       void this.storage.set("userAuthToken", token).catch(() => {
         this.events.onError("SESSION_WRITE_FAILED");
@@ -110,6 +119,7 @@ export class EvexLineProvider implements LineProvider {
     const profile = this.getProfile();
     this.names[profile.userId] = profile.displayName;
     const deliver = (convert: () => Message, kind: "new" | "edit") => {
+      if (this.client !== client) return;
       let message: Message;
       try {
         message = convert();
@@ -221,15 +231,47 @@ export class EvexLineProvider implements LineProvider {
     return { userId: profile.mid, displayName: profile.displayName };
   }
 
+  async logout(): Promise<LogoutResult> {
+    const base = this.base;
+    if (!base || !this.client || this.stopped || this.loggingOut) throw new Error("NOT_AUTHENTICATED");
+    this.loggingOut = true;
+    try {
+      let remoteRevoked = true;
+      try {
+        await base.auth.logoutZ();
+      } catch {
+        // Offline or token already invalid: still wipe local credentials, but tell the caller.
+        remoteRevoked = false;
+      }
+      await this.teardown();
+      await this.storage.flush();
+      // Wipes the token and the E2EE key material; a new login starts from a clean slate.
+      await this.storage.clear();
+      return { remoteRevoked };
+    } finally {
+      this.loggingOut = false;
+    }
+  }
+
+  private async teardown(): Promise<void> {
+    clearTimeout(this.retry);
+    this.retry = undefined;
+    this.signal?.abort();
+    this.signal = undefined;
+    const base = this.base;
+    this.base = undefined;
+    this.client = undefined;
+    this.names = {};
+    this.retryDelay = 1000;
+    if (!base) return;
+    base.authToken = undefined;
+    base.disabled = true;
+    for (const connection of base.push.conns) await connection.close().catch(() => {});
+  }
+
   async close(): Promise<void> {
     this.stopped = true;
-    clearTimeout(this.retry);
-    if (this.base) {
-      this.base.authToken = undefined;
-      this.base.disabled = true;
-      for (const connection of this.base.push.conns) await connection.close().catch(() => {});
-    }
-    this.signal?.abort();
+    await this.teardown();
     await this.storage.flush();
   }
 }

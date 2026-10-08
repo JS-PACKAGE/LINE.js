@@ -55,3 +55,29 @@ test("a provider failure during restore surfaces as error instead of an unhandle
   await login.restore();
   assert.equal(login.state, "error");
 });
+
+test("logout moves ready to idle and allows a fresh QR login; concurrent logouts are refused", async () => {
+  const provider = new ControlledProvider();
+  let release;
+  provider.logout = () => new Promise((resolve) => { release = () => resolve({ remoteRevoked: true }); });
+  provider.restoreResult = true;
+  const login = new LoginController(provider);
+  await login.restore();
+  const observed = [];
+  login.subscribe((state) => observed.push(state));
+  const pending = login.logout();
+  assert.equal(login.canLogout(), false);
+  await assert.rejects(login.logout(), /LOGOUT_UNAVAILABLE/);
+  release();
+  assert.deepEqual(await pending, { remoteRevoked: true });
+  assert.equal(login.state, "idle");
+  assert.equal(login.canStartQR(), true);
+  assert.deepEqual(observed, ["idle"]);
+});
+
+test("logging out before login is refused and leaves the state untouched", async () => {
+  const login = new LoginController(new ControlledProvider());
+  await login.restore();
+  await assert.rejects(login.logout(), /LOGOUT_UNAVAILABLE/);
+  assert.equal(login.state, "idle");
+});

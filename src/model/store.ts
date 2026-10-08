@@ -7,6 +7,12 @@ export class ChatStore {
 
   constructor(private readonly perChannelLimit: number) {}
 
+  /** Drops every cached channel and message (used on logout). */
+  clear(): void {
+    this.channels = {};
+    this.messages = {};
+  }
+
   setChannels(channels: Channel[]): void {
     const next: Record<string, Channel> = {};
     for (const channel of channels) {
