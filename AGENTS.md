@@ -21,6 +21,9 @@
 | `src/ws/` | WS 協定、snapshot、增量、單序廣播佇列、限流 |
 | `src/http/` | 同埠 HTTP、靜態網頁、媒體上傳（圖片／影片）與媒體位元組 |
 | `src/model/` | Channel／Message／Media DTO、正規化、去重與記憶體快取 |
+| `src/update/` | 版本比較與 GitHub Release 檢查器（只通知） |
+| `scripts/update.mjs` | `npm run update`：使用者主動執行的 fast-forward 更新 |
+| `SECURITY.md` / `.github/SECURITY.md` | 安全政策（英文）／GitHub 偵測用指標檔 |
 | `web/` | 繁體中文登入畫面、頻道列表、訊息、歷史、文字／圖片／貼圖輸入 |
 | `dist/` / `dist/web/` | 後端／前端建置輸出，不提交 |
 | `config.example.yaml` | 可提交的預設設定 |
@@ -37,6 +40,7 @@ npm run build
 npm test
 npm audit
 npm start
+npm run update
 ```
 
 後端 `tsc` 建置，前端 Vite 建置；`npm test` 使用 `node --test` 與 Mock Provider。修改後做針對性驗證並啟動實際程序或操作瀏覽器，不可只憑型別檢查宣告完成。測試應驗證消費者可見行為、邊界、轉移與錯誤，不測程式字串或單純 wiring。
@@ -59,6 +63,8 @@ Gate 依 [PLAN.md](PLAN.md) 逐關驗收，不跳關；Gate 0 遠端需存在四
 10. 解密／解析失敗 **fail-closed**：顯示佔位，不降級猜測內容。
 
 內部日誌也不得包含憑證、token、QR URL、PIN 或 key material；不得直接 dump 套件錯誤物件、session 或登入 payload。圖片／貼圖／影片／語音位元組一律走 HTTP，WS 不傳位元組；檔案僅佔位。訊息不落盤；每頻道最多 500 則，同 messageId 去重，編輯覆寫快取。LINE listen 失效採退避重啟；QR 失敗不自動循環，須由使用者動作重新產生。
+
+版本更新（`src/update/`、`scripts/update.mjs`）：只通知、不自動下載或執行；檢查器僅匿名 GET 本專案 Release、只採 `X.Y.Z` tag、連結限本專案 `/releases/`、不轉送 Release 內文、不跟隨重新導向，失敗只記 `UPDATE_CHECK_FAILED`。不得新增網頁／WS 觸發更新的入口。`npm run update` 只 fast-forward 至 tag，工作樹不乾淨即中止。完整安全政策與回報流程見 [SECURITY.md](SECURITY.md)（英文）；變動其中任一硬規則須同步更新該檔。
 
 其他 adapter 注意事項：OpenChat 歷史無「最新 N 則」查詢，只能由最舊事件向前走完再於記憶體分頁（快取 60 秒）；talk 歷史游標為 `deliveredTime:messageId` 且上界含端點，需多取一則並剔除錨點；非好友的群組成員名稱與大頭照以 `getContactsV2`／`getSquareMember` 補查（限時、限量、失敗退避），社群管理員角色同樣來自 `getSquareMember`；他人已讀位置來自 `getMessageReadRange` 與 `NOTIFIED_READ_MESSAGE`。**回報自己的已讀**（`sendChatChecked`／OpenChat `markAsRead`）會改變真實帳號狀態（對方看到「已讀」），因此只在小語要求下啟用：由網頁在聊天開啟且頁面可見時送 `chat:read`，伺服器只接受已顯示過的訊息、每個位置只送一次，並可用 `chat.sendReadReceipts: false` 關閉；驗證時不得對真實聯絡人的聊天室測試。已擁有貼圖包來自商店服務 `getOwnedProductSummaries`（linejs 3.4.2 未接線，經 `base.request.request` 呼叫 `/TSHOP4`），貼圖 id 與標題來自公開 CDN 的 `productInfo.meta`，失敗時退回 LINE 回傳的 id 區間。
 

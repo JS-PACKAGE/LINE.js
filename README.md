@@ -57,7 +57,7 @@ npm start
 
 ## 設定
 
-`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`chat`、`limits`（`chat` 區段與 `limits.downloadMaxBytes`、`limits.uploadVideoMaxBytes` 可省略，舊設定檔照常運作）。
+`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`chat`、`update`、`limits`（`chat`、`update` 區段與 `limits.downloadMaxBytes`、`limits.uploadVideoMaxBytes` 可省略，舊設定檔照常運作）。
 
 - 監聽 host：`127.0.0.1`；不得改成 `0.0.0.0` 或對外提供服務。
 - port：預設 `3789`，可調整；host 與 port 從 `config.yaml` 讀取，程式不得寫死。
@@ -107,7 +107,17 @@ npm audit
 
 測試使用 `node --test` 與 Mock Provider；Mock 不代替真實 LINE 驗收。Gate 1 需要次要帳號掃碼後 60 秒內收到一則真實訊息，Gate 2–4 另驗證網頁同步、歷史、發送與媒體。全部 Gate 及驗收條件見 [PLAN.md](PLAN.md)。
 
-已驗證：typecheck、build、59 項測試、`npm audit` 無 high。真實 LINE 帳號：session 復用、頻道清單、好友／群組／社群的即時訊息、talk 歷史分頁（無重複、有序、可翻到底）、OpenChat 歷史分頁、大頭照與非好友名稱查詢、OpenChat 圖片下載與顯示、已擁有貼圖包列表（7 包、含繁中名稱與圖示）、社群訊息的管理員／共同管理員角色辨識、網頁上重新掃碼登入（服務日誌出現 QR 登入流程，換成另一個帳號）。瀏覽器以假 provider 驗證：往上翻頁、輸入與發送流程、貼上圖片預覽並送出（含接著送文字）、拒絕貼上影片、已擁有貼圖面板（分頁、點選即送）、圖片上傳、頭像與備援字母、已讀／未讀標示、已讀回報的觸發、徽章與完整暱稱不斷行、時間在訊息後與 24 小時制（00:05 不顯示 24:05）、圖片放大、影片（Range）與語音播放、確認對話框。**尚未驗證**（需要對真實聯絡人產生副作用或對應的真實訊息）：真實的文字／貼圖／圖片發送、真實的已讀回報（`sendChatChecked`／OpenChat `markAsRead` 對 LINE 的效果）、LINE 端登出的伺服器確認、E2EE 圖片的接收解密、1:1 已讀事件欄位格式（已知形狀不符時會忽略）、GIF 與影片的真實來源、listen 中斷後的退避重連。
+已驗證：typecheck、build、96 項測試、`npm audit` 無 high。真實 LINE 帳號：session 復用、頻道清單、好友／群組／社群的即時訊息、talk 歷史分頁（無重複、有序、可翻到底）、OpenChat 歷史分頁、大頭照與非好友名稱查詢、OpenChat 圖片下載與顯示、已擁有貼圖包列表（7 包、含繁中名稱與圖示）、社群訊息的管理員／共同管理員角色辨識、網頁上重新掃碼登入（服務日誌出現 QR 登入流程，換成另一個帳號）。瀏覽器以假 provider 驗證：往上翻頁、輸入與發送流程、貼上圖片預覽並送出（含接著送文字）、拒絕貼上影片、已擁有貼圖面板（分頁、點選即送）、圖片上傳、頭像與備援字母、已讀／未讀標示、已讀回報的觸發、徽章與完整暱稱不斷行、時間在訊息後與 24 小時制（00:05 不顯示 24:05）、圖片放大、影片（Range）與語音播放、確認對話框、發送後捲到最底（含回覆者 id 與自己不同的社群情況）與收到貼圖時維持在底部、新版本橫幅（關閉後記住）、服務版本與頁面版本不同時的重新整理提示、服務重啟後舊分頁自動重新載入。**尚未驗證**（需要對真實聯絡人產生副作用或對應的真實訊息）：真實的文字／貼圖／圖片發送、真實的已讀回報（`sendChatChecked`／OpenChat `markAsRead` 對 LINE 的效果）、LINE 端登出的伺服器確認、E2EE 圖片的接收解密、1:1 已讀事件欄位格式（已知形狀不符時會忽略）、GIF 與影片的真實來源、listen 中斷後的退避重連；版本更新機制尚未對真實 GitHub Release 實測（倉庫目前沒有任何 Release，檢查器依規格視 404 為「無新版」；`npm run update` 只以暫時的 git 倉庫與假 `npm` 驗證）。
+
+## 版本更新
+
+版本號以 `package.json` 為準，採 semver，發佈為 GitHub Release／tag `vX.Y.Z`（push tag 須維護者明示授權）。
+
+- **通知**：啟動時與每 24 小時向 GitHub 查詢最新 Release（匿名 GET，只取版本號與 Release 連結）；有新版時網頁底部顯示橫幅（可關閉，同一版本不再提示）。`config.yaml` 的 `update.check: false` 可完全停用；不會自動下載或執行任何東西。
+- **更新**：`npm run update` 由使用者主動執行：`git fetch --tags`、只 fast-forward 到最新 tag、`npm ci`、`npm run build`。工作樹有未提交修改或本機有 tag 沒有的提交時中止；`--check` 只檢查，`--verify` 額外要求 `git verify-tag` 通過。`config.yaml`、`session.json` 不受影響。完成後須自行重新啟動服務。沒有網頁一鍵更新（避免網頁漏洞升級為遠端程式碼執行）。尚未有此功能的舊版本請先手動 `git pull` 一次。
+- **頁面同步**：服務重啟後，已開啟的分頁會自動重新載入；若頁面版本與服務版本不同會提示重新整理，通訊協定版本不相容則直接重新載入。
+
+安全政策與回報方式見 [SECURITY.md](SECURITY.md)。
 
 ## 開發規範與授權
 
