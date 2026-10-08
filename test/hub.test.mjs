@@ -8,6 +8,7 @@ import { WebSocket } from "ws";
 import { createWebServer } from "../dist/http/server.js";
 import { createHub } from "../dist/ws/hub.js";
 import { ApiTokenStore } from "../dist/http/apiToken.js";
+import { runCli } from "../dist/cli.js";
 import { LoginController } from "../dist/line/login.js";
 import { ChatStore } from "../dist/model/store.js";
 import { MediaService } from "../dist/media/service.js";
@@ -941,3 +942,122 @@ test("at most four bots stay connected at once", async (t) => {
   await assert.rejects(env.bot().opened, (error) => error.status === 429);
 });
 
+// ---- CLI (login / logout / token) ----
+
+function cliIo(answer = true) {
+  const io = { out: [], err: [], questions: [] };
+  io.api = { out: (line) => io.out.push(line), err: (line) => io.err.push(line), confirm: async (question) => { io.questions.push(question); return answer; } };
+  return io;
+}
+
+test("cli token makes a new bot token, prints only it on stdout and cuts the old one off", async (t) => {
+  const env = await botEnv(t);
+  const bot = await env.open();
+  const closed = new Promise((resolve) => bot.socket.once("close", resolve));
+  const io = cliIo();
+  assert.equal(await runCli(["token"], io.api, { host: "127.0.0.1", port: env.port }), 0);
+  assert.equal(io.questions.length, 1, "replacing a live token asks first");
+  assert.equal(io.out.length, 1);
+  assert.match(io.out[0], /^linejs_[A-Za-z0-9_-]{43}$/);
+  assert.notEqual(io.out[0], env.token);
+  assert.equal(await closed, 1008);
+  assert.equal(env.apiTokens.verify(io.out[0]), true);
+  assert.equal(env.apiTokens.verify(env.token), false);
+  const fresh = connect(env.port, { Authorization: `Bearer ${io.out[0]}` }, "/api/ws");
+  t.after(() => fresh.socket.close());
+  await fresh.opened;
+});
+
+test("cli token respects a refusal, --yes and a disabled API", async (t) => {
+  const env = await botEnv(t);
+  const target = { host: "127.0.0.1", port: env.port };
+  const declined = cliIo(false);
+  assert.equal(await runCli(["token"], declined.api, target), 0);
+  assert.deepEqual(declined.out, []);
+  assert.equal(env.apiTokens.verify(env.token), true, "a declined replacement changes nothing");
+  const forced = cliIo(false);
+  assert.equal(await runCli(["token", "--yes"], forced.api, target), 0);
+  assert.equal(forced.questions.length, 0);
+  assert.equal(env.apiTokens.verify(env.token), false);
+
+  const off = await start(t);
+  await off.login.restore();
+  const refused = cliIo();
+  assert.equal(await runCli(["token", "--yes"], refused.api, { host: "127.0.0.1", port: off.port }), 1);
+  assert.deepEqual(refused.out, []);
+  assert.match(refused.err.join("\n"), /api\.enabled/);
+});
+
+test("cli login shows the QR code and PIN in the terminal, never the raw URL, and finishes when LINE confirms", async (t) => {
+  const env = await start(t, { restore: false });
+  await env.login.restore();
+  const io = cliIo();
+  const done = runCli(["login"], io.api, { host: "127.0.0.1", port: env.port });
+  while (!env.provider.callbacks) await new Promise((resolve) => setTimeout(resolve, 10));
+  env.provider.callbacks.onQRUrl("https://example.invalid/cli-only-qr");
+  env.provider.callbacks.onPinCode("246810");
+  while (!io.err.join("\n").includes("246810")) await new Promise((resolve) => setTimeout(resolve, 10));
+  env.provider.finish();
+  assert.equal(await done, 0);
+  const shown = io.err.join("\n");
+  assert.match(shown, /[▀▄█]/, "a drawn QR code");
+  assert.equal(shown.includes("cli-only-qr"), false);
+  assert.match(shown, /已登入：測試帳號/);
+  assert.equal(env.login.state, "ready");
+  assert.deepEqual(io.out, []);
+});
+
+test("cli login says so when already signed in or when a login is already running", async (t) => {
+  const signedIn = await start(t);
+  await signedIn.login.restore();
+  const io = cliIo();
+  assert.equal(await runCli(["login"], io.api, { host: "127.0.0.1", port: signedIn.port }), 0);
+  assert.match(io.err.join("\n"), /已經登入[\s\S]*已登入：測試帳號/);
+
+  const busy = await start(t, { restore: false });
+  await busy.login.restore();
+  const page = connect(busy.port, { Origin: `http://127.0.0.1:${busy.port}`, Cookie: busy.cookie });
+  t.after(() => page.socket.close());
+  await page.opened;
+  await page.until((frame) => frame.type === "auth:state" && frame.state === "idle");
+  page.socket.send(JSON.stringify({ type: "auth:start" }));
+  await page.until((frame) => frame.type === "auth:state" && frame.state === "authenticating");
+  const second = cliIo();
+  assert.equal(await runCli(["login"], second.api, { host: "127.0.0.1", port: busy.port }), 1);
+  assert.match(second.err.join("\n"), /已有登入程序/);
+  busy.provider.finish();
+});
+
+test("cli logout asks first, signs out, and passes on an unconfirmed remote logout", async (t) => {
+  const env = await start(t);
+  await env.login.restore();
+  const target = { host: "127.0.0.1", port: env.port };
+  const declined = cliIo(false);
+  assert.equal(await runCli(["logout"], declined.api, target), 0);
+  assert.equal(env.login.state, "ready");
+  env.provider.logoutResult = { remoteRevoked: false };
+  const io = cliIo();
+  assert.equal(await runCli(["logout", "--yes"], io.api, target), 0);
+  assert.equal(env.login.state, "idle");
+  assert.equal(io.questions.length, 0);
+  assert.match(io.err.join("\n"), /已清除本機登入資料，但無法確認 LINE 端已登出/);
+  assert.match(io.err.join("\n"), /已登出/);
+  const again = cliIo();
+  assert.equal(await runCli(["logout", "--yes"], again.api, target), 0);
+  assert.match(again.err.join("\n"), /沒有登入/);
+});
+
+test("cli reports a missing service and bad commands without a stack trace", async (t) => {
+  const probe = await start(t);
+  const dead = { host: "127.0.0.1", port: await freePort() };
+  const io = cliIo();
+  assert.equal(await runCli(["token", "--yes"], io.api, dead), 1);
+  assert.match(io.err.join("\n"), /npm start/);
+  for (const args of [["bogus"], ["login", "extra"], ["token", "--force"]]) {
+    const bad = cliIo();
+    assert.equal(await runCli(args, bad.api, { host: "127.0.0.1", port: probe.port }), 2);
+    assert.match(bad.err.join("\n"), /用法/);
+  }
+  const help = cliIo();
+  assert.equal(await runCli([], help.api, { host: "127.0.0.1", port: probe.port }), 0);
+});

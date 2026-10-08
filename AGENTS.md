@@ -23,6 +23,7 @@
 | `src/model/` | Channel／Message／Media DTO、正規化、去重與記憶體快取 |
 | `src/update/` | 版本比較與 GitHub Release 檢查器（只通知） |
 | `scripts/update.mjs` | `npm run update`：使用者主動執行的 fast-forward 更新 |
+| `src/cli.ts` / `scripts/cli.mjs` | `npm run cli -- login｜logout｜token`：經正在執行的服務（同一個 WS）登入（終端機 QR）、登出、重新產生機器人 Token；不直接讀寫 session |
 | `src/http/apiToken.ts` | 機器人 Token：只存 SHA-256（`api-token.json`，0600），明文只在產生當下出現一次 |
 | `web/api.ts` | 網頁「API」視窗：產生／撤銷 Token（顯示一次、關閉即清除） |
 | `SECURITY.md` / `.github/SECURITY.md` | 安全政策（英文）／GitHub 偵測用指標檔 |
@@ -43,6 +44,7 @@ npm test
 npm audit
 npm start
 npm run update
+npm run cli -- login|logout|token
 ```
 
 後端 `tsc` 建置，前端 Vite 建置；`npm test` 使用 `node --test` 與 Mock Provider。修改後做針對性驗證並啟動實際程序或操作瀏覽器，不可只憑型別檢查宣告完成。測試應驗證消費者可見行為、邊界、轉移與錯誤，不測程式字串或單純 wiring。
@@ -63,7 +65,7 @@ Gate 依 [PLAN.md](PLAN.md) 逐關驗收，不跳關；Gate 0 遠端需存在四
 8. 對外一律 generic 錯誤；內部錯誤只入本地日誌。
 9. 依賴釘選版本；`npm audit` 無 high 以上（Gate 4 驗收）。
 10. 解密／解析失敗 **fail-closed**：顯示佔位，不降級猜測內容。
-11. 機器人 API（`/api/ws`，預設關閉，`api.enabled`）：Bearer Token 認證（只存雜湊、比對用 `timingSafeEqual`、產生後只顯示一次、不入日誌）；升級**不得帶 `Origin`**（網頁不可用此入口）且 `Host` 須合法；只開放 `message:send`（僅文字）、`history:fetch`、`ping`，其餘一律 `UNKNOWN_TYPE`；只能存取 `api.chats` 清單內的聊天室（空清單視為設定錯誤，未列出者一律 `UNKNOWN_CHAT`）；不給 `chat:read`、登入／登出、`channels:refresh`、媒體與貼圖發送；連線不重播舊訊息、不收 `read`；所有機器人合計 `api.sendsPerMinute`（≤120/分鐘）加每連線 `limits.sendsPerSecond`；同時最多 4 個連線；重新產生／撤銷 Token 立即中斷所有機器人連線。Token 的產生與撤銷只接受一般 `/ws` 連線（網頁），機器人連線無此權限。
+11. 機器人 API（`/api/ws`，預設關閉，`api.enabled`）：Bearer Token 認證（只存雜湊、比對用 `timingSafeEqual`、產生後只顯示一次、不入日誌）；升級**不得帶 `Origin`**（網頁不可用此入口）且 `Host` 須合法；只開放 `message:send`（僅文字）、`history:fetch`、`ping`，其餘一律 `UNKNOWN_TYPE`；只能存取 `api.chats` 清單內的聊天室（空清單視為設定錯誤，未列出者一律 `UNKNOWN_CHAT`）；不給 `chat:read`、登入／登出、`channels:refresh`、媒體與貼圖發送；連線不重播舊訊息、不收 `read`；所有機器人合計 `api.sendsPerMinute`（≤120/分鐘）加每連線 `limits.sendsPerSecond`；同時最多 4 個連線；重新產生／撤銷 Token 立即中斷所有機器人連線。Token 的產生與撤銷只接受一般 `/ws` 連線（網頁，或同樣取得瀏覽器 cookie 的本機 CLI），機器人連線無此權限。
 
 內部日誌也不得包含憑證、token、QR URL、PIN 或 key material；不得直接 dump 套件錯誤物件、session 或登入 payload。圖片／貼圖／影片／語音位元組一律走 HTTP，WS 不傳位元組；檔案僅佔位。訊息不落盤；每頻道最多 500 則，同 messageId 去重，編輯覆寫快取。LINE listen 失效採退避重啟；QR 失敗不自動循環，須由使用者動作重新產生。
 

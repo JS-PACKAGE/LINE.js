@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.web.json",
     "start": "node dist/main.js",
     "update": "node scripts/update.mjs",
+    "cli": "node scripts/cli.mjs",
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {

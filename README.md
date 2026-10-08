@@ -100,7 +100,7 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 
 讓你自己的程式（機器人）收發訊息。預設關閉；在 `config.yaml` 設 `api.enabled: true` 並列出 `api.chats`（機器人可存取的聊天室 id，至少一個），重啟後網頁側邊欄會出現「API」按鈕：
 
-1. 按「產生 Token」。Token 只顯示**一次**，請立即複製；伺服器只保存 SHA-256（`api-token.json`，權限 600，不入版控），之後無法再查看。「重新產生」或「撤銷」會立即中斷所有機器人連線。
+1. 按「產生 Token」（或用 CLI：`npm run cli -- token`）。Token 只顯示**一次**，請立即複製；伺服器只保存 SHA-256（`api-token.json`，權限 600，不入版控），之後無法再查看。「重新產生」或「撤銷」會立即中斷所有機器人連線。
 2. 機器人連到 `ws://<host>:<port>/api/ws`，帶標頭 `Authorization: Bearer <Token>`，**不可帶 `Origin`**（瀏覽器一定會帶，所以網頁無法使用此入口）；`Host` 須符合上述規則。失敗一律回 403；同時最多 4 個連線（超過回 429）。
 3. 可用影格只有：`message:send`（僅文字，可含 `mentions`／`replyTo`；不支援圖片、貼圖）、`history:fetch`、`ping`；其餘一律回 `UNKNOWN_TYPE`。不提供登入／登出、`chat:read`（已讀回報）與 `channels:refresh`。
 4. 機器人只看得到 `api.chats` 內的聊天室：連線時收到 `hello`、`auth:state`、`status`、`auth:ready`（含自己的 `userId`，用來略過自己發的訊息）與過濾後的 `channels`，之後只收到這些聊天室的即時 `message`／`message:edit`。**不重播舊訊息**；不給 `read`、`update:available`、`api:state`。未列出的聊天室一律回 `UNKNOWN_CHAT`。
@@ -118,6 +118,20 @@ ws.on("message", (data) => {
   }
 });
 ```
+
+## 終端機介面（CLI）
+
+不開網頁也能登入、登出與換 Token。CLI 不直接碰 `session.json`，而是連到**正在執行**的服務（同一個 WebSocket，沿用同樣的安全檢查，所以服務得先 `npm start`）；位址取自 `config.yaml` 的 `server`。
+
+```sh
+npm run cli -- login     # 在終端機畫出 QR code，用次要帳號的 LINE 掃描；PIN 會顯示在下方
+npm run cli -- logout    # 登出並清除本機登入資料與快取（會先確認；--yes 略過）
+npm run cli -- token     # 重新產生機器人 API Token（舊的立即失效；--yes 略過確認）
+```
+
+- QR code 與 PIN 只畫在執行指令的那個終端機，不寫入檔案或日誌；`login` 最久等 3 分鐘。已經登入或網頁正在登入時會直接告知。
+- `token` 只把 Token 印在標準輸出，其餘訊息都在標準錯誤，可以直接取用：`LINEJS_TOKEN=$(npm run -s cli -- token --yes)`。需先在 `config.yaml` 啟用 `api`。
+- 非互動環境（沒有終端機）無法詢問確認，必須加 `--yes`。
 
 ## 建置與驗證
 
