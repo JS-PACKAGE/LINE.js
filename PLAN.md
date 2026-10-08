@@ -1,4 +1,4 @@
-# LINE.js 本機 LINE 網頁客戶端 企劃書 v1.8
+# LINE.js 本機 LINE 網頁客戶端 企劃書 v1.9
 
 一句話：以 **WebSocket** 為即時通道、以 **@evex/linejs v3.4.2** 為 LINE 連線核心的本機 TypeScript 網頁客戶端（**LINE.js**）——Node 後端以 QR 掃碼登入 LINE，將訊息與頻道清單經 ws 推送到監聽 `127.0.0.1:3789` 的網頁前端。
 
@@ -125,6 +125,7 @@
 > v1.6：新增 `history.cursor`、`read`（已讀位置）；頻道與訊息帶 `pictureId`／`senderPictureId`（大頭照）；OpenChat 聊天 id 以 `m` 開頭；收到的圖片／影片／語音以 `msg-<messageId>` 媒體 id 提供（支援 Range）。
 > v1.7：新增 `stickers:list`／`stickers`（已擁有貼圖包）、`chat:read`（已讀回報，受 `chat.sendReadReceipts` 控制）；`Message.senderRole`（社群管理員徽章）；媒體 id 新增 `stickerpack-<id>`；網頁可貼上／拖入圖片再送出；時間顯示 24 小時制並置於訊息後。
 > v1.8：`channels` 的頻道帶 `unreadCount`（LINE 端未讀數，連線時載入）；`message` 影格在連線快照重播時帶 `replay: true`（前端不計未讀）；`message:send` 新增 `mentions`（@ 提及，僅群組／聊天室／社群）與 `replyTo`（回覆）；`Message.replyTo`；發送圖片同樣即時回顯；媒體 id 新增 `avatarfull-(p|o)-<hash>`（大頭照原圖，點擊放大）；已讀人數標示於每則自己的訊息；新增 PWA（manifest、service worker、favicon，僅快取公開靜態檔，不快取 /media、/ws）；網頁鎖定瀏覽器原生右鍵選單（文字欄位除外）。
+> v1.9：上傳由「圖片」擴充為「媒體」：`POST /media/upload` 另接受 MP4／MOV 影片（以位元組內容判斷；錯誤碼 `INVALID_IMAGE` 改為 `INVALID_MEDIA`），影片上限 `limits.uploadVideoMaxBytes`（預設 50MB）；`message:send` 的 `mediaId` 可引用圖片或影片，伺服器依上傳內容決定送出型別。
 
 ### Server → Client
 
@@ -156,11 +157,11 @@
 
 ### HTTP
 - `GET /`：前端 SPA。
-- `GET /media/:mediaId`：貼圖（`sticker-*`）、大頭照（`avatar-p|o-*`，原圖 `avatarfull-*`）、收到的圖片／影片／語音（`msg-*`）與已上傳圖片位元組（200／206／404／416）；需瀏覽器 cookie，訊息媒體 `Cache-Control: private, no-store`。
-- `POST /media/upload`：圖片上傳（以內容判斷，僅 PNG／JPEG／GIF，≤ 10MB）→ `{ mediaId }`；發送時以 `mediaId` 引用。
+- `GET /media/:mediaId`：貼圖（`sticker-*`）、大頭照（`avatar-p|o-*`，原圖 `avatarfull-*`）、收到的圖片／影片／語音（`msg-*`）與已上傳媒體位元組（200／206／404／416）；需瀏覽器 cookie，訊息媒體 `Cache-Control: private, no-store`。
+- `POST /media/upload`：媒體上傳（以內容判斷：圖片 PNG／JPEG／GIF ≤ 10MB；影片 MP4／MOV ≤ `limits.uploadVideoMaxBytes`，預設 50MB）→ `{ mediaId }`；發送時以 `mediaId` 引用。
 
 ### 限制
-- frame ≤ 256KB（媒體一律走 HTTP）；`message:send` ≤ 5/秒/連線；`POST /media/upload` ≤ 10MB/檔、≤ 5 次/分鐘/連線；單一收到的媒體下載 ≤ `limits.downloadMaxBytes`（預設 50MB）；text ≤ 8000 字；`packageId`／`stickerId` 限正整數；未知 type 忽略並回 `error`。
+- frame ≤ 256KB（媒體一律走 HTTP）；`message:send` ≤ 5/秒/連線；`POST /media/upload` 圖片 ≤ 10MB/檔、影片 ≤ 50MB/檔、≤ 5 次/分鐘/連線；單一收到的媒體下載 ≤ `limits.downloadMaxBytes`（預設 50MB）；text ≤ 8000 字；`packageId`／`stickerId` 限正整數；未知 type 忽略並回 `error`。
 
 ---
 
@@ -174,7 +175,7 @@ Message { messageId, channelId, channelKind, senderId, senderName, senderPicture
 Media   { mediaId, mime, size, kind: "image"｜"sticker"｜"video"｜"audio" }
 ```
 - 生命週期：連線 snapshot＋增量；記憶體快取每頻道 ≤ 500 則，**不持久化訊息**（範圍外）。
-- 上傳圖片沿用 `Media`（`kind: "image"`）；貼圖發送為無位元組引用（`packageId`／`stickerId`），不經 `Media`。
+- 上傳媒體沿用 `Media`（`kind: "image"` 或 `"video"`）；貼圖發送為無位元組引用（`packageId`／`stickerId`），不經 `Media`。
 - 併發：每連線單序廣播佇列；同一 `messageId` 以 id 去重（`message:edit` 覆寫既有快取）。
 
 ---
@@ -187,7 +188,7 @@ Media   { mediaId, mime, size, kind: "image"｜"sticker"｜"video"｜"audio" }
 4. WS `Origin` 限 localhost 來源；非 localhost 拒絕升級。
 5. 每連線頻率限制：`message:send` ≤ 5/秒；`POST /media/upload` ≤ 10MB/檔、≤ 5 次/分鐘；frame ≤ 256KB。
 6. 媒體快取上限預設 200MB（LRU）；收到的媒體須先出現在已見訊息中才可請求，單檔上限預設 50MB，類型以內容判斷（不含 SVG／HTML）。
-7. 輸入驗證：`chatId` 格式（`u／c／r／s／m` 開頭，`m` 為 OpenChat）、`text` ≤ 8000 字、`limit` ≤ 100、`packageId`／`stickerId` 限正整數、上傳圖片以內容判斷（PNG／JPEG／GIF）。
+7. 輸入驗證：`chatId` 格式（`u／c／r／s／m` 開頭，`m` 為 OpenChat）、`text` ≤ 8000 字、`limit` ≤ 100、`packageId`／`stickerId` 限正整數、上傳媒體以內容判斷（圖片 PNG／JPEG／GIF；影片 MP4／MOV）。
 8. 對外一律 generic 錯誤；內部錯誤只入本地日誌。
 9. 依賴釘選版本；`npm audit` 無 high 以上（Gate 4 驗收）。
 10. 解密／解析失敗 **fail-closed**：顯示佔位，不降級猜測內容。

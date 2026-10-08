@@ -13,13 +13,13 @@
 
 ## 結構對應
 
-以下為定案結構；目前已建立設定、session、LineProvider、同埠 HTTP（靜態頁、`/media`、圖片上傳）、WS hub（登入、登出、頻道、即時與歷史訊息、發送、已讀）、訊息快取與聊天網頁（大頭照、貼圖、收到的圖片／GIF／影片／語音內嵌顯示、輸入框、自製確認對話框）。
+以下為定案結構；目前已建立設定、session、LineProvider、同埠 HTTP（靜態頁、`/media`、圖片與影片上傳）、WS hub（登入、登出、頻道、即時與歷史訊息、發送、已讀）、訊息快取與聊天網頁（大頭照、貼圖、收到的圖片／GIF／影片／語音內嵌顯示、輸入框、自製確認對話框）。
 
 | 路徑 | 職責 |
 |---|---|
 | `src/line/` | LineProvider、QR 登入、session、LINE 事件、歷史、發送、媒體下載 |
 | `src/ws/` | WS 協定、snapshot、增量、單序廣播佇列、限流 |
-| `src/http/` | 同埠 HTTP、靜態網頁、圖片上傳與媒體位元組 |
+| `src/http/` | 同埠 HTTP、靜態網頁、媒體上傳（圖片／影片）與媒體位元組 |
 | `src/model/` | Channel／Message／Media DTO、正規化、去重與記憶體快取 |
 | `web/` | 繁體中文登入畫面、頻道列表、訊息、歷史、文字／圖片／貼圖輸入 |
 | `dist/` / `dist/web/` | 後端／前端建置輸出，不提交 |
@@ -51,9 +51,9 @@ Gate 依 [PLAN.md](PLAN.md) 逐關驗收，不跳關；Gate 0 遠端需存在四
 2. QR URL 與 PIN **一次性顯示、不入日誌、不落盤**。
 3. `session.json` 含憑證與 E2EE key material：chmod **600**、列入 `.gitignore`、不入日誌、不分享。
 4. WS `Origin` 限 localhost 來源；非 localhost 拒絕升級。
-5. 每連線頻率限制：`message:send` ≤ 5/秒；`POST /media/upload` ≤ 10MB/檔、≤ 5 次/分鐘；frame ≤ 256KB。
+5. 每連線頻率限制：`message:send` ≤ 5/秒；`POST /media/upload` 圖片 ≤ 10MB/檔、影片 ≤ 50MB/檔（`limits.uploadVideoMaxBytes`）、≤ 5 次/分鐘；frame ≤ 256KB。
 6. 媒體快取上限預設 200MB（LRU）；收到的媒體只能請求已見過的訊息（`msg-<id>`），單檔上限 `limits.downloadMaxBytes`（預設 50MB），類型一律以位元組內容判斷且不供應 SVG／HTML；訊息媒體不得被瀏覽器快取。
-7. 輸入驗證：`chatId` 格式（`u／c／r／s／m` 開頭；OpenChat 為 `m`）、`text` ≤ 8000 字、`limit` ≤ 100、`packageId`／`stickerId` 限正整數、上傳圖片以內容判斷（PNG／JPEG／GIF）。
+7. 輸入驗證：`chatId` 格式（`u／c／r／s／m` 開頭；OpenChat 為 `m`）、`text` ≤ 8000 字、`limit` ≤ 100、`packageId`／`stickerId` 限正整數、上傳媒體以內容判斷（圖片 PNG／JPEG／GIF；影片 MP4／MOV，以 `ftyp` 品牌辨識，聲稱的 Content-Type 只用來選擇大小上限；影片長度取自 `moov/mvhd`，不採用瀏覽器給的值）。
 8. 對外一律 generic 錯誤；內部錯誤只入本地日誌。
 9. 依賴釘選版本；`npm audit` 無 high 以上（Gate 4 驗收）。
 10. 解密／解析失敗 **fail-closed**：顯示佔位，不降級猜測內容。

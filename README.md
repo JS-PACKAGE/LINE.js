@@ -2,7 +2,7 @@
 
 本機 TypeScript LINE 網頁客戶端，以釘選的 [@evex/linejs v3.4.2](https://github.com/evex-dev/linejs/tree/v3.4.2) 連線 LINE，經 WebSocket 同步頻道與訊息、同埠 HTTP 提供網頁。
 
-> 開發狀態：QR 登入／登出、session 復用、頻道清單（好友與聊天分頁、大頭照）、即時與歷史訊息、文字／圖片／貼圖發送（可貼上圖片、可從已擁有的貼圖包選貼圖）、收到的圖片／GIF／影片／語音內嵌顯示、他人已讀、已讀回報與未讀數、社群管理員徽章已可用。Gate 1 以次要帳號掃碼的驗收仍待小語確認。
+> 開發狀態：QR 登入／登出、session 復用、頻道清單（好友與聊天分頁、大頭照）、即時與歷史訊息、文字／圖片／影片／貼圖發送（可貼上圖片或影片、可從已擁有的貼圖包選貼圖）、收到的圖片／GIF／影片／語音內嵌顯示、他人已讀、已讀回報與未讀數、社群管理員徽章已可用。Gate 1 以次要帳號掃碼的驗收仍待小語確認。
 
 ## 定案用途與範圍
 
@@ -57,7 +57,7 @@ npm start
 
 ## 設定
 
-`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`chat`、`limits`（`chat` 區段與 `limits.downloadMaxBytes` 可省略，舊設定檔照常運作）。
+`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`chat`、`limits`（`chat` 區段與 `limits.downloadMaxBytes`、`limits.uploadVideoMaxBytes` 可省略，舊設定檔照常運作）。
 
 - 監聽 host：`127.0.0.1`；不得改成 `0.0.0.0` 或對外提供服務。
 - port：預設 `3789`，可調整；host 與 port 從 `config.yaml` 讀取，程式不得寫死。
@@ -65,7 +65,7 @@ npm start
 - 歷史筆數：預設 50，單次最多 100。
 - 每頻道訊息快取：最多 500 則；媒體 LRU：預設 200MB。
 - WS frame：最多 256KB；文字：最多 8000 字。
-- 發送：每 WS 連線最多每秒 5 次；圖片上傳：每檔最多 10MB（僅 PNG／JPEG／GIF）、每連線每分鐘最多 5 次。
+- 發送：每 WS 連線最多每秒 5 次；媒體上傳：圖片每檔最多 10MB（PNG／JPEG／GIF）、影片每檔最多 50MB（MP4／MOV，`limits.uploadVideoMaxBytes` 可調，上限 200MB；影片整份暫存於記憶體）、每連線每分鐘最多 5 次。
 - 收到的媒體：每個最多 50MB（`limits.downloadMaxBytes`），超過者只顯示類型標籤。
 
 ## 通訊協定
@@ -92,7 +92,7 @@ npm start
 | Client → Server | `message:send`（`mentions`／`replyTo`） | 發送文字時可附 @ 提及與回覆目標（右鍵訊息選單：回覆、@ 提及、複製文字） |
 | Client → Server | `channels:refresh` / `ping` | 重新載入頻道／連線保活 |
 
-HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、收到的圖片／影片／語音；支援 Range）與 `POST /media/upload`（圖片上傳）皆需瀏覽器 cookie 與同源。WS 不傳媒體位元組。
+HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、收到的圖片／影片／語音；支援 Range）與 `POST /media/upload`（圖片／影片上傳）皆需瀏覽器 cookie 與同源。WS 不傳媒體位元組。
 
 ## 建置與驗證
 
