@@ -60,7 +60,8 @@ footer { color: #667c73; font-size: 12px; line-height: 1.7; }
 .message header strong { white-space: nowrap; }
 .message-row { display: flex; align-items: flex-end; gap: 8px; }
 .message-row > :first-child { min-width: 0; }
-.message-row time { flex: none; color: var(--muted); font-size: 11px; white-space: nowrap; padding-bottom: 2px; }
+.message-meta { flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding-bottom: 2px; }
+.message-meta time { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .role-badge { display: inline-flex; flex: none; width: 15px; height: 15px; }
 .role-badge svg { width: 100%; height: 100%; fill: currentColor; }
 .role-badge[data-role="admin"] { color: #d99a00; }
@@ -76,7 +77,7 @@ dialog#viewer { padding: 0; border: 0; background: transparent; max-width: 96vw;
 dialog#viewer::backdrop { background: #050b08e0; }
 dialog#viewer img { display: block; max-width: 96vw; max-height: 92vh; object-fit: contain; border-radius: 8px; cursor: zoom-out; }
 dialog#viewer button { position: fixed; top: 14px; right: 18px; background: #0008; color: #fff; border-color: #fff4; }
-.read-state { display: block; margin-top: 3px; font-size: 12px; color: var(--accent); }
+.read-state { font-size: 11px; color: var(--accent); white-space: nowrap; }
 .unread-divider { display: flex; align-items: center; gap: 12px; color: var(--accent); font-size: 12px; font-weight: 600; }
 .unread-divider::before, .unread-divider::after { content: ""; flex: 1; height: 1px; background: currentColor; opacity: .35; }
 .message-main p.placeholder, .empty { color: var(--muted); font-style: italic; }

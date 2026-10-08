@@ -346,16 +346,19 @@ function messageNode(message: Message, previous: Message | undefined, readLabel:
   if (message.replyTo) main.append(quoteNode(message));
   const row = document.createElement("div");
   row.className = "message-row";
-  const time = document.createElement("time");
-  time.textContent = when;
-  row.append(messageBody(message), time);
-  main.append(row);
+  const meta = document.createElement("div");
+  meta.className = "message-meta";
   if (readLabel) {
     const read = document.createElement("small");
     read.className = "read-state";
     read.textContent = readLabel;
-    main.append(read);
+    meta.append(read);
   }
+  const time = document.createElement("time");
+  time.textContent = when;
+  meta.append(time);
+  row.append(messageBody(message), meta);
+  main.append(row);
   item.append(main);
   return item;
 }
