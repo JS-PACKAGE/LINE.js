@@ -78,8 +78,8 @@ Research that follows these rules will not be pursued by the maintainers:
 
 - Anything that lets a party other than the user read or send LINE data, or obtain `session.json`
   contents, QR URLs, PINs or tokens, through LINE.js code.
-- Bypasses of the loopback binding, Host/Origin/cookie checks, CSP, rate limits, size limits or input
-  validation described in section 4.
+- Bypasses of the Host/Origin/cookie checks, the bot API's token and scope checks, CSP, rate limits,
+  size limits or input validation described in section 4.
 - A malicious LINE message, sticker, avatar or media object that causes code execution, script
   injection, out-of-bounds file access, memory exhaustion, or a crash of the local process.
 - Credential or key material appearing in logs, error messages, WebSocket frames, or shared state.
@@ -94,9 +94,10 @@ Research that follows these rules will not be pursued by the maintainers:
   (section 6); use a secondary account.
 - An attacker who already runs arbitrary code as the same OS user, has root, or has physical access
   (see section 6).
-- Deliberately editing the code or `config.yaml` to weaken a control, for example binding to a
-  non-loopback address. `server.host` is rejected at startup unless it is `127.0.0.1`
-  (`src/config.ts`); circumventing that by modifying the program is not a vulnerability.
+- Deliberately editing the code or `config.yaml` to weaken a control. In particular, `server.host` is
+  whatever `config.yaml` says (see section 4): choosing a non-loopback address, or listing chats in
+  `api.chats`, is the user's decision and is not a vulnerability by itself. Modifying the program to
+  remove a check is not a vulnerability either.
 - Missing hardening headers or best-practice findings without a demonstrated exploit path.
 - Denial of service that requires the already-trusted local browser tab.
 - Findings from automated scanners without a working proof of concept.
@@ -110,13 +111,24 @@ approval, and a regression against any of them is treated as a vulnerability.
 
 | Rule | Enforcement |
 |---|---|
-| The service listens on `127.0.0.1` only; any other `server.host` fails startup with `CONFIG_LOOPBACK_REQUIRED`. The default is never `0.0.0.0`. | `src/config.ts` |
-| Every HTTP request must carry an accepted `Host` (`127.0.0.1:<port>` or `localhost:<port>`) and is rejected when `Sec-Fetch-Site: cross-site`. This defeats DNS rebinding and cross-site requests. | `src/http/server.ts` |
+| The listen address is whatever `server.host` in `config.yaml` says (hostname, IPv4 or IPv6; malformed values fail startup with `CONFIG_INVALID`). The shipped default and template are `127.0.0.1` and must never be `0.0.0.0`. Starting on any non-loopback address prints a warning, because the page has no password: whoever can reach the address can operate the signed-in account. | `src/config.ts`, `src/main.ts` |
+| Every HTTP request must carry an accepted `Host` (the configured `host:<port>` or `localhost:<port>`) and is rejected when `Sec-Fetch-Site: cross-site`. This defeats DNS rebinding and cross-site requests. | `src/http/server.ts` |
 | A WebSocket upgrade must pass **all** of: path `/ws`, accepted `Host`, `Origin` equal to `http://<host>`, and the per-process browser cookie. | `src/http/server.ts` (`authorizeUpgrade`), `src/ws/hub.ts` |
 | The browser cookie is a 256-bit random per-process token, `HttpOnly; SameSite=Strict`, compared in constant time. It is issued only with the page. | `src/http/server.ts` |
 | `POST /media/upload` additionally requires same-origin `Origin` and the cookie, so another website cannot queue media for sending. | `src/http/server.ts` |
 | A strict CSP (`default-src 'none'`, `script-src 'self'`, `frame-ancestors 'none'`, no inline script) and `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` are sent on every response. | `src/http/server.ts` |
-| There is no HTTP login endpoint. Login runs only over the WebSocket. | `src/ws/hub.ts` |
+| There is no HTTP login endpoint. Login runs only over the WebSocket. The CLI (`npm run cli`) is a client of that same WebSocket; it never reads or writes `session.json` itself. | `src/ws/hub.ts`, `src/cli.ts` |
+
+### Bot API (`/api/ws`, off by default)
+
+| Rule | Enforcement |
+|---|---|
+| The endpoint exists only when `api.enabled` is `true`, and `api.chats` must then list at least one valid chat id (an empty list is a startup error, never "everything"). | `src/config.ts` |
+| An upgrade needs an accepted `Host`, **no `Origin` header** (every browser WebSocket sends one, so no web page can use this endpoint even if the token leaks into it) and `Authorization: Bearer <token>`. Failures all look the same (403); more than 4 concurrent bots get 429. | `src/http/server.ts` (`authorizeApiUpgrade`), `src/ws/hub.ts` |
+| The token is 256 bits of randomness with a `linejs_` prefix. Only its SHA-256 is stored (`api-token.json`, mode `0600`, git-ignored, written via temporary file and rename); it is compared in constant time and shown **once**, only to the connection that asked for it. It is never logged or broadcast. | `src/http/apiToken.ts`, `src/ws/hub.ts`, `web/api.ts` |
+| Regenerating or revoking the token closes every bot connection immediately. Only ordinary `/ws` connections (the web page, or the local CLI, which obtains the page cookie the same way) can create or revoke it; a bot cannot. | `src/ws/hub.ts` |
+| A bot may send only `message:send` (text only), `history:fetch` and `ping`; everything else, including login, logout, read receipts, stickers and media, is `UNKNOWN_TYPE`. It can reach only the chats in `api.chats` (anything else is `UNKNOWN_CHAT`), receives only live messages (no replay, no read positions) and never receives media bytes. | `src/ws/hub.ts`, `src/ws/requests.ts` |
+| Sending is limited per connection (`limits.sendsPerSecond`, at most 5/s) and across all bots (`api.sendsPerMinute`, at most 120/min). | `src/ws/hub.ts`, `src/limit.ts` |
 
 ### Secrets and credentials
 
@@ -196,8 +208,9 @@ Be aware of these. They are not bugs, and reports that only restate them will be
    type).
 2. **Local processes are not isolated from each other.** The browser cookie and Origin checks stop
    *other websites*. They cannot stop another process running as the same OS user, which can read
-   `session.json` directly or fetch `/` to obtain the cookie. Treat the machine's user account as the
-   trust boundary.
+   `session.json` directly or fetch `/` to obtain the cookie (the bundled CLI does exactly that, by
+   design). Treat the machine's user account as the trust boundary. The same applies to the bot API
+   token: anyone who holds it can send messages as the account in the listed chats.
 3. **Secrets at rest.** `session.json` holds credentials and E2EE key material in plaintext, protected
    only by file permissions (`0600`). Full-disk encryption and a locked screen are the user's
    responsibility.
@@ -205,16 +218,25 @@ Be aware of these. They are not bugs, and reports that only restate them will be
    opening a chat marks it read for the other party. Set it to `false` to stay unseen.
 5. **Memory.** Cached messages and media live in process memory, are not zeroed on exit, and could
    appear in core dumps or swap.
-6. **No transport encryption on loopback.** The page and WebSocket use plain `http://` and `ws://` on
-   `127.0.0.1`. This is acceptable only because the service is never exposed beyond the loopback
-   interface. Do not put it behind a reverse proxy, port forward, tunnel or container port mapping that
-   exposes it to other hosts.
-7. **Browser-side state.** The web page keeps the conversation in the page's memory; a browser
+6. **No transport encryption and no page password.** The page and WebSocket use plain `http://` and
+   `ws://`, and the page has no login of its own. This is acceptable only on the loopback interface
+   (the default). If you set `server.host` to another address, or put the service behind a reverse
+   proxy, port forward, tunnel or container port mapping, anyone who can reach it can read your
+   messages and operate the account, and traffic is readable on the network. That is your decision and
+   your responsibility; the service only prints a warning.
+7. **Bot automation.** A bot speaks as your real account. LINE may treat frequent or machine-like
+   sending as abuse and restrict the account. Keep `api.sendsPerMinute` low and use a secondary
+   account.
+8. **Browser-side state.** The web page keeps the conversation in the page's memory; a browser
    extension or a compromised browser profile can read it.
 
 ## 7. Hardening checklist for users
 
-- Keep `server.host` at `127.0.0.1`. Never expose the port.
+- Keep `server.host` at `127.0.0.1` unless you fully control the network; never expose the port to the
+  internet.
+- Leave `api.enabled` off unless you run a bot. If you do, list only the chats it needs in
+  `api.chats`, keep the token out of git and shell history, regenerate it if it may have leaked
+  (`npm run cli -- token` or the web page's "API" window), and keep `api.sendsPerMinute` low.
 - Use a secondary LINE account and review LINE's "logged-in devices" list periodically; remove the
   device if you stop using LINE.js.
 - Keep `session.json` out of backups you do not control, and out of git. If it may have leaked, log out

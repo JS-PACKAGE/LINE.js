@@ -24,6 +24,7 @@
 | `src/update/` | 版本比較與 GitHub Release 檢查器（只通知） |
 | `scripts/update.mjs` | `npm run update`：使用者主動執行的 fast-forward 更新 |
 | `src/cli.ts` / `scripts/cli.mjs` | `npm run cli -- login｜logout｜token`：經正在執行的服務（同一個 WS）登入（終端機 QR）、登出、重新產生機器人 Token；不直接讀寫 session |
+| `linejs.sh` / `linejs.ps1` | 根目錄管理腳本（POSIX sh／PowerShell，功能相同）：`start｜stop｜restart｜update｜login｜logout｜token｜help`；只是 `node dist/main.js`、`scripts/service.mjs`（依 `linejs.pid` 停止服務，只終止命令列為本專案 `dist/main.js` 的程序）、`scripts/update.mjs`、`scripts/cli.mjs` 的捷徑，不得加入額外權限或繞過 CLI／服務的檢查。`linejs.ps1` 必須保留 UTF-8 BOM 與主控台 UTF-8 設定（Windows PowerShell 5.1 否則中文亂碼），兩支腳本的指令與行為要同步修改 |
 | `src/http/apiToken.ts` | 機器人 Token：只存 SHA-256（`api-token.json`，0600），明文只在產生當下出現一次 |
 | `web/api.ts` | 網頁「API」視窗：產生／撤銷 Token（顯示一次、關閉即清除） |
 | `SECURITY.md` / `.github/SECURITY.md` | 安全政策（英文）／GitHub 偵測用指標檔 |
@@ -45,6 +46,7 @@ npm audit
 npm start
 npm run update
 npm run cli -- login|logout|token
+./linejs.sh start|stop|restart|update|login|logout|token   # Windows：.\linejs.ps1 <同樣指令>
 ```
 
 後端 `tsc` 建置，前端 Vite 建置；`npm test` 使用 `node --test` 與 Mock Provider。修改後做針對性驗證並啟動實際程序或操作瀏覽器，不可只憑型別檢查宣告完成。測試應驗證消費者可見行為、邊界、轉移與錯誤，不測程式字串或單純 wiring。

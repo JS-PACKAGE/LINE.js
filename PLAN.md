@@ -24,13 +24,13 @@
 
 ### 目標
 - 以 TypeScript 本地開發 LINE 網頁客戶端 **LINE.js**：Node 後端經 @evex/linejs v3.4.2 連線 LINE（Thrift／LEGY／PUSH／E2EE）。
-- 後端監聽 **127.0.0.1:3789**（PORT 由本文件定案；值入 `config.yaml`），以 **ws** 將 LINE 訊息與頻道清單推送到網頁客戶端。
+- 後端預設監聽 **127.0.0.1:3789**（PORT 由本文件定案；host 與 PORT 值入 `config.yaml`，v1.11 起 host 以設定檔為準），以 **ws** 將 LINE 訊息與頻道清單推送到網頁客戶端。
 - 第一版全功能：頻道清單、即時訊息串流、歷史載入、網頁端發送**文字／圖片／貼圖**、圖片／貼圖顯示。
 - 登入採 **QR 掃碼**（免帳密）；session 持久化，重啟優先復用、失效才重掃。
 - 交付必要文件四件（README／AGENTS／CLAUDE／PLAN）後才收尾實作。
 
 ### 範圍外
-- 公開部署、對外網址、HTTPS／網域（僅監聽 127.0.0.1）。
+- 公開部署、對外網址、HTTPS／網域（預設僅監聽 127.0.0.1；host 可由 `config.yaml` 改，但不提供也不負責對外部署）。
 - 套件發布（npm／JSR）：裁示為**只開源倉庫供 clone，不發套件**。
 - 多帳號、多使用者、帳號系統與權限。
 - 檔案（FILE）的下載與播放（僅顯示類型佔位與基本資訊）。
@@ -43,12 +43,12 @@
 |---|---|
 | R1 | TypeScript 本地開發；執行環境 Node.js ≥ **v22**（本機 v26.10.0） |
 | R2 | 消費套件釘選 **@evex/linejs@3.4.2**、**@evex/linejs-types@3.4.2**（JSR），不追 main；升版需人工裁示 |
-| R3 | 後端監聽 **127.0.0.1**，PORT 預設 **3789**，主機與 PORT 值入 `config.yaml`，程式不得寫死 |
+| R3 | 後端預設監聽 **127.0.0.1**，PORT 預設 **3789**，主機與 PORT 值入 `config.yaml` 且以設定為準（v1.11 裁示：不再強制本機迴路），程式不得寫死 |
 | R4 | 以 **ws（WebSocket）** 將 LINE 訊息與頻道清單推送到網頁客戶端；同埠 HTTP 提供靜態前端與 `GET /media/:mediaId` 媒體位元組 |
 | R5 | 登入＝**QR 掃碼**（免帳密）；session（cert／refreshToken／authToken）持久化於 `session.json`，重啟優先復用、失效才重掃；QR URL 與 PIN 僅一次性顯示、不入日誌 |
 | R6 | 第一版功能：①頻道清單（好友／群組／聊天室／社群）②即時訊息串流（含 `square:message`、`message:edit`）③歷史載入（預設最近 50 則）④網頁端發送文字、圖片、貼圖（機制見「四、通訊協定」）⑤圖片／貼圖顯示 |
 | R7 | 媒體：收到的圖片／GIF／影片／語音經 adapter 取得（E2EE 於後端解密）後由 HTTP 內嵌供網頁顯示與播放，貼圖與大頭照由 LINE CDN 經後端代取；檔案僅佔位（v1.6 裁示：影片、語音、GIF 納入顯示） |
-| R8 | 安全：鎖定 127.0.0.1；`session.json` 權限 600 且不入版本控制；憑證／QR／PIN 不入日誌；WS Origin 限 localhost；每連線頻率、frame 與上傳大小上限 |
+| R8 | 安全：預設鎖定 127.0.0.1（可由設定改，非迴路時警告）；`session.json` 權限 600 且不入版本控制；憑證／QR／PIN 不入日誌；網頁 WS 須 Origin 等於 Host 並帶瀏覽器 cookie；機器人 API 以 Bearer Token；每連線頻率、frame 與上傳大小上限 |
 | R9 | 必要文件四件：`README.md`／`AGENTS.md`／`CLAUDE.md`／`PLAN.md` |
 | R10 | 實作順序：Gate 0（倉庫根檔＋必要文件）達成後才寫程式 |
 
@@ -65,7 +65,7 @@
 | 媒體 | `GET /media/:mediaId` 位元組供應、`POST /media/upload` 上傳（≤ 10MB）；快取上限（預設 200MB，LRU）；ws 不傳位元組 |
 | 安全性 | 全部依 R8；細則見「六、安全性架構」 |
 | 專案文件 | 四件必要文件（R9）；安全性章節完整寫入 `AGENTS.md` |
-| 部署 | 本機程序：`npm install → npm run build → npm start`；僅 127.0.0.1，無對外 |
+| 部署 | 本機程序：`npm install → npm run build → npm start`（或 `./linejs.sh start`／`.\linejs.ps1 start`）；預設僅 127.0.0.1，無對外 |
 
 ---
 
@@ -89,7 +89,7 @@
 - **語言與建置**：後端 `tsc` → `dist/`（Node ESM，目標 Node ≥22）；前端 Vite build → `dist/web/` 由同埠靜態服務。`npm run typecheck`（`tsc --noEmit`）、`npm test`（`node --test`＋Mock Provider）。
 - **依賴策略**：最少相依＝@evex/linejs＋@evex/linejs-types（JSR）＋ws＋yaml＋前端 qrcode；其餘為 dev（typescript、vite）。全部釘選版本。
 - **狀態儲存**：`session.json`（linejs `FileStorage`）＋記憶體訊息快取（每頻道 ≤ 500 則）＋媒體快取（LRU）。不引入資料庫（範圍外）。
-- **部署形態**：本機程序，僅 127.0.0.1（見「八、倉庫與部署」）。
+- **部署形態**：本機程序，預設僅 127.0.0.1（見「八、倉庫與部署」）。
 
 ---
 
@@ -128,7 +128,7 @@
 > v1.9：上傳由「圖片」擴充為「媒體」：`POST /media/upload` 另接受 MP4／MOV 影片（以位元組內容判斷；錯誤碼 `INVALID_IMAGE` 改為 `INVALID_MEDIA`），影片上限 `limits.uploadVideoMaxBytes`（預設 50MB）；`message:send` 的 `mediaId` 可引用圖片或影片，伺服器依上傳內容決定送出型別。
 > v1.10：新增 `update:available`（`{ version, current, url }`，GitHub 有較新 Release 時對所有連線廣播、新連線於 `hello` 後立即補送；僅公開資訊，登入前也會收到）；`hello.protocol` 由前端與自身常數比對，不相容即重新載入。前端以 build 時注入的版本與 `hello.serverVersion` 比對，不同則提示重新整理；服務重啟後 cookie 失效，舊分頁連線連續被拒三次且服務可連時自動重新載入。版本檢查由 `update.check`（預設 true）控制；更新由使用者執行 `npm run update`，不提供網頁觸發。
 
-> v1.11：新增**機器人 API** `ws://<host>:<port>/api/ws`（`api.enabled`，預設關閉；Bearer Token、不得帶 `Origin`；只開放 `message:send`（僅文字）、`history:fetch`、`ping`；只能存取 `api.chats`；連線不重播舊訊息）。新增 `api:state`／`api:token`（Server → 網頁）與 `api:token:create`／`api:token:revoke`（網頁 → Server）：Token 由網頁或 CLI（`npm run cli -- token`）產生，只顯示一次，伺服器只存 SHA-256（`api-token.json`）。新增終端機介面 `npm run cli -- login｜logout｜token`（經執行中的服務，登入時在終端機畫出 QR）。**裁示**：`server.host` 不再強制 127.0.0.1，以 `config.yaml` 為準（預設與範本仍為 127.0.0.1，非本機迴路啟動時印警告）。
+> v1.11：新增**機器人 API** `ws://<host>:<port>/api/ws`（`api.enabled`，預設關閉；Bearer Token、不得帶 `Origin`；只開放 `message:send`（僅文字）、`history:fetch`、`ping`；只能存取 `api.chats`；連線不重播舊訊息）。新增 `api:state`／`api:token`（Server → 網頁）與 `api:token:create`／`api:token:revoke`（網頁 → Server）：Token 由網頁或 CLI（`npm run cli -- token`）產生，只顯示一次，伺服器只存 SHA-256（`api-token.json`）。新增終端機介面 `npm run cli -- login｜logout｜token`（經執行中的服務，登入時在終端機畫出 QR）。根目錄新增管理腳本 `linejs.sh`／`linejs.ps1`（`start｜stop｜restart｜update｜login｜logout｜token`，僅為既有指令的捷徑；服務啟動時寫 `linejs.pid`，`stop`／`restart` 只終止命令列為本專案 `dist/main.js` 的程序）。**裁示**：`server.host` 不再強制 127.0.0.1，以 `config.yaml` 為準（預設與範本仍為 127.0.0.1，非本機迴路啟動時印警告）。
 
 ### Server → Client
 
