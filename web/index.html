@@ -13,6 +13,12 @@
     <script type="module" src="/main.ts"></script>
   </head>
   <body>
+    <div id="offline" role="alert" aria-live="assertive" hidden>
+      <div>
+        <strong>與伺服器斷線</strong>
+        <p>無法連線至本機服務，正在自動重新連線…恢復後會自動同步訊息。</p>
+      </div>
+    </div>
     <div id="notice" role="status" aria-live="polite" hidden>
       <span id="notice-text"></span>
       <a id="notice-link" target="_blank" rel="noopener noreferrer" hidden>版本說明</a>

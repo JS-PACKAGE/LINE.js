@@ -34,6 +34,7 @@ const tabChats = $<HTMLButtonElement>("#tab-chats");
 const tabFriends = $<HTMLButtonElement>("#tab-friends");
 const chatsUnread = $<HTMLSpanElement>("#chats-unread");
 const notice = createUpdateNotice($<HTMLElement>("#notice"));
+const offline = $<HTMLElement>("#offline");
 
 const KIND_LABEL: Record<Channel["kind"], string> = { user: "好友", group: "群組", room: "聊天室", square: "社群" };
 const LISTEN_LABEL: Record<ListenState, string> = { starting: "啟動中", listening: "即時接收中", reconnecting: "LINE 重新連線中" };
@@ -493,6 +494,7 @@ async function handle(frame: ServerFrame): Promise<void> {
   switch (frame.type) {
     case "hello":
       halted = !notice.hello(frame);
+      offline.hidden = true;
       if (halted) return;
       // The server replays the full snapshot after every (re)connect.
       channels = [];
@@ -632,6 +634,7 @@ function connect(): void {
   socket.addEventListener("close", () => {
     clearSecrets();
     composer.setConnected(false);
+    offline.hidden = false;
     if (signedIn) listenState.textContent = "與本機服務斷線，重新連線中…";
     else showLogin("無法連線至本機服務，正在重新連線…", false);
     if (!opened && ++refusedConnects >= 3) void recoverStalePage();

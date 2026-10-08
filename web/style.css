@@ -140,6 +140,10 @@ dialog#confirm::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
 #notice a { color: var(--accent); white-space: nowrap; }
 #notice button { padding: 6px 14px; white-space: nowrap; }
 #notice .ghost:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+#offline { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 24px; background: #0b1511e6; color: #e2eee8; text-align: center; backdrop-filter: blur(4px); }
+#offline[hidden] { display: none; }
+#offline strong { display: block; margin-bottom: 8px; font-size: 22px; }
+#offline p { margin: 0; max-width: 420px; line-height: 1.6; color: #c3d6cb; }
 @media (prefers-color-scheme: dark) {
   :root { color: #e2eee8; background: #101b17; --line: #304b3c; --muted: #95b0a1; --surface: #172720; --soft: #213a2e; }
   .eyebrow { color: #8abd9f; }
