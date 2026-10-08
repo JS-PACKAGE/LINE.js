@@ -8,7 +8,7 @@ export interface ApiPanel {
   /** The one moment a token exists in clear text; it lives only in this dialog's input. */
   handleToken(token: string): void;
   handleError(message: string): void;
-  /** Drops the token from the page (disconnect, sign-out). */
+  /** Drops the token from the page and closes the dialog (disconnect, sign-out). */
   clear(): void;
 }
 
@@ -35,7 +35,7 @@ export function createApiPanel(send: (frame: ClientFrame) => boolean, nameOf: (c
   let state: ApiState | undefined;
   let copiedTimer: number | undefined;
 
-  function clear(): void {
+  function wipe(): void {
     tokenInput.value = "";
     tokenBox.hidden = true;
     window.clearTimeout(copiedTimer);
@@ -70,7 +70,7 @@ export function createApiPanel(send: (frame: ClientFrame) => boolean, nameOf: (c
     if (event.target === dialog) dialog.close();
   });
   // However the dialog closes, a token on screen goes with it.
-  dialog.addEventListener("close", clear);
+  dialog.addEventListener("close", wipe);
 
   create.addEventListener("click", async () => {
     if (state?.createdAt !== undefined) {
@@ -96,7 +96,7 @@ export function createApiPanel(send: (frame: ClientFrame) => boolean, nameOf: (c
     });
     if (!confirmed) return;
     problem.hidden = true;
-    clear();
+    wipe();
     send({ type: "api:token:revoke" });
   });
 
@@ -128,6 +128,9 @@ export function createApiPanel(send: (frame: ClientFrame) => boolean, nameOf: (c
       tokenInput.select();
     },
     handleError,
-    clear,
+    clear() {
+      wipe();
+      if (dialog.open) dialog.close();
+    },
   };
 }
