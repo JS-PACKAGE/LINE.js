@@ -1,4 +1,4 @@
-# LINE.js 本機 LINE 網頁客戶端 企劃書 v1.7
+# LINE.js 本機 LINE 網頁客戶端 企劃書 v1.8
 
 一句話：以 **WebSocket** 為即時通道、以 **@evex/linejs v3.4.2** 為 LINE 連線核心的本機 TypeScript 網頁客戶端（**LINE.js**）——Node 後端以 QR 掃碼登入 LINE，將訊息與頻道清單經 ws 推送到監聽 `127.0.0.1:3789` 的網頁前端。
 
@@ -124,6 +124,7 @@
 > v1.5：登入互動併入 ws（新增 `auth:state`、`auth:start`），不另設 HTTP 登入端點。ws 升級須帶本機 `Origin` 與首頁下發的 HttpOnly／SameSite=Strict cookie。
 > v1.6：新增 `history.cursor`、`read`（已讀位置）；頻道與訊息帶 `pictureId`／`senderPictureId`（大頭照）；OpenChat 聊天 id 以 `m` 開頭；收到的圖片／影片／語音以 `msg-<messageId>` 媒體 id 提供（支援 Range）。
 > v1.7：新增 `stickers:list`／`stickers`（已擁有貼圖包）、`chat:read`（已讀回報，受 `chat.sendReadReceipts` 控制）；`Message.senderRole`（社群管理員徽章）；媒體 id 新增 `stickerpack-<id>`；網頁可貼上／拖入圖片再送出；時間顯示 24 小時制並置於訊息後。
+> v1.8：`channels` 的頻道帶 `unreadCount`（LINE 端未讀數，連線時載入）；`message` 影格在連線快照重播時帶 `replay: true`（前端不計未讀）；`message:send` 新增 `mentions`（@ 提及，僅群組／聊天室／社群）與 `replyTo`（回覆）；`Message.replyTo`；發送圖片同樣即時回顯；媒體 id 新增 `avatarfull-(p|o)-<hash>`（大頭照原圖，點擊放大）；已讀人數標示於每則自己的訊息；新增 PWA（manifest、service worker、favicon，僅快取公開靜態檔，不快取 /media、/ws）；網頁鎖定瀏覽器原生右鍵選單（文字欄位除外）。
 
 ### Server → Client
 
@@ -155,7 +156,7 @@
 
 ### HTTP
 - `GET /`：前端 SPA。
-- `GET /media/:mediaId`：貼圖（`sticker-*`）、大頭照（`avatar-p|o-*`）、收到的圖片／影片／語音（`msg-*`）與已上傳圖片位元組（200／206／404／416）；需瀏覽器 cookie，訊息媒體 `Cache-Control: private, no-store`。
+- `GET /media/:mediaId`：貼圖（`sticker-*`）、大頭照（`avatar-p|o-*`，原圖 `avatarfull-*`）、收到的圖片／影片／語音（`msg-*`）與已上傳圖片位元組（200／206／404／416）；需瀏覽器 cookie，訊息媒體 `Cache-Control: private, no-store`。
 - `POST /media/upload`：圖片上傳（以內容判斷，僅 PNG／JPEG／GIF，≤ 10MB）→ `{ mediaId }`；發送時以 `mediaId` 引用。
 
 ### 限制
