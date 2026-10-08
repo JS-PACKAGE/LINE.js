@@ -45,7 +45,6 @@
           <span id="me-avatar" class="avatar-slot"></span>
           <strong id="me-name"></strong>
           <span id="listen-state" class="pill"></span>
-          <button id="api-open" type="button" class="ghost" aria-haspopup="dialog" hidden>API</button>
           <button id="logout" type="button" class="ghost">登出</button>
         </header>
         <div class="tabs" role="tablist" aria-label="清單類型">
@@ -113,28 +112,6 @@
         <div class="dialog-actions">
           <button id="confirm-cancel" type="button" class="ghost">取消</button>
           <button id="confirm-ok" type="button">確定</button>
-        </div>
-      </div>
-    </dialog>
-
-    <dialog id="api" aria-labelledby="api-title">
-      <div class="dialog-body">
-        <h2 id="api-title">機器人 API</h2>
-        <p id="api-status"></p>
-        <p id="api-chats"></p>
-        <div id="api-token-box" hidden>
-          <p class="api-warning">Token 只會顯示這一次；關閉視窗後就看不到了，請現在複製並妥善保管。</p>
-          <div class="api-token-row">
-            <input id="api-token" type="text" readonly spellcheck="false" autocomplete="off" aria-label="API Token" />
-            <button id="api-copy" type="button">複製</button>
-          </div>
-        </div>
-        <p class="api-usage">連線位址 <code id="api-url"></code>，連線時帶標頭 <code>Authorization: Bearer &lt;Token&gt;</code>。機器人可傳 <code>message:send</code>（僅文字）與 <code>history:fetch</code>，並會收到上述聊天室的即時訊息。</p>
-        <p id="api-problem" class="api-problem" role="alert" hidden></p>
-        <div class="dialog-actions">
-          <button id="api-revoke" type="button" class="ghost">撤銷</button>
-          <button id="api-create" type="button">產生 Token</button>
-          <button id="api-close" type="button" class="ghost">關閉</button>
         </div>
       </div>
     </dialog>

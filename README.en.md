@@ -12,7 +12,7 @@ The complete goal includes QR login/logout, session reuse, lists of friends/grou
 
 This project uses unofficial LINE APIs and may cause account restrictions or bans. **Verify with a secondary account first**; do not test directly with your main account.
 
-**Quick navigation**: [Installation and startup](#installation-and-startup)｜[Management scripts](#management-scripts)｜[Configuration](#configuration)｜[Bot API](#bot-apiapiws) and [Web “API” dialog](#web-api-dialog)｜[Terminal interface (CLI)](#terminal-interface-cli)｜[Version updates](#version-updates)｜[Security policy](SECURITY.md)
+**Quick navigation**: [Installation and startup](#installation-and-startup)｜[Management scripts](#management-scripts)｜[Configuration](#configuration)｜[Bot API](#bot-apiapiws)｜[Terminal interface (CLI)](#terminal-interface-cli)｜[Version updates](#version-updates)｜[Security policy](SECURITY.md)
 
 ## Target system architecture (including later Gates)
 
@@ -121,8 +121,8 @@ Lets your own programs (bots) send and receive messages. **Disabled by default**
        - c0123456789abcdef0123456789abcdef
      sendsPerMinute: 20          # Maximum total sends per minute across all bots (1～120, optional, default 20)
    ```
-   The web API dialog shows chat room ids alongside their names. If `enabled: true` has no valid `chats`, service startup fails outright (to avoid treating “an empty list” as “all chats”).
-2. Generate a Token using the web [「API」 dialog](#web-api-dialog) or `npm run cli -- token`. The Token is shown **once**; the server stores only its SHA-256 (`api-token.json`, permissions 600, excluded from version control). It cannot be viewed again; generate a new one if you lose it.
+   If `enabled: true` has no valid `chats`, service startup fails outright (to avoid treating “an empty list” as “all chats”).
+2. Generate a Token with `npm run cli -- token` (see [CLI `token`](#token-regenerate-or-revoke-the-bot-api-token)). The Token is shown **once**; the server stores only its SHA-256 (`api-token.json`, permissions 600, excluded from version control). It cannot be viewed again; generate a new one if you lose it. The web page has no Token management UI; the CLI is the only way.
 3. Connect your bot to `ws://<host>:<port>/api/ws` (default `ws://127.0.0.1:3789/api/ws`) with the header `Authorization: Bearer <Token>`.
 
 **Connection rules**
@@ -161,23 +161,6 @@ ws.on("message", (data) => {
 });
 ```
 
-#### Web “API” dialog
-
-The bot Token management dialog is at the top of the chat interface's left sidebar: the **「API」** button, to the right of your profile picture and name, beside 「登出」 (Log out).
-
-- **When it appears**: only after setting `api.enabled: true` in `config.yaml` and restarting the service; the button is hidden when disabled.
-- **Dialog contents**
-  - **Status**: 「Token 建立於 2026/10/8 20:10:26；內容無法再次查看，忘記時請重新產生。」 (Token created at 2026/10/8 20:10:26; its contents cannot be viewed again. Generate a new one if you lose it.) or 「尚未建立 Token，機器人目前無法連線。」 (No Token has been created; bots cannot currently connect.)
-  - **Accessible chat rooms**: lists names for `api.chats` (the first 6 characters of the id if the name has not loaded). This is read-only; edit `config.yaml` and restart to add or remove chats.
-  - **Connection instructions**: the bot endpoint (using the host:port of the web page you opened), the required `Authorization: Bearer <Token>` header, and available frames.
-  - **Buttons**: 「產生 Token」 (Generate Token; 「重新產生 Token」 (Regenerate Token) if one exists), 「撤銷」 (Revoke; disabled when no Token exists), and 「關閉」 (Close).
-- **Generating a Token**
-  1. Click 「產生 Token」 (Generate Token). If a Token already exists, a confirmation dialog first explains that the old Token will immediately become invalid and bots will be disconnected.
-  2. The dialog displays the new Token, a 「複製」 (Copy) button, and the red warning 「Token 只會顯示這一次」 (The Token will only be shown this once). The field is already selected for copying (press Ctrl/Cmd+C if the browser denies clipboard access).
-  3. Closing the dialog (「關閉」 (Close), Esc, or clicking the backdrop), disconnecting, or logging out immediately clears the Token from the page. The server has only the hash and cannot retrieve it again.
-- **Revoking**: asks for confirmation, then immediately disconnects all bots and deletes `api-token.json`; bots cannot reconnect until you generate a new Token.
-- **Who can manage it**: only web connections (or a local CLI that obtains the same browser cookie) can generate/revoke Tokens; bot connections cannot replace their own Token. The Token itself is sent only to the requesting connection, never broadcast to other tabs.
-
 ## Terminal interface (CLI)
 
 Log in, log out, and replace Tokens without opening the web interface. The CLI **does not directly access `session.json`**; it connects to the **running** service, first using `GET /` to obtain a browser cookie, then the same WebSocket (`/ws`) and workflow as the web interface. There is therefore only one set of security checks and state, and the web interface and CLI see the same login state. The service address comes from `server` in `config.yaml` (a `0.0.0.0` binding is accessed through loopback instead).
@@ -187,13 +170,13 @@ Log in, log out, and replace Tokens without opening the web interface. The CLI *
 ```sh
 npm run cli -- login     # 登入
 npm run cli -- logout    # 登出
-npm run cli -- token     # 重新產生機器人 API Token
+npm run cli -- token     # 重新產生機器人 API Token（加 --revoke 則撤銷）  (regenerate the bot API Token; add --revoke to revoke it)
 npm run cli              # 不帶指令：顯示用法
 ```
 
 > Do not omit the `--` after `npm run cli`; otherwise npm consumes the following arguments.
 
-**Options**: `--yes` (or `-y`) skips confirmation. Environments without a terminal (scripts, scheduled jobs) cannot prompt and **must** use `--yes`; otherwise execution is refused.
+**Options**: `--yes` (or `-y`) skips confirmation. Environments without a terminal (scripts, scheduled jobs) cannot prompt and **must** use `--yes`; otherwise execution is refused. `--revoke` is only valid with `token`; any other combination is a usage error (exit code 2).
 
 ### `login`: log in and display a QR code in the terminal
 
@@ -213,7 +196,7 @@ npm run cli              # 不帶指令：顯示用法
 2. Logged in → ask for confirmation: 「登出會清除本機登入資料與快取，並登出此裝置；下次需要重新掃描 QR code。確定登出？(y/N)」 (Logging out clears local login data and cache and logs out this device; next time you must scan the QR code again. Log out? (y/N)).
 3. After confirmation, revoke the LINE-side login, clear `session.json` and the in-memory cache, and print 「已登出。」 (Logged out.). If LINE-side logout cannot be confirmed, an additional reminder asks you to remove this device manually under 「登入中的裝置」 (Logged-in devices) in LINE on your phone.
 
-### `token`: regenerate the bot API Token
+### `token`: regenerate or revoke the bot API Token
 
 - Enable `api` in `config.yaml` first (see [Bot API](#bot-apiapiws)); otherwise it returns 「機器人 API 未啟用」 (Bot API is not enabled).
 - If a Token exists, first confirm: 「目前的 Token 會立即失效，使用它的機器人會被中斷連線。確定重新產生？」 (The current Token will immediately become invalid, and bots using it will be disconnected. Regenerate?).
@@ -222,8 +205,8 @@ npm run cli              # 不帶指令：顯示用法
   ```sh
   LINEJS_TOKEN=$(npm run -s cli -- token --yes)   # -s 讓 npm 不印自己的標頭，輸出才乾淨
   ```
-- This has exactly the same effect as 「產生 Token」 (Generate Token) in the web 「API」 dialog: both generate the same shared Token, and a later generation invalidates the earlier one.
-- The CLI has no revoke command; use the web API dialog to revoke a Token.
+- `token --revoke`: revokes the current Token without issuing a new one. It first confirms (「撤銷後機器人會被中斷連線，且在重新產生前無法再連線。確定撤銷？」: Revoking disconnects bots, and they cannot reconnect until a new Token is generated. Revoke?), then immediately disconnects all bots and deletes `api-token.json`. With no Token it prints 「目前沒有 Token，不需撤銷。」 (There is no Token; nothing to revoke.) and exits 0.
+- Only ordinary `/ws` connections that hold the browser cookie (that is, the local CLI) can generate or revoke Tokens; bot connections cannot replace their own Token. The Token is sent only to the requesting connection.
 
 ### Exit codes and common messages
 
@@ -290,7 +273,7 @@ npm audit
 
 Tests use `node --test` and a Mock Provider; mocks do not replace real LINE acceptance. Gate 1 requires scanning with a secondary account and receiving a real message within 60 seconds; Gates 2–4 additionally verify web synchronization, history, sending, and media. See [PLAN.md](PLAN.md) for all Gates and acceptance criteria.
 
-Verified: typecheck, build, 122 tests, and no high-severity findings from `npm audit`. With a real LINE account: session reuse, channel lists, live messages from friends/groups/OpenChat, talk history pagination (deduplicated, ordered, and scrollable to the end), OpenChat history pagination, profile pictures and non-friend name lookup, OpenChat image download/display, owned sticker pack lists (7 packs, including Traditional Chinese names and icons), administrator/co-administrator role detection in OpenChat messages, and rescanning to log in through the web interface (the service log shows the QR login flow and a switch to another account). In the browser with a fake provider: upward pagination, input/sending workflow, pasted image preview and sending (including sending text afterward), rejection of pasted videos, the owned sticker panel (pagination and click-to-send), image uploads, profile pictures and fallback letters, read/unread indicators, read-receipt triggers, badges and full nicknames without wrapping, timestamps after messages and 24-hour format (00:05, not 24:05), image enlargement, video (Range) and voice playback, confirmation dialogs, scrolling to the bottom after sending (including OpenChat cases where the replier's id differs from your own) and staying at the bottom when receiving stickers, the new-version banner (dismissal remembered), the refresh prompt when service/page versions differ, and automatic reload of old tabs after service restart. **Bot API, CLI, and other additions**: automated tests with a fake provider cover authentication (missing Token/incorrect Token/`Origin` present/incorrect `Host`), frame allowlisting, chat scope, no replay of old messages, global send limits, the maximum of 4 connections, immediate disconnection on Token replacement/revocation, hash-only Token storage and file permissions, and CLI `login` (QR and PIN only in the terminal)/`logout`/`token`. The web 「API」 dialog was verified in the browser with a fake provider (opening, generating, displaying once, clearing from the page after closing, and the regeneration confirmation). Against the real service, the CLI was only exercised with side-effect-free `login` (reporting state when already logged in) and the `token` error when the API is disabled. Parsing and names for 「XX 新增 OO 至群組」 (XX added OO to the group) were verified using historical messages from a real account. **Not yet verified** (requires side effects on real contacts or corresponding real messages): actual LINE sending and live receiving through the bot API, CLI `logout` and the real QR scanning login flow, the live system-message event path (only history was verified), actual use with a non-local binding, real text/sticker/image sending, real read receipts (the effect of `sendChatChecked`/OpenChat `markAsRead` on LINE), server confirmation of LINE-side logout, receiving/decrypting E2EE images, 1:1 read-event field formats (known mismatched shapes are ignored), real GIF/video sources, and backoff reconnection after listen interruptions. The full `npm run update` workflow was verified only with temporary git repositories and a fake `npm`, not against a real newer version (the repository's current latest Release is v0.9.0; update notification queries against the real GitHub Release API have been tested).
+Verified: typecheck, build, 123 tests, and no high-severity findings from `npm audit`. With a real LINE account: session reuse, channel lists, live messages from friends/groups/OpenChat, talk history pagination (deduplicated, ordered, and scrollable to the end), OpenChat history pagination, profile pictures and non-friend name lookup, OpenChat image download/display, owned sticker pack lists (7 packs, including Traditional Chinese names and icons), administrator/co-administrator role detection in OpenChat messages, and rescanning to log in through the web interface (the service log shows the QR login flow and a switch to another account). In the browser with a fake provider: upward pagination, input/sending workflow, pasted image preview and sending (including sending text afterward), rejection of pasted videos, the owned sticker panel (pagination and click-to-send), image uploads, profile pictures and fallback letters, read/unread indicators, read-receipt triggers, badges and full nicknames without wrapping, timestamps after messages and 24-hour format (00:05, not 24:05), image enlargement, video (Range) and voice playback, confirmation dialogs, scrolling to the bottom after sending (including OpenChat cases where the replier's id differs from your own) and staying at the bottom when receiving stickers, the new-version banner (dismissal remembered), the refresh prompt when service/page versions differ, and automatic reload of old tabs after service restart. **Bot API, CLI, and other additions**: automated tests with a fake provider cover authentication (missing Token/incorrect Token/`Origin` present/incorrect `Host`), frame allowlisting, chat scope, no replay of old messages, global send limits, the maximum of 4 connections, immediate disconnection on Token replacement/revocation, hash-only Token storage and file permissions, and CLI `login` (QR and PIN only in the terminal)/`logout`/`token`/`token --revoke` (revocation, no-op when there is no Token, and `--revoke` with any other command treated as a usage error). Against the real service, the CLI was only exercised with side-effect-free `login` (reporting state when already logged in) and the `token` error when the API is disabled. Parsing and names for 「XX 新增 OO 至群組」 (XX added OO to the group) were verified using historical messages from a real account. **Not yet verified** (requires side effects on real contacts or corresponding real messages): actual LINE sending and live receiving through the bot API, CLI `logout` and the real QR scanning login flow, the live system-message event path (only history was verified), actual use with a non-local binding, real text/sticker/image sending, real read receipts (the effect of `sendChatChecked`/OpenChat `markAsRead` on LINE), server confirmation of LINE-side logout, receiving/decrypting E2EE images, 1:1 read-event field formats (known mismatched shapes are ignored), real GIF/video sources, and backoff reconnection after listen interruptions. The full `npm run update` workflow was verified only with temporary git repositories and a fake `npm`, not against a real newer version (the repository's current latest Release is v0.9.0; update notification queries against the real GitHub Release API have been tested).
 
 ## Version updates
 

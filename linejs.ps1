@@ -6,7 +6,7 @@
 #   .\linejs.ps1 update [選項]    更新到最新版（選項：--check 只檢查、--verify 要求 tag 簽章）
 #   .\linejs.ps1 login            登入：在終端機顯示 QR code（服務需已啟動）
 #   .\linejs.ps1 logout [--yes]   登出並清除本機登入資料（服務需已啟動）
-#   .\linejs.ps1 token [--yes]    重設機器人 API Token，新 Token 只顯示一次（服務需已啟動）
+#   .\linejs.ps1 token [--yes] [--revoke]  重設機器人 API Token（只顯示一次）；--revoke 撤銷（服務需已啟動）
 #
 # login／logout／token 透過正在執行的服務完成，不直接碰 session.json。
 # stop／restart 依 linejs.pid 找到服務，且只會終止命令列確實是本專案 dist/main.js 的程序。

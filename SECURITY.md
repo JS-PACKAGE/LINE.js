@@ -125,7 +125,7 @@ approval, and a regression against any of them is treated as a vulnerability.
 |---|---|
 | The endpoint exists only when `api.enabled` is `true`, and `api.chats` must then list at least one valid chat id (an empty list is a startup error, never "everything"). | `src/config.ts` |
 | An upgrade needs **no `Origin` header** (every browser WebSocket sends one, so no web page can use this endpoint even if the token leaks into it) and `Authorization: Bearer <token>`; the `Host` header is not checked. Failures all look the same (403); more than 4 concurrent bots get 429. | `src/http/server.ts` (`authorizeApiUpgrade`), `src/ws/hub.ts` |
-| The token is 256 bits of randomness with a `linejs_` prefix. Only its SHA-256 is stored (`api-token.json`, mode `0600`, git-ignored, written via temporary file and rename); it is compared in constant time and shown **once**, only to the connection that asked for it. It is never logged or broadcast. | `src/http/apiToken.ts`, `src/ws/hub.ts`, `web/api.ts` |
+| The token is 256 bits of randomness with a `linejs_` prefix. Only its SHA-256 is stored (`api-token.json`, mode `0600`, git-ignored, written via temporary file and rename); it is compared in constant time and shown **once**, only to the connection that asked for it. It is never logged or broadcast. | `src/http/apiToken.ts`, `src/ws/hub.ts`, `src/cli.ts` |
 | Regenerating or revoking the token closes every bot connection immediately. Only ordinary `/ws` connections (the web page, or the local CLI, which obtains the page cookie the same way) can create or revoke it; a bot cannot. | `src/ws/hub.ts` |
 | A bot may send only `message:send` (text only), `history:fetch` and `ping`; everything else, including login, logout, read receipts, stickers and media, is `UNKNOWN_TYPE`. It can reach only the chats in `api.chats` (anything else is `UNKNOWN_CHAT`), receives only live messages (no replay, no read positions) and never receives media bytes. | `src/ws/hub.ts`, `src/ws/requests.ts` |
 | Sending is limited per connection (`limits.sendsPerSecond`, at most 5/s) and across all bots (`api.sendsPerMinute`, at most 120/min). | `src/ws/hub.ts`, `src/limit.ts` |
@@ -236,7 +236,7 @@ Be aware of these. They are not bugs, and reports that only restate them will be
   internet.
 - Leave `api.enabled` off unless you run a bot. If you do, list only the chats it needs in
   `api.chats`, keep the token out of git and shell history, regenerate it if it may have leaked
-  (`npm run cli -- token` or the web page's "API" window), and keep `api.sendsPerMinute` low.
+  (`npm run cli -- token`; `npm run cli -- token --revoke` revokes it without issuing a new one), and keep `api.sendsPerMinute` low.
 - Use a secondary LINE account and review LINE's "logged-in devices" list periodically; remove the
   device if you stop using LINE.js.
 - Keep `session.json` out of backups you do not control, and out of git. If it may have leaked, log out

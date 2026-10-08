@@ -69,7 +69,7 @@ async function main(): Promise<void> {
   if (!["127.0.0.1", "localhost", "::1"].includes(config.server.host)) {
     console.warn("警告：監聽位址不是本機迴路。能連到此位址的人都能開啟網頁並操作已登入的 LINE 帳號，請確認網路環境可信。");
   }
-  if (config.api.enabled) console.info(`機器人 API：ws://${config.server.host}:${config.server.port}/api/ws（Token 由網頁產生）`);
+  if (config.api.enabled) console.info(`機器人 API：ws://${config.server.host}:${config.server.port}/api/ws（Token 以 npm run cli -- token 產生）`);
   console.info("請使用次要帳號；QR 與 PIN 僅於網頁顯示。");
   void login.restore();
   const updates = config.update.check ? new UpdateChecker({ current: manifest.version, onUpdate: (info) => hub.setUpdate(info) }) : undefined;

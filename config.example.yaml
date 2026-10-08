@@ -67,12 +67,12 @@ update:
   check: true
 
 # 機器人 API：讓你自己的程式經 WebSocket 連到 ws://<host>:<port>/api/ws 收發訊息。預設關閉。
-# 啟用後，在網頁側邊欄按「API」產生 Token（只顯示一次；伺服器只保存雜湊，存於 api-token.json）。
+# 啟用後，用 `npm run cli -- token` 產生 Token（只顯示一次；伺服器只保存雜湊，存於 api-token.json），`token --revoke` 撤銷。
 # 機器人連線時帶標頭 Authorization: Bearer <Token>，不可帶 Origin。可用的影格：
 # message:send（僅文字）、history:fetch、ping；會收到 chats 內聊天室的即時訊息，不重播舊訊息。
 api:
   enabled: false
-  # 機器人可存取的聊天室 id（必填且至少一個；網頁 API 視窗會顯示對應名稱）。未列出的聊天室一律視為不存在。
+  # 機器人可存取的聊天室 id（必填且至少一個）。未列出的聊天室一律視為不存在。
   # chats:
   #   - c0123456789abcdef0123456789abcdef
   # 所有機器人連線合計每分鐘最多發送的訊息數（1～120）。自動發送可能觸發 LINE 風控，請保守設定。可省略，預設 20。

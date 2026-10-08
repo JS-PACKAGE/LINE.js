@@ -21,9 +21,9 @@ export type ServerFrame =
   | { type: "sent"; requestId: string; messageId: string }
   | { type: "read"; chatId: string; positions: ReadPosition[] }
   | { type: "stickers"; requestId: string; packages: StickerPackage[] }
-  /** Bot API status; sent to pages only. `chats` is the allow-list from config.yaml, `createdAt` the active token's age. */
+  /** Bot API status; sent to /ws connections (page and CLI) only. `chats` is the allow-list from config.yaml, `createdAt` the active token's age. */
   | { type: "api:state"; enabled: boolean; chats: string[]; createdAt?: number }
-  /** A freshly made bot token: shown once, only to the page that asked, never repeated or stored in clear. */
+  /** A freshly made bot token: shown once, only to the connection that asked (the CLI), never repeated or stored in clear. */
   | { type: "api:token"; token: string }
   | { type: "error"; requestId?: string; code: string; message: string };
 

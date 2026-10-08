@@ -998,6 +998,31 @@ test("cli token respects a refusal, --yes and a disabled API", async (t) => {
   assert.match(refused.err.join("\n"), /api\.enabled/);
 });
 
+test("cli token --revoke asks first, cuts bots off and leaves no token; without a token it is a no-op", async (t) => {
+  const env = await botEnv(t);
+  const target = { host: "127.0.0.1", port: env.port };
+  const declined = cliIo(false);
+  assert.equal(await runCli(["token", "--revoke"], declined.api, target), 0);
+  assert.equal(env.apiTokens.verify(env.token), true, "a declined revoke changes nothing");
+
+  const bot = await env.open();
+  const closed = new Promise((resolve) => bot.socket.once("close", resolve));
+  const io = cliIo();
+  assert.equal(await runCli(["token", "--revoke"], io.api, target), 0);
+  assert.equal(io.questions.length, 1);
+  assert.deepEqual(io.out, [], "revoking prints no token");
+  assert.match(io.err.join("\n"), /已撤銷/);
+  assert.equal(await closed, 1008);
+  assert.equal(env.apiTokens.verify(env.token), false);
+  assert.equal(env.apiTokens.createdAt, undefined);
+  await assert.rejects(env.bot().opened, (error) => error.status === 403);
+
+  const nothing = cliIo();
+  assert.equal(await runCli(["token", "--revoke", "--yes"], nothing.api, target), 0);
+  assert.equal(nothing.questions.length, 0);
+  assert.match(nothing.err.join("\n"), /沒有 Token/);
+});
+
 test("cli login shows the QR code and PIN in the terminal, never the raw URL, and finishes when LINE confirms", async (t) => {
   const env = await start(t, { restore: false });
   await env.login.restore();
@@ -1063,7 +1088,7 @@ test("cli reports a missing service and bad commands without a stack trace", asy
   const io = cliIo();
   assert.equal(await runCli(["token", "--yes"], io.api, dead), 1);
   assert.match(io.err.join("\n"), /npm start/);
-  for (const args of [["bogus"], ["login", "extra"], ["token", "--force"]]) {
+  for (const args of [["bogus"], ["login", "extra"], ["token", "--force"], ["logout", "--revoke"]]) {
     const bad = cliIo();
     assert.equal(await runCli(args, bad.api, { host: "127.0.0.1", port: probe.port }), 2);
     assert.match(bad.err.join("\n"), /用法/);

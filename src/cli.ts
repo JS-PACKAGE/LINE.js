@@ -22,15 +22,16 @@ export interface CliIo {
   confirm(question: string): Promise<boolean>;
 }
 
-export const USAGE = `用法：npm run cli -- <指令> [--yes]
+export const USAGE = `用法：npm run cli -- <指令> [--yes] [--revoke]
 
 指令：
   login    在終端機顯示 QR code，用次要帳號的 LINE 掃描登入
   logout   登出 LINE，清除本機登入資料與快取
-  token    重新產生機器人 API Token（只顯示一次）
+  token    重新產生機器人 API Token（只顯示一次）；加 --revoke 則撤銷目前的 Token
 
 選項：
   --yes, -y   略過確認（非互動環境必須加上）
+  --revoke    只與 token 搭配：撤銷 Token、不產生新的，機器人會立即斷線
 
 需要先啟動服務（npm start）。Token 會單獨印在標準輸出，其餘訊息印在標準錯誤，
 所以可以這樣取用：LINEJS_TOKEN=$(npm run -s cli -- token --yes)`;
@@ -205,14 +206,27 @@ async function logout(connection: Connection, io: CliIo, yes: boolean): Promise<
   io.err("已登出。");
 }
 
-async function token(connection: Connection, io: CliIo, yes: boolean): Promise<void> {
+async function token(connection: Connection, io: CliIo, yes: boolean, revoke: boolean): Promise<void> {
   const state = (await connection.until((frame) => frame.type === "api:state", WAIT_MS)) as Frame<"api:state">;
   if (!state.enabled) throw new CliError("機器人 API 未啟用：請在 config.yaml 設定 api.enabled: true 與 api.chats，重啟服務後再試。");
-  if (state.createdAt !== undefined && !yes && !(await io.confirm("目前的 Token 會立即失效，使用它的機器人會被中斷連線。確定重新產生？"))) {
+  if (revoke && state.createdAt === undefined) {
+    io.err("目前沒有 Token，不需撤銷。");
+    return;
+  }
+  const question = revoke ? "撤銷後機器人會被中斷連線，且在重新產生前無法再連線。確定撤銷？" : "目前的 Token 會立即失效，使用它的機器人會被中斷連線。確定重新產生？";
+  if (state.createdAt !== undefined && !yes && !(await io.confirm(question))) {
     io.err("已取消。");
     return;
   }
   const from = connection.frames.length;
+  if (revoke) {
+    connection.send({ type: "api:token:revoke" });
+    // The service answers a revoke with the new api:state (no token) rather than a dedicated frame.
+    const reply = await connection.until((frame) => (frame.type === "api:state" && frame.createdAt === undefined) || (frame.type === "error" && frame.code.startsWith("API_")), WAIT_MS, from);
+    if (reply.type === "error") throw new CliError(reply.message);
+    io.err("已撤銷 Token；機器人已斷線，需要時請重新執行 token 產生新的。");
+    return;
+  }
   connection.send({ type: "api:token:create" });
   const reply = await connection.until((frame) => frame.type === "api:token" || (frame.type === "error" && frame.code.startsWith("API_")), WAIT_MS, from);
   if (reply.type === "error") throw new CliError(reply.message);
@@ -227,7 +241,8 @@ export async function runCli(args: string[], io: CliIo, target: CliTarget): Prom
   const words = args.filter((arg) => !arg.startsWith("-"));
   const command = words[0];
   const yes = flags.includes("--yes") || flags.includes("-y");
-  if (!command || words.length > 1 || flags.some((flag) => !["--yes", "-y"].includes(flag)) || !["login", "logout", "token"].includes(command)) {
+  const revoke = flags.includes("--revoke");
+  if (!command || words.length > 1 || flags.some((flag) => !["--yes", "-y", "--revoke"].includes(flag)) || !["login", "logout", "token"].includes(command) || (revoke && command !== "token")) {
     io.err(USAGE);
     return command === undefined && flags.length === 0 ? 0 : 2;
   }
@@ -236,7 +251,7 @@ export async function runCli(args: string[], io: CliIo, target: CliTarget): Prom
     connection = await Connection.open(target);
     if (command === "login") await login(connection, io);
     else if (command === "logout") await logout(connection, io, yes);
-    else await token(connection, io, yes);
+    else await token(connection, io, yes, revoke);
     return 0;
   } catch (error) {
     // Messages written for people only; anything else is a bug and gets no detail (it could echo secrets).
