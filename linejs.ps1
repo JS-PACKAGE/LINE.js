@@ -39,12 +39,16 @@ function Invoke-Checked([string]$What, [scriptblock]$Command) {
 }
 
 # 依賴與建置輸出缺少時補齊；已齊全時不做任何事。
+# 只看 node_modules 目錄存在不夠：安裝中斷或 lockfile 已更新時會缺套件，啟動時才炸 ERR_MODULE_NOT_FOUND。
+# 重新安裝依賴後一併重建，因為舊的 dist/ 是用舊依賴建出來的。
 function Initialize-Project {
-    if (-not (Test-Path -LiteralPath 'node_modules' -PathType Container)) {
+    & node scripts/service.mjs deps
+    $rebuild = $LASTEXITCODE -ne 0
+    if ($rebuild) {
         Write-Host '▶ 安裝依賴（npm ci）'
         Invoke-Checked 'npm ci' { npm ci }
     }
-    if (-not ((Test-Path -LiteralPath 'dist/main.js') -and (Test-Path -LiteralPath 'dist/web/index.html'))) {
+    if ($rebuild -or -not ((Test-Path -LiteralPath 'dist/main.js') -and (Test-Path -LiteralPath 'dist/web/index.html'))) {
         Write-Host '▶ 建置（npm run build）'
         Invoke-Checked 'npm run build' { npm run build }
     }

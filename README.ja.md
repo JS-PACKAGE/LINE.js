@@ -247,7 +247,7 @@ npm run cli              # 不帶指令：顯示用法
 
 | コマンド | 実際の実行内容 | 説明 |
 |---|---|---|
-| `start` | `node dist/main.js` | 引数は受け付けません。`node_modules` がなければ先に `npm ci`、ビルド出力（`dist/main.js`、`dist/web/index.html`）がなければ先に `npm run build` を実行します。両方揃っていれば準備処理をせず、そのまま起動します。フォアグラウンドで実行し、Ctrl+C で停止します。実行中のサービスがある場合は起動を拒否し、`restart` を使うよう案内します |
+| `start` | `node dist/main.js` | 引数は受け付けません。`node_modules` が `package-lock.json` と一致しない場合（パッケージの欠落やバージョン不一致。インストールの中断や lockfile の更新後など）は先に `npm ci` と `npm run build`、ビルド出力（`dist/main.js`、`dist/web/index.html`）がなければ先に `npm run build` を実行します。両方揃っていれば準備処理をせず、そのまま起動します。フォアグラウンドで実行し、Ctrl+C で停止します。実行中のサービスがある場合は起動を拒否し、`restart` を使うよう案内します |
 | `stop` | `node scripts/service.mjs stop` | 引数は受け付けません。`linejs.pid` でサービスを見つけ、終了シグナル（`SIGTERM`。サービスは LINE 接続を閉じ、`session.json` を書き終えてから終了）を送り、最大 20 秒待ちます。実行されていない場合も成功とします |
 | `restart` | `stop` の後に `start` | 引数は受け付けません。実行中のサービスを停止し（実行されていなければ省略）、現在のターミナルを使ってフォアグラウンドで起動します。元のターミナルで動いていたサービスは終了します |
 | `update` | `node scripts/update.mjs …` | `npm run update` と同じです。オプションはそのまま渡し、`--check` は確認のみ、`--verify` は tag 署名を要求します。手順と中止条件は[バージョン更新](#バージョン更新)を参照してください。更新後は `start` を再実行する必要があります |

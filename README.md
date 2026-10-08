@@ -247,7 +247,7 @@ npm run cli              # 不帶指令：顯示用法
 
 | 指令 | 實際執行 | 說明 |
 |---|---|---|
-| `start` | `node dist/main.js` | 不接受參數。沒有 `node_modules` 時先 `npm ci`，沒有建置輸出（`dist/main.js`、`dist/web/index.html`）時先 `npm run build`；兩者齊全時不做任何事，直接啟動。前景執行，Ctrl+C 停止。服務已在執行時拒絕再啟動，並提示改用 `restart` |
+| `start` | `node dist/main.js` | 不接受參數。`node_modules` 與 `package-lock.json` 不一致（缺套件、版本不符，例如安裝中斷或 lockfile 已更新）時先 `npm ci` 再 `npm run build`；沒有建置輸出（`dist/main.js`、`dist/web/index.html`）時先 `npm run build`；兩者齊全時不做任何事，直接啟動。前景執行，Ctrl+C 停止。服務已在執行時拒絕再啟動，並提示改用 `restart` |
 | `stop` | `node scripts/service.mjs stop` | 不接受參數。依 `linejs.pid` 找到服務，送出結束訊號（`SIGTERM`，服務會先關閉 LINE 連線並寫好 `session.json` 再結束），最多等 20 秒；沒有在執行也回報成功 |
 | `restart` | `stop` 再 `start` | 不接受參數。先停止正在執行的服務（沒有在執行就略過），再以前景啟動，接手目前這個終端機；原本那個終端機裡的服務會結束 |
 | `update` | `node scripts/update.mjs …` | 即 `npm run update`，選項原樣傳入：`--check` 只檢查、`--verify` 要求 tag 簽章。流程與中止條件見[版本更新](#版本更新)；更新完要重新執行 `start` |

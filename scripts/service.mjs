@@ -3,6 +3,7 @@
 //
 //   node scripts/service.mjs running   服務正在執行 → 印出 PID、結束碼 0；否則結束碼 1
 //   node scripts/service.mjs stop      停止正在執行的服務（沒有在執行也算成功）
+//   node scripts/service.mjs deps      node_modules 與 package-lock.json 一致 → 結束碼 0；否則印出原因、結束碼 1
 //
 // 服務啟動後把自己的 PID 寫進專案根目錄的 linejs.pid（src/main.ts），正常結束時移除。
 // 這裡只會終止「PID 檔指向、且命令列確實是本專案 dist/main.js」的程序；PID 檔過期（程序已結束、
@@ -11,6 +12,29 @@ import { spawnSync } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+
+/**
+ * Why node_modules does not match package-lock.json, or undefined when it does. Checking only that the
+ * directory exists lets a half-finished install or a stale tree (lockfile changed by git pull) slip through
+ * and crash at import time. Optional packages are skipped: npm leaves out the ones for other platforms.
+ */
+async function dependencyProblem() {
+  let lock;
+  try {
+    lock = JSON.parse(await readFile("package-lock.json", "utf8"));
+  } catch {
+    return "無法讀取 package-lock.json";
+  }
+  for (const [path, entry] of Object.entries(lock.packages ?? {})) {
+    if (!path.startsWith("node_modules/") || entry.optional || entry.link) continue;
+    const installed = await readFile(`${path}/package.json`, "utf8").then(JSON.parse, () => undefined);
+    if (installed === undefined) return `缺少 ${path}`;
+    // npm cleans versions such as "v1.2.2" before writing them to the lockfile.
+    const version = String(installed.version ?? "").trim().replace(/^[=v]+/, "");
+    if (version !== entry.version) return `${path} 版本為 ${installed.version}，應為 ${entry.version}`;
+  }
+  return undefined;
+}
 
 const PID_FILE = resolve("linejs.pid");
 const STOP_WAIT_MS = 20_000;
@@ -69,7 +93,13 @@ if (command === "running") {
   }
   await rm(PID_FILE, { force: true });
   console.error("服務已停止。");
+} else if (command === "deps") {
+  const problem = await dependencyProblem();
+  if (problem !== undefined) {
+    console.error(`依賴不完整或已過期：${problem}`);
+    process.exit(1);
+  }
 } else {
-  console.error("用法：node scripts/service.mjs running|stop");
+  console.error("用法：node scripts/service.mjs running|stop|deps");
   process.exit(2);
 }

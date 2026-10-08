@@ -32,12 +32,16 @@ need_node() {
 }
 
 # 依賴與建置輸出缺少時補齊；已齊全時不做任何事。
+# 只看 node_modules 目錄存在不夠：安裝中斷或 lockfile 已更新時會缺套件，啟動時才炸 ERR_MODULE_NOT_FOUND。
+# 重新安裝依賴後一併重建，因為舊的 dist/ 是用舊依賴建出來的。
 ensure_ready() {
-  if [ ! -d node_modules ]; then
+  rebuild=0
+  if ! node scripts/service.mjs deps; then
     echo "▶ 安裝依賴（npm ci）"
     npm ci
+    rebuild=1
   fi
-  if [ ! -f dist/main.js ] || [ ! -f dist/web/index.html ]; then
+  if [ "$rebuild" -eq 1 ] || [ ! -f dist/main.js ] || [ ! -f dist/web/index.html ]; then
     echo "▶ 建置（npm run build）"
     npm run build
   fi
