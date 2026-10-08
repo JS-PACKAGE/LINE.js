@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MediaService, isMediaId } from "../dist/media/service.js";
+import { MediaService, avatarMediaId, isMediaId, sniffMedia } from "../dist/media/service.js";
 
 const png = (size) => ({ mime: "image/png", bytes: Buffer.alloc(size, 1) });
 
@@ -12,6 +12,14 @@ function source(sizes = {}) {
       calls.push([id, animated]);
       if (id === "404") return undefined;
       if (id === "boom") throw new Error("upstream down");
+      return png(sizes[id] ?? 10);
+    },
+    async fetchAvatar(host, hash) {
+      calls.push([host, hash]);
+      return png(sizes[hash] ?? 10);
+    },
+    async fetchMessageMedia(id) {
+      calls.push(["msg", id]);
       return png(sizes[id] ?? 10);
     },
   };
@@ -27,6 +35,49 @@ test("only numeric sticker ids are resolvable; anything else never reaches the s
   assert.deepEqual(upstream.calls, []);
   assert.equal(isMediaId("sticker-52002734"), true);
   assert.equal(isMediaId("sticker-52002734-a"), true);
+});
+
+test("avatar ids are built only from clean hashes and route to the right CDN host", async () => {
+  assert.equal(avatarMediaId("profile", "/0hAbC_def-123"), "avatar-p-0hAbC_def-123", "leading slash from picturePath is dropped");
+  assert.equal(avatarMediaId("obs", "0hAbC_def-123"), "avatar-o-0hAbC_def-123");
+  for (const bad of [undefined, "", "/", "short", "has space 12345", "a/b/cdefghij", "../../etc/passwd", "x".repeat(201)]) {
+    assert.equal(avatarMediaId("profile", bad), undefined, String(bad));
+  }
+  assert.equal(isMediaId("avatar-q-0hAbC_def-123"), false);
+  assert.equal(isMediaId("avatar-p-0hAbC_def-123/preview"), false);
+
+  const upstream = source();
+  const media = new MediaService(1000, upstream);
+  await media.get("avatar-p-0hAbC_def-123");
+  await media.get("avatar-o-0hAbC_def-123");
+  await media.get("avatar-p-0hAbC_def-123");
+  assert.deepEqual(upstream.calls, [["profile", "0hAbC_def-123"], ["obs", "0hAbC_def-123"]]);
+});
+
+test("message media ids are numeric only and reach the adapter by message id", async () => {
+  for (const bad of ["msg-", "msg-1a", "msg--1", "msg-1/2", "msg-100-p", `msg-${"9".repeat(25)}`]) assert.equal(isMediaId(bad), false, bad);
+  const upstream = source();
+  const media = new MediaService(1000, upstream);
+  await media.get("msg-5871");
+  await media.get("msg-5871");
+  assert.deepEqual(upstream.calls, [["msg", "5871"]]);
+});
+
+test("received media is typed from its bytes, and anything that could carry script is refused", () => {
+  const at = (offset, text, size = 16) => Buffer.concat([Buffer.alloc(offset), Buffer.from(text, "latin1"), Buffer.alloc(size)]);
+  assert.equal(sniffMedia(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0])), "image/png");
+  assert.equal(sniffMedia(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), "image/jpeg");
+  assert.equal(sniffMedia(Buffer.from("GIF89a....")), "image/gif");
+  assert.equal(sniffMedia(Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WEBPVP8 ")])), "image/webp");
+  assert.equal(sniffMedia(at(4, "ftypisom")), "video/mp4");
+  assert.equal(sniffMedia(at(4, "ftypqt  ")), "video/mp4");
+  assert.equal(sniffMedia(at(4, "ftypM4A ")), "audio/mp4");
+  assert.equal(sniffMedia(Buffer.from("ID3\x04\x00")), "audio/mpeg");
+  assert.equal(sniffMedia(Buffer.from([0xff, 0xf1, 0x50])), "audio/aac");
+  assert.equal(sniffMedia(Buffer.from([0xff, 0xfb, 0x90])), "audio/mpeg");
+  for (const hostile of ["<svg xmlns='http://www.w3.org/2000/svg' onload='alert(1)'/>", "<!doctype html><script>alert(1)</script>", "{\"error\":1}", "", "RIFF....WAVEfmt "]) {
+    assert.equal(sniffMedia(Buffer.from(hostile)), undefined, hostile);
+  }
 });
 
 test("a hit is served from memory; the animated variant is requested separately", async () => {

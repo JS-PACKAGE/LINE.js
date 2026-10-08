@@ -43,3 +43,6 @@ limits:
   uploadMaxBytes: 10485760
   # 每連線每分鐘最多上傳的圖片數（1～5）。
   uploadsPerMinute: 5
+  # 單一收到的圖片／影片／語音下載後的最大 bytes（最多 104857600 = 100 MiB）；
+  # 超過者不顯示內容、只顯示類型標籤。可省略，預設 52428800（50 MiB）。
+  downloadMaxBytes: 52428800

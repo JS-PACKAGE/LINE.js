@@ -5,7 +5,7 @@ import type { LoginController } from "../line/login.js";
 import type { LineProvider } from "../line/provider.js";
 import { SlidingWindowLimiter } from "../limit.js";
 import type { MediaService } from "../media/service.js";
-import type { Message } from "../model/dto.js";
+import type { ChannelKind, Message, ReadPosition } from "../model/dto.js";
 import type { ChatStore } from "../model/store.js";
 import type { ClientFrame, ListenState, ServerFrame } from "./protocol.js";
 import { parseHistory, parseSend, requestIdOf } from "./requests.js";
@@ -28,6 +28,7 @@ export interface HubOptions {
 export interface Hub {
   setStatus(state: ListenState): void;
   handleMessage(message: Message, kind: "new" | "edit"): void;
+  handleRead(chatId: string, position: ReadPosition): void;
   close(): void;
 }
 
@@ -88,9 +89,20 @@ export function createHub(options: HubOptions): Hub {
       for (const message of page.messages) store.upsert(message, false);
       const messages = page.messages.map((message) => store.get(message.messageId, message.channelId) ?? message);
       send(socket, { type: "history", requestId, chatId, messages, hasMore: page.hasMore, ...(page.cursor ? { cursor: page.cursor } : {}) });
+      // Receipts are an extra: a failure here must not turn a good history page into an error.
+      if (!before) void sendReadSnapshot(socket, chatId, channel.kind);
     } catch (error) {
       logFailure("HISTORY_FAILED", error);
       fail(socket, "HISTORY_FAILED", requestId);
+    }
+  }
+
+  async function sendReadSnapshot(socket: WebSocket, chatId: string, kind: ChannelKind): Promise<void> {
+    try {
+      const positions = await provider.fetchReadPositions({ channelId: chatId, kind });
+      if (positions.length > 0 && login.state === "ready") send(socket, { type: "read", chatId, positions });
+    } catch (error) {
+      logFailure("READ_RANGE_FAILED", error);
     }
   }
 
@@ -260,6 +272,9 @@ export function createHub(options: HubOptions): Hub {
       broadcast({ type: "status", state });
     },
     handleMessage: ingest,
+    handleRead(chatId, position) {
+      if (store.hasChannel(chatId)) broadcast({ type: "read", chatId, positions: [position] });
+    },
     close() {
       clearTimeout(refreshTimer);
       for (const socket of wss.clients) socket.close(1001);

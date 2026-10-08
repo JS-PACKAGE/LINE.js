@@ -87,7 +87,7 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
-    response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+    response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
     const host = request.headers.host;
     if (!host || hosts[host] !== true || request.headers["sec-fetch-site"] === "cross-site") {
       json(response, 403, { code: "FORBIDDEN" });
@@ -114,9 +114,22 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
           json(response, 404, { code: "NOT_FOUND" });
           return;
         }
-        // Sticker bytes are immutable per id, unlike everything else this server returns.
-        response.writeHead(200, { "Content-Type": found.mime, "Content-Length": found.bytes.length, "Cache-Control": "private, max-age=86400" });
-        response.end(request.method === "HEAD" ? undefined : found.bytes);
+        // Sticker and avatar bytes are immutable per id; received message media is private content
+        // and must not linger in the browser cache (the server-side LRU already avoids refetching).
+        const cacheControl = id.startsWith("msg-") ? "private, no-store" : "private, max-age=86400";
+        const length = found.bytes.length;
+        const range = byteRange(request.headers.range, length);
+        const headers = { "Content-Type": found.mime, "Accept-Ranges": "bytes", "Cache-Control": cacheControl };
+        if (range === "unsatisfiable") {
+          response.writeHead(416, { ...headers, "Content-Range": `bytes */${length}` });
+          response.end();
+        } else if (range) {
+          response.writeHead(206, { ...headers, "Content-Length": range.end - range.start + 1, "Content-Range": `bytes ${range.start}-${range.end}/${length}` });
+          response.end(request.method === "HEAD" ? undefined : found.bytes.subarray(range.start, range.end + 1));
+        } else {
+          response.writeHead(200, { ...headers, "Content-Length": length });
+          response.end(request.method === "HEAD" ? undefined : found.bytes);
+        }
       } catch {
         json(response, 502, { code: "MEDIA_UNAVAILABLE" });
       }
@@ -148,4 +161,22 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
     });
   });
   return { server, authorizeUpgrade };
+}
+
+/** A single `bytes=a-b` range, which is all a media element sends; anything else is served in full. */
+function byteRange(header: string | undefined, length: number): { start: number; end: number } | "unsatisfiable" | undefined {
+  const match = header ? /^bytes=(\d*)-(\d*)$/.exec(header) : null;
+  if (!match || (match[1] === "" && match[2] === "")) return undefined;
+  let start: number;
+  let end: number;
+  if (match[1] === "") {
+    const suffix = Number(match[2]);
+    start = Math.max(0, length - suffix);
+    end = length - 1;
+    if (suffix === 0) return "unsatisfiable";
+  } else {
+    start = Number(match[1]);
+    end = match[2] === "" ? length - 1 : Math.min(Number(match[2]), length - 1);
+  }
+  return start >= length || start > end ? "unsatisfiable" : { start, end };
 }

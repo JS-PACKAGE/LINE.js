@@ -20,6 +20,7 @@ async function main(): Promise<void> {
       console.info(`LINE 訊息收到：id=${message.messageId} type=${message.contentType} kind=${kind}`);
       hub.handleMessage(message, kind);
     },
+    onRead: (chatId, position) => hub.handleRead(chatId, position),
     onStatus: (state) => {
       console.info(`LINE 狀態：${state}`);
       hub.setStatus(state);
@@ -28,7 +29,7 @@ async function main(): Promise<void> {
       console.error(code);
       if (code === "SESSION_WRITE_FAILED") login.fail();
     },
-  });
+  }, undefined, config.limits.downloadMaxBytes);
   const login = new LoginController(provider);
   const media = new MediaService(config.cache.mediaMaxBytes, provider);
   const web = createWebServer(config, resolve("dist/web"), media);

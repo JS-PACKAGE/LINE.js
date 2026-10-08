@@ -1,4 +1,4 @@
-import type { AuthState, Channel, Message, Profile } from "../model/dto.js";
+import type { AuthState, Channel, Message, Profile, ReadPosition } from "../model/dto.js";
 
 export type ListenState = "starting" | "listening" | "reconnecting";
 
@@ -14,6 +14,7 @@ export type ServerFrame =
   | { type: "status"; state: ListenState }
   | { type: "history"; requestId: string; chatId: string; messages: Message[]; hasMore: boolean; cursor?: string }
   | { type: "sent"; requestId: string; messageId: string }
+  | { type: "read"; chatId: string; positions: ReadPosition[] }
   | { type: "error"; requestId?: string; code: string; message: string };
 
 export type ClientFrame =

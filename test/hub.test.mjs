@@ -33,6 +33,21 @@ class FakeProvider {
     if (id === "500") throw new Error("upstream down");
     return { mime: "image/png", bytes: Buffer.from(`png-${id}`) };
   }
+  async fetchAvatar(host, hash) {
+    if (hash === "missing00") return undefined;
+    return { mime: "image/jpeg", bytes: Buffer.from(`jpeg-${host}-${hash}`) };
+  }
+  async fetchMessageMedia(id) {
+    if (id === "404") return undefined;
+    return { mime: "video/mp4", bytes: Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypisom"), Buffer.from(`-${id}-0123456789`)]) };
+  }
+  readPositions = [];
+  readError = undefined;
+  async fetchReadPositions(channel) {
+    this.calls.push(["read-range", channel]);
+    if (this.readError) throw this.readError;
+    return this.readPositions;
+  }
   async fetchHistory(channel, limit, before) {
     this.calls.push(["history", channel, limit, before]);
     if (this.historyError) throw this.historyError;
@@ -299,8 +314,9 @@ test("history is fetched with the default or requested limit, paged by cursor, a
   assert.equal(page.cursor, "123:456");
   env.request({ type: "history:fetch", requestId: "r2", chatId: CHAT, limit: 20, before: "123:456" });
   await env.client.until((frame) => frame.type === "history" && frame.requestId === "r2");
-  assert.deepEqual(env.provider.calls.map(([, , limit, before]) => [limit, before]), [[50, undefined], [20, "123:456"]]);
-  assert.deepEqual(env.provider.calls[0][1], { channelId: CHAT, kind: "group" });
+  const historyCalls = env.provider.calls.filter(([kind]) => kind === "history");
+  assert.deepEqual(historyCalls.map(([, , limit, before]) => [limit, before]), [[50, undefined], [20, "123:456"]]);
+  assert.deepEqual(historyCalls[0][1], { channelId: CHAT, kind: "group" });
 
   const late = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
   t.after(() => late.socket.close());
@@ -423,4 +439,87 @@ test("the upload route only accepts same-origin, cookie-bound, real, small image
   const limited = await upload(env, PNG);
   assert.equal(limited.status, 429);
   assert.deepEqual(await limited.json(), { code: "RATE_LIMITED" });
+});
+
+test("opening a chat reports where others have read, once; a failing lookup does not spoil the history page", async (t) => {
+  const env = await signedIn(t);
+  env.provider.history = { messages: [older("h1", 10)], hasMore: true, cursor: "1:2" };
+  env.provider.readPositions = [{ readerId: "u1", messageId: "100" }, { readerId: "u2", messageId: "90" }];
+  env.request({ type: "history:fetch", requestId: "r1", chatId: CHAT });
+  const read = await env.client.until((frame) => frame.type === "read");
+  assert.deepEqual(read, { type: "read", chatId: CHAT, positions: env.provider.readPositions });
+  env.request({ type: "history:fetch", requestId: "r2", chatId: CHAT, before: "1:2" });
+  await env.client.until((frame) => frame.type === "history" && frame.requestId === "r2");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(env.client.frames.filter((frame) => frame.type === "read").length, 1, "older pages do not re-query receipts");
+
+  env.provider.readError = new Error("token=secret-token");
+  env.request({ type: "history:fetch", requestId: "r3", chatId: CHAT });
+  const page = await env.client.until((frame) => frame.type === "history" && frame.requestId === "r3");
+  assert.equal(page.messages.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(env.client.frames.filter((frame) => frame.type === "read").length, 1);
+  assert.ok(!env.client.frames.some((frame) => frame.type === "error"));
+});
+
+test("live read events reach the browser only for chats the account has", async (t) => {
+  const env = await signedIn(t);
+  env.hub.handleRead(`c${"b".repeat(32)}`, { readerId: "u1", messageId: "5" });
+  env.hub.handleRead(CHAT, { readerId: "u1", messageId: "7" });
+  await env.client.until((frame) => frame.type === "read");
+  assert.deepEqual(env.client.frames.filter((frame) => frame.type === "read"), [{ type: "read", chatId: CHAT, positions: [{ readerId: "u1", messageId: "7" }] }]);
+});
+
+test("avatars are served through the media route with the same cookie and id checks as stickers", async (t) => {
+  const { port, cookie } = await start(t);
+  const base = `http://127.0.0.1:${port}/media/`;
+  const hash = "0hAbC_def-123456";
+  const ok = await fetch(`${base}avatar-p-${hash}`, { headers: { Cookie: cookie } });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers.get("content-type"), "image/jpeg");
+  assert.equal(await ok.text(), `jpeg-profile-${hash}`);
+  assert.equal(await (await fetch(`${base}avatar-o-${hash}`, { headers: { Cookie: cookie } })).text(), `jpeg-obs-${hash}`);
+  assert.equal((await fetch(`${base}avatar-p-${hash}`)).status, 404, "no cookie");
+  for (const bad of ["avatar-x-" + hash, "avatar-p-short", "avatar-p-..%2F..%2Fetc%2Fpasswd0", `avatar-p-${hash}/preview`, "avatar-p-" + "a".repeat(201)]) {
+    assert.equal((await fetch(base + bad, { headers: { Cookie: cookie } })).status, 404, bad);
+  }
+  assert.equal((await fetch(`${base}avatar-p-missing00`, { headers: { Cookie: cookie } })).status, 404);
+});
+
+test("received media is served with byte ranges and is never cached by the browser", async (t) => {
+  const { port, cookie } = await start(t);
+  const url = `http://127.0.0.1:${port}/media/msg-100`;
+  const headers = (extra = {}) => ({ headers: { Cookie: cookie, ...extra } });
+  const whole = await fetch(url, headers());
+  assert.equal(whole.status, 200);
+  assert.equal(whole.headers.get("accept-ranges"), "bytes");
+  assert.equal(whole.headers.get("cache-control"), "private, no-store");
+  assert.equal(whole.headers.get("content-type"), "video/mp4");
+  const bytes = Buffer.from(await whole.arrayBuffer());
+  assert.match(whole.headers.get("content-security-policy"), /media-src 'self'/);
+
+  const part = await fetch(url, headers({ Range: "bytes=4-11" }));
+  assert.equal(part.status, 206);
+  assert.equal(part.headers.get("content-range"), `bytes 4-11/${bytes.length}`);
+  assert.deepEqual(Buffer.from(await part.arrayBuffer()), bytes.subarray(4, 12));
+  const open = await fetch(url, headers({ Range: "bytes=20-" }));
+  assert.equal(open.headers.get("content-range"), `bytes 20-${bytes.length - 1}/${bytes.length}`);
+  const tail = await fetch(url, headers({ Range: "bytes=-5" }));
+  assert.deepEqual(Buffer.from(await tail.arrayBuffer()), bytes.subarray(bytes.length - 5));
+  const clamped = await fetch(url, headers({ Range: `bytes=2-${bytes.length + 500}` }));
+  assert.equal(clamped.headers.get("content-range"), `bytes 2-${bytes.length - 1}/${bytes.length}`);
+  for (const range of [`bytes=${bytes.length}-`, "bytes=9-3", "bytes=-0"]) {
+    const refused = await fetch(url, headers({ Range: range }));
+    assert.equal(refused.status, 416, range);
+    assert.equal(refused.headers.get("content-range"), `bytes */${bytes.length}`);
+  }
+  for (const range of ["bytes=0-1,5-6", "items=0-3", "bytes=", "bytes=-"]) {
+    assert.equal((await fetch(url, headers({ Range: range }))).status, 200, `${range} is ignored, not trusted`);
+  }
+
+  assert.equal((await fetch(url)).status, 404, "no cookie");
+  assert.equal((await fetch(`${url.replace("msg-100", "msg-404")}`, headers())).status, 404);
+  for (const bad of ["msg-", "msg-12a", "msg-1234567890123456789012345", "msg-100-p"]) {
+    assert.equal((await fetch(`http://127.0.0.1:${port}/media/${bad}`, headers())).status, 404, bad);
+  }
 });

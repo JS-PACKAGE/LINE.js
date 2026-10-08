@@ -4,7 +4,8 @@ export interface Channel {
   channelId: string;
   kind: ChannelKind;
   name: string;
-  pictureUrl?: string;
+  /** Media id of the chat picture (served by `/media/:id`). */
+  pictureId?: string;
   memberCount?: number;
   lastMessageAt?: number;
 }
@@ -20,12 +21,19 @@ export interface HistoryPage {
   cursor?: string;
 }
 
+/** How far a chat member has read: everything up to and including `messageId`. */
+export interface ReadPosition {
+  readerId: string;
+  messageId: string;
+}
+
 export interface Message {
   messageId: string;
   channelId: string;
   channelKind: ChannelKind;
   senderId: string;
   senderName: string;
+  senderPictureId?: string;
   text?: string;
   contentType: string;
   createdAt: number;
@@ -37,6 +45,7 @@ export interface Message {
 export interface Profile {
   userId: string;
   displayName: string;
+  pictureId?: string;
 }
 
 export type AuthState = "restoring" | "idle" | "authenticating" | "ready" | "error";
