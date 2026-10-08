@@ -2,8 +2,13 @@ import type { AuthState, Channel, Mention, Message, Profile, ReadPosition, Stick
 
 export type ListenState = "starting" | "listening" | "reconnecting";
 
+/** Bumped only when frames change incompatibly; a page built for another number must reload. */
+export const PROTOCOL_VERSION = 1;
+
 export type ServerFrame =
-  | { type: "hello"; protocol: 1; serverVersion: string }
+  | { type: "hello"; protocol: number; serverVersion: string }
+  /** A newer release exists on GitHub. Public information only; sent to every connection, signed in or not. */
+  | { type: "update:available"; version: string; current: string; url: string }
   | { type: "auth:state"; state: AuthState }
   | { type: "auth:qr"; url: string }
   | { type: "auth:pin"; code: string }

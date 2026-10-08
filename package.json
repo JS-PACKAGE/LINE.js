@@ -12,6 +12,7 @@
     "build": "tsc -p tsconfig.json && vite build web --outDir ../dist/web --emptyOutDir",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.web.json",
     "start": "node dist/main.js",
+    "update": "node scripts/update.mjs",
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {

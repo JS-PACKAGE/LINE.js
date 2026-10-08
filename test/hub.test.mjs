@@ -736,3 +736,25 @@ test("connect-time replays are marked so the page does not count them as unread,
   for (let attempt = 0; attempt < 50 && store.channelOf(CHAT).unreadCount; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(store.channelOf(CHAT).unreadCount, undefined);
 });
+
+test("a newer release is announced to every client, including ones that connect later and are not signed in", async (t) => {
+  const { port, cookie, hub } = await start(t, { restore: false });
+  const headers = { Origin: `http://127.0.0.1:${port}`, Cookie: cookie };
+  const early = connect(port, headers);
+  t.after(() => early.socket.close());
+  await early.opened;
+  await early.until((frame) => frame.type === "auth:state");
+  assert.equal(early.frames.some((frame) => frame.type === "update:available"), false, "nothing to announce yet");
+
+  hub.setUpdate({ version: "0.2.0", current: "0.1.0", url: "https://github.com/JS-PACKAGE/LINE.js/releases/tag/v0.2.0", body: "never forwarded" });
+  const live = await early.until((frame) => frame.type === "update:available");
+  assert.deepEqual(live, { type: "update:available", version: "0.2.0", current: "0.1.0", url: "https://github.com/JS-PACKAGE/LINE.js/releases/tag/v0.2.0" });
+
+  const late = connect(port, headers);
+  t.after(() => late.socket.close());
+  await late.opened;
+  const replayed = await late.until((frame) => frame.type === "update:available");
+  assert.equal(replayed.version, "0.2.0");
+  assert.deepEqual(late.frames.slice(0, 2).map((frame) => frame.type), ["hello", "update:available"], "right after hello, before any account state");
+  assert.equal(late.frames.some((frame) => frame.type === "auth:qr" || frame.type === "auth:pin"), false);
+});

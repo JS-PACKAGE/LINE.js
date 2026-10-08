@@ -6,8 +6,9 @@ import type { LineProvider } from "../line/provider.js";
 import { SlidingWindowLimiter } from "../limit.js";
 import type { MediaService } from "../media/service.js";
 import type { ChannelKind, Message, ReadPosition } from "../model/dto.js";
+import type { UpdateInfo } from "../update/checker.js";
 import type { ChatStore } from "../model/store.js";
-import type { ClientFrame, ListenState, ServerFrame } from "./protocol.js";
+import { PROTOCOL_VERSION, type ClientFrame, type ListenState, type ServerFrame } from "./protocol.js";
 import { parseChatRead, parseHistory, parseSend, requestIdOf } from "./requests.js";
 
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
@@ -29,6 +30,8 @@ export interface Hub {
   setStatus(state: ListenState): void;
   handleMessage(message: Message, kind: "new" | "edit"): void;
   handleRead(chatId: string, position: ReadPosition): void;
+  /** Announces (or clears) the newest known release to everyone connected and to later connections. */
+  setUpdate(info: UpdateInfo | undefined): void;
   close(): void;
 }
 
@@ -44,15 +47,20 @@ const GENERIC = {
   SEND_FAILED: "訊息發送失敗，請稍後重試；草稿已保留。",
   RATE_LIMITED: "操作太頻繁，請稍後再試。",
   UNKNOWN_CHAT: "找不到這個聊天室。",
-  UPLOAD_EXPIRED: "圖片已過期，請重新選擇。",
+  UPLOAD_EXPIRED: "媒體已過期，請重新選擇。",
   STICKERS_FAILED: "無法載入貼圖清單，請稍後重試。",
 } as const;
+
+function updateFrame(info: UpdateInfo): ServerFrame {
+  return { type: "update:available", version: info.version, current: info.current, url: info.url };
+}
 
 export function createHub(options: HubOptions): Hub {
   const { server, authorizeUpgrade, config, login, provider, store, media, serverVersion } = options;
   const wss = new WebSocketServer({ noServer: true, maxPayload: config.limits.frameMaxBytes });
   let status: ListenState = "starting";
   let refreshing: Promise<void> | undefined;
+  let update: UpdateInfo | undefined;
   let refreshTimer: NodeJS.Timeout | undefined;
   // Newest message id per chat already reported as read, so each position is sent to LINE once.
   const markedRead = new Map<string, bigint>();
@@ -268,7 +276,8 @@ export function createHub(options: HubOptions): Hub {
     // Per connection: a runaway script must not be able to hammer LINE through us.
     const sendLimiter = new SlidingWindowLimiter(config.limits.sendsPerSecond, 1000);
     const historyLimiter = new SlidingWindowLimiter(HISTORY_PER_SECOND, 1000);
-    send(socket, { type: "hello", protocol: 1, serverVersion });
+    send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion });
+    if (update) send(socket, updateFrame(update));
     send(socket, { type: "auth:state", state: login.state });
     send(socket, { type: "status", state: status });
     if (login.state === "ready") sendReady(socket);
@@ -344,6 +353,10 @@ export function createHub(options: HubOptions): Hub {
       if (!store.hasChannel(chatId)) return;
       rememberRead(chatId, position);
       broadcast({ type: "read", chatId, positions: [position] });
+    },
+    setUpdate(info) {
+      update = info;
+      if (info) broadcast(updateFrame(info));
     },
     close() {
       clearTimeout(refreshTimer);

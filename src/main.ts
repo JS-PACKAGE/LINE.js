@@ -7,6 +7,7 @@ import { LoginController } from "./line/login.js";
 import { createWebServer } from "./http/server.js";
 import { MediaService } from "./media/service.js";
 import { ChatStore } from "./model/store.js";
+import { UpdateChecker } from "./update/checker.js";
 import { createHub } from "./ws/hub.js";
 
 async function main(): Promise<void> {
@@ -53,10 +54,13 @@ async function main(): Promise<void> {
   console.info(`LINE.js：http://${config.server.host}:${config.server.port}`);
   console.info("請使用次要帳號；QR 與 PIN 僅於網頁顯示。");
   void login.restore();
+  const updates = config.update.check ? new UpdateChecker({ current: manifest.version, onUpdate: (info) => hub.setUpdate(info) }) : undefined;
+  updates?.start();
   let stopping = false;
   const stop = async () => {
     if (stopping) return;
     stopping = true;
+    updates?.stop();
     hub.close();
     web.server.close();
     web.server.closeAllConnections();

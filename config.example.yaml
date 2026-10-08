@@ -56,3 +56,10 @@ chat:
   # （對方會看到「已讀」）。這會改變真實帳號狀態；設為 false 則只在本機清除未讀數。
   # 可省略，預設 true。
   sendReadReceipts: true
+
+# 版本更新檢查。
+update:
+  # 啟動時與之後每 24 小時向 GitHub 查詢本專案最新的 Release 版本號（匿名 GET，不送任何憑證或 LINE 資料），
+  # 有新版就在網頁顯示提示。只通知、不下載也不執行任何東西；更新請自行執行 `npm run update`。
+  # 設為 false 完全停用對外查詢。可省略，預設 true。
+  check: true
