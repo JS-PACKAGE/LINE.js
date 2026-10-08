@@ -1,3 +1,5 @@
+**繁體中文** ｜ [English](README.en.md) ｜ [日本語](README.ja.md)
+
 # LINE.js
 
 本機 TypeScript LINE 網頁客戶端，以釘選的 [@evex/linejs v3.4.2](https://github.com/evex-dev/linejs/tree/v3.4.2) 連線 LINE，經 WebSocket 同步頻道與訊息、同埠 HTTP 提供網頁。
