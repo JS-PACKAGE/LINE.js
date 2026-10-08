@@ -1,0 +1,45 @@
+# 本機設定範本；首次啟動若沒有 config.yaml，程式會自動複製此檔。
+# config.yaml 可自行調整，不納入版本控制；session.json 含敏感憑證，請勿分享。
+#
+# Phase 1 使用 server 與 line 設定。
+# history、cache 與 limits 會先驗證設定值，於後續訊息／媒體功能實作時套用。
+
+# 同埠 HTTP 與後續 WebSocket 的監聽位置。
+server:
+  # 安全限制：僅允許 127.0.0.1，不可改成 0.0.0.0 或對外位址。
+  host: 127.0.0.1
+  # 監聽埠（1～65535）；預設網頁網址為 http://127.0.0.1:3789。
+  port: 3789
+
+# LINE 用戶端模擬的裝置類型；變更可能影響登入與 LINE 協定行為。
+line:
+  # 預設使用 Android 次要裝置登入，請先以次要 LINE 帳號驗證。
+  # 支援：ANDROIDSECONDARY、DESKTOPWIN、DESKTOPMAC、ANDROID、IOS、IOSIPAD、WATCHOS、WEAROS。
+  device: ANDROIDSECONDARY
+
+# 歷史訊息載入。
+history:
+  # 每次預設載入的訊息筆數（1～100）。
+  defaultLimit: 50
+
+# 記憶體快取；訊息不持久化，也不使用資料庫。
+cache:
+  # 每個頻道最多保留的訊息筆數（1～500）。
+  messagesPerChannel: 500
+  # 媒體 LRU 快取容量，單位為 bytes；209715200 = 200 MiB。
+  # 超過容量時淘汰最久未使用的媒體。
+  mediaMaxBytes: 209715200
+
+# 安全上限：可調低，不可超過各項規定的最大值。
+limits:
+  # 單個 WebSocket frame 的最大 bytes（最多 262144 = 256 KiB）。
+  # 圖片與貼圖位元組走 HTTP，不放入 WebSocket frame。
+  frameMaxBytes: 262144
+  # 單則文字訊息長度上限（最多 8000；以 JavaScript 字串長度計）。
+  textMaxLength: 8000
+  # 每個 WebSocket 連線每秒最多發送的訊息數（1～5）。
+  sendsPerSecond: 5
+  # 單次圖片上傳的最大 bytes（最多 10485760 = 10 MiB），僅接受 image/*。
+  uploadMaxBytes: 10485760
+  # 每連線每分鐘最多上傳的圖片數（1～5）。
+  uploadsPerMinute: 5

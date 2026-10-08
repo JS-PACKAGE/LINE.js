@@ -2,7 +2,7 @@
 
 本機 TypeScript LINE 網頁客戶端，以釘選的 [@evex/linejs v3.4.2](https://github.com/evex-dev/linejs/tree/v3.4.2) 連線 LINE，使用 WebSocket 同步頻道與訊息；同埠 HTTP 提供網頁及圖片／貼圖。
 
-> 開發狀態：Phase 0 文件交付。尚未提供可執行程式；下方指令、設定與協定為 [PLAN.md](PLAN.md) 定案的實作契約，不代表已驗收。Gate 必須依序通過。
+> 開發狀態：Gate 0 已完成；Phase 1 已建立釘選依賴、TypeScript 工具鏈與本機設定。登入程式交付前，尚不能執行 `npm start`。Gate 必須依 [PLAN.md](PLAN.md) 順序通過。
 
 ## 用途與範圍
 
@@ -29,6 +29,8 @@ flowchart LR
 - 能掃描 QR 並確認 PIN 的 LINE 次要帳號。
 - `@evex/linejs` 與 `@evex/linejs-types` 均固定 **3.4.2**（JSR）；其餘直接依賴也須釘選版本。
 
+上游 3.4.2 的 Thrift 依賴包含 high 漏洞，本專案以 `overrides` 釘選修補版 `thrift@0.23.0`，不更動 LINE 套件版本。修補依據：[CVE-2026-41636](https://github.com/advisories/GHSA-r67j-r569-jrwp)。升版仍需驗證實際 LINE 登入相容性。
+
 ## 安裝與啟動（程式交付後使用）
 
 ```sh
@@ -44,9 +46,9 @@ npm start
 
 `session.json` 包含憑證與 E2EE key material，必須以權限 `600` 保存，不得分享或提交。`config.yaml` 為個人設定，不入版本控制。
 
-## 設定契約
+## 設定
 
-`config.example.yaml` 將提供可複製的預設設定；正式欄位名稱隨實作交付，避免尚未查證的設定鍵。
+`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`limits`。目前先驗證全部欄位；歷史、訊息與媒體限制於後續 Gate 實作套用。
 
 - 監聽 host：`127.0.0.1`；不得改成 `0.0.0.0` 或對外提供服務。
 - port：預設 `3789`，可調整；host 與 port 從 `config.yaml` 讀取，程式不得寫死。
@@ -76,7 +78,7 @@ HTTP：`GET /` 提供網頁；`GET /media/:mediaId` 提供圖片／貼圖；`POS
 
 ## 建置與驗證契約
 
-下列指令將於對應階段實作，目前不能執行：
+工具鏈已提供 `typecheck`、`build` 與 `test`；前端建置與啟動指令隨登入功能交付。
 
 ```sh
 npm run typecheck

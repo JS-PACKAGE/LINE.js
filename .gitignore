@@ -1,0 +1,7 @@
+node_modules/
+dist/
+config.yaml
+session.json
+session.json.*
+*.log
+.DS_Store
