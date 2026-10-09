@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -297,6 +297,18 @@ test("logout is refused when nobody is signed in; a failing logout ends in error
   assert.ok(!JSON.stringify(failure).includes("secret"));
   assert.equal(login.state, "error");
   assert.equal(login.canLogout(), false);
+});
+
+test("built assets may be kept by the browser for good; the page and anything outside the web root may not", async (t) => {
+  const { port, root } = await start(t);
+  await mkdir(join(root, "assets"));
+  await writeFile(join(root, "assets", "index-abc123.js"), "console.log(1)");
+  const asset = await fetch(`http://127.0.0.1:${port}/assets/index-abc123.js`);
+  assert.equal(asset.status, 200);
+  assert.equal(asset.headers.get("cache-control"), "public, max-age=31536000, immutable");
+  const page = await fetch(`http://127.0.0.1:${port}/`);
+  assert.equal(page.headers.get("cache-control"), "no-store");
+  assert.equal((await fetch(`http://127.0.0.1:${port}/assets/..%2F..%2Fetc%2Fpasswd`)).status, 404);
 });
 
 test("media route serves stickers only to the browser that holds the cookie and only for valid ids", async (t) => {

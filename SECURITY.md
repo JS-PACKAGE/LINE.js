@@ -116,7 +116,7 @@ approval, and a regression against any of them is treated as a vulnerability.
 | A WebSocket upgrade must pass **all** of: path `/ws`, an `http`/`https` `Origin` whose host equals the `Host` header (the scheme is not pinned so a TLS-terminating reverse proxy or custom domain works), and the per-process browser cookie. | `src/http/server.ts` (`authorizeUpgrade`), `src/ws/hub.ts` |
 | The browser cookie is a 256-bit random per-process token, `HttpOnly; SameSite=Strict`, compared in constant time. It is issued only with the page. | `src/http/server.ts` |
 | `POST /media/upload` additionally requires same-origin `Origin` and the cookie, so another website cannot queue media for sending. | `src/http/server.ts` |
-| A strict CSP (`default-src 'none'`, `script-src 'self'`, `frame-ancestors 'none'`, no inline script) and `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` are sent on every response. | `src/http/server.ts` |
+| A strict CSP (`default-src 'none'`, `script-src 'self'`, `frame-ancestors 'none'`, no inline script) and `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` are sent on every response. The one exception is the public build output under `/assets/` (content-hashed file names, no account data), which is `public, max-age=31536000, immutable`. | `src/http/server.ts` |
 | There is no HTTP login endpoint. Login runs only over the WebSocket. The CLI (`npm run cli`) is a client of that same WebSocket; it never reads or writes `session.json` itself. | `src/ws/hub.ts`, `src/cli.ts` |
 
 ### Bot API (`/api/ws`, off by default)

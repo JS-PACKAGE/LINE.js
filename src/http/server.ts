@@ -121,6 +121,8 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
     json(response, 200, { mediaId: media.putUpload({ mime: detected, bytes }) });
   }
 
+  let webRootPath: Promise<string> | undefined;
+
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("X-Content-Type-Options", "nosniff");
@@ -174,7 +176,9 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
       return;
     }
     try {
-      const root = await realpath(webRoot);
+      // The web root does not move while the service runs; a failed lookup is retried next time.
+      webRootPath ??= realpath(webRoot).catch((error: unknown) => { webRootPath = undefined; throw error; });
+      const root = await webRootPath;
       const path = await realpath(resolve(root, `.${decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname)}`));
       if (!path.startsWith(`${root}${sep}`) || !mime[extname(path)]) {
         json(response, 404, { code: "NOT_FOUND" });
@@ -182,6 +186,9 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
       }
       const body = await readFile(path);
       response.setHeader("Content-Type", mime[extname(path)]!);
+      // Vite names every built asset after its content hash, so a given URL never changes: the
+      // browser may keep it for good. Everything else (the page itself sets the cookie) stays no-store.
+      if (url.pathname.startsWith("/assets/")) response.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       if (url.pathname === "/" || url.pathname === "/index.html") {
         response.setHeader("Set-Cookie", `linejs_browser=${browserToken}; HttpOnly; SameSite=Strict; Path=/`);
       }
