@@ -10,7 +10,7 @@
 // PID 被別的程式沿用）時只清掉檔案，不會碰那個程序。
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { readFile, rm } from "node:fs/promises";
+import { access, readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -68,6 +68,13 @@ async function dependencyProblem() {
     lock = JSON.parse(await readFile("package-lock.json", "utf8"));
   } catch {
     return "無法讀取 package-lock.json";
+  }
+  // npm writes this hidden lockfile only after every package is in place, and `npm ci` deletes it first, so
+  // its absence catches an interrupted install whose package folders exist but are only partly extracted.
+  try {
+    await access("node_modules/.package-lock.json");
+  } catch {
+    return "上次安裝沒有完成（缺少 node_modules/.package-lock.json）";
   }
   for (const [path, entry] of Object.entries(lock.packages ?? {})) {
     if (!path.startsWith("node_modules/") || entry.link || !installedHere(entry)) continue;

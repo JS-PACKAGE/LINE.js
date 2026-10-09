@@ -100,13 +100,18 @@ test("a garbage pid file and unknown commands are handled", { skip }, async (t) 
   assert.equal((await helper("bogus")).status, 2);
 });
 
-/** Writes package-lock.json with the given entries and installs `installed` ({ path: version }) on top of what is there. */
+/**
+ * Writes package-lock.json with the given entries and installs `installed` ({ path: version }) on top of what
+ * is there, finishing with the hidden lockfile npm writes once an install completes.
+ */
 async function dependencies(root, packages, installed) {
   await writeFile(join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: { "": {}, ...packages } }));
   for (const [path, version] of Object.entries(installed)) {
     await mkdir(join(root, path), { recursive: true });
     await writeFile(join(root, path, "package.json"), JSON.stringify({ version }));
   }
+  await mkdir(join(root, "node_modules"), { recursive: true });
+  await writeFile(join(root, "node_modules", ".package-lock.json"), "{}");
 }
 
 test("deps reports missing and mismatched packages, accepting versions npm cleaned up", async (t) => {
@@ -138,4 +143,14 @@ test("deps requires the optional build for this platform and ignores other platf
   assert.match(missing.stderr, /缺少 node_modules\/@tool\/here/);
   await dependencies(root, lock, { "node_modules/@tool/here": "1.0.0" });
   assert.equal((await helper("deps")).status, 0);
+});
+
+test("deps treats an install that never wrote npm's hidden lockfile as unfinished", async (t) => {
+  const { root, helper } = await project(t);
+  await dependencies(root, { "node_modules/a": { version: "1.0.0" } }, { "node_modules/a": "1.0.0" });
+  assert.equal((await helper("deps")).status, 0);
+  await rm(join(root, "node_modules", ".package-lock.json"));
+  const unfinished = await helper("deps");
+  assert.equal(unfinished.status, 1);
+  assert.match(unfinished.stderr, /上次安裝沒有完成/);
 });
