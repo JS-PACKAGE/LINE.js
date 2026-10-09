@@ -61,17 +61,22 @@ export interface LineProvider {
 const UNKNOWN_MEMBER = "成員";
 
 const FRIEND_BATCH = 100;
+const FRIEND_BATCH_CONCURRENCY = 3;
 const STICKER_TIMEOUT_MS = 10_000;
 const STICKER_MAX_BYTES = 2 * 1024 * 1024;
 const SQUARE_PAGE_SIZE = 100;
 const SQUARE_MAX_PAGES = 50;
-const SQUARE_CACHE_MS = 60_000;
+// The walked OpenChat history is kept current by live messages (see rememberSquareMessage), so it
+// can live longer than a page-through; any gap in listening drops it.
+const SQUARE_CACHE_MS = 10 * 60_000;
 const SQUARE_CACHE_ENTRIES = 5;
 const CONTACT_BATCH = 100;
 const SQUARE_LOOKUP_CONCURRENCY = 5;
 const MAX_LOOKUPS_PER_CALL = 100;
 const LOOKUP_TIMEOUT_MS = 5000;
 const LOOKUP_RETRY_MS = 5 * 60 * 1000;
+// Past this many remembered failures, expired ones are dropped (they no longer block a retry anyway).
+const MAX_LOOKUP_MISSES = 2000;
 const TALK_USER_MID = /^u[0-9a-f]{32}$/;
 const STICKER_PACKS_CACHE_MS = 10 * 60 * 1000;
 const PACK_META_CONCURRENCY = 4;
@@ -106,7 +111,8 @@ export class EvexLineProvider implements LineProvider {
   private profiles = new Map<string, MemberProfile>();
   // mid -> time before which a failed lookup is not retried.
   private lookupMisses = new Map<string, number>();
-  private deliveries: Promise<void> = Promise.resolve();
+  // Per chat, the tail of its delivery chain: one slow member lookup holds back only its own chat.
+  private deliveries = new Map<string, Promise<void>>();
   private squareCache = new Map<string, { at: number; messages: Message[] }>();
   private stickerPackages?: { at: number; packages: StickerPackage[] };
   // Messages whose media the browser may ask for, newest last. Requests are only honoured for
@@ -136,6 +142,8 @@ export class EvexLineProvider implements LineProvider {
       // Never forward upstream log data: it can contain authentication material.
       if (type !== "LegyPusherError" && type !== "LegyPusherError_cannot_init") return;
       setImmediate(() => {
+        // Live events may have been missed: the OpenChat history cache can no longer be trusted as current.
+        if (this.base === base) this.squareCache.clear();
         if (this.stopped || this.base !== base || base.poll.islisten || this.retry) return;
         this.events.onError("LINE_LISTEN_FAILED");
         this.events.onStatus("reconnecting");
@@ -188,9 +196,9 @@ export class EvexLineProvider implements LineProvider {
     this.client = client;
     const profile = this.getProfile();
     this.rememberProfile(profile.userId, profile.displayName, profile.pictureId, true);
-    // Sender lookups are asynchronous; chaining keeps messages in arrival order.
-    const deliver = (source: "talk" | "square", senderMid: string, convert: () => Message, kind: "new" | "edit", extraMids: string[] = []) => {
-      this.deliveries = this.deliveries.then(async () => {
+    // Sender lookups are asynchronous; chaining per chat keeps each chat's messages in arrival order.
+    const deliver = (chatId: string, source: "talk" | "square", senderMid: string, convert: () => Message, kind: "new" | "edit", extraMids: string[] = []) => {
+      const next = (this.deliveries.get(chatId) ?? Promise.resolve()).then(async () => {
         await this.resolveMembers(client, source, [senderMid, ...extraMids]);
         if (this.client !== client) return;
         let message: Message;
@@ -201,12 +209,16 @@ export class EvexLineProvider implements LineProvider {
           return;
         }
         this.retryDelay = 1000;
+        if (message.channelKind === "square") this.rememberSquareMessage(message);
         this.events.onMessage(message, kind);
-      });
+      }).catch(() => this.events.onError("MESSAGE_PARSE_FAILED"));
+      this.deliveries.set(chatId, next);
+      void next.then(() => { if (this.deliveries.get(chatId) === next) this.deliveries.delete(chatId); });
     };
-    client.on("message", (message) => deliver("talk", message.raw.from, () => this.talkToMessage(message.raw, profile.userId), "new", chatEventMids(message.raw.contentMetadata)));
-    client.on("message:edit", (message) => deliver("talk", message.raw.from, () => this.talkToMessage(message.raw, profile.userId), "edit"));
-    client.on("square:message", (message) => deliver("square", message.raw.message.from, () => this.squareToMessage(message.raw), "new"));
+    const talkChat = (raw: LineMessage): string => (raw.to === profile.userId ? raw.from : raw.to);
+    client.on("message", (message) => deliver(talkChat(message.raw), "talk", message.raw.from, () => this.talkToMessage(message.raw, profile.userId), "new", chatEventMids(message.raw.contentMetadata)));
+    client.on("message:edit", (message) => deliver(talkChat(message.raw), "talk", message.raw.from, () => this.talkToMessage(message.raw, profile.userId), "edit"));
+    client.on("square:message", (message) => deliver(message.raw.message.to, "square", message.raw.message.from, () => this.squareToMessage(message.raw), "new"));
     client.on("event", (operation) => {
       if (this.client !== client || !["NOTIFIED_READ_MESSAGE", "55"].includes(String(operation.type))) return;
       const read = parseReadOperation(operation, profile.userId);
@@ -482,6 +494,10 @@ export class EvexLineProvider implements LineProvider {
     }
     const retryAt = Date.now() + LOOKUP_RETRY_MS;
     for (const mid of pending) if (!this.profiles.get(mid)?.settled) this.lookupMisses.set(mid, retryAt);
+    if (this.lookupMisses.size > MAX_LOOKUP_MISSES) {
+      const now = Date.now();
+      for (const [mid, until] of this.lookupMisses) if (until <= now) this.lookupMisses.delete(mid);
+    }
   }
 
   private async lookupContacts(client: Client, mids: string[]): Promise<void> {
@@ -606,6 +622,16 @@ export class EvexLineProvider implements LineProvider {
     return messages;
   }
 
+  /** Keeps a walked OpenChat history current with what arrives live or is sent from here. */
+  private rememberSquareMessage(message: Message): void {
+    const cached = this.squareCache.get(message.channelId);
+    if (!cached) return;
+    const index = cached.messages.findIndex((entry) => entry.messageId === message.messageId);
+    // Appending keeps the indexes that history cursors point at unchanged.
+    if (index >= 0) cached.messages[index] = message;
+    else cached.messages.push(message);
+  }
+
   async sendText(channel: ChannelRef, text: string, options: SendTextOptions = {}): Promise<Message> {
     const client = this.requireClient();
     const me = this.getProfile();
@@ -615,7 +641,9 @@ export class EvexLineProvider implements LineProvider {
     const echo = ({ decryptFailed: _unreadable, ...message }: Message): Message => ({ ...message, text, ...(options.replyTo ? { replyTo: options.replyTo } : {}) });
     if (channel.kind === "square") {
       const { createdSquareMessage } = await client.base.square.sendMessage({ squareChatMid: channel.channelId, text, contentMetadata, ...reply });
-      return echo(this.squareToMessage(createdSquareMessage, me.displayName));
+      const message = echo(this.squareToMessage(createdSquareMessage, me.displayName));
+      this.rememberSquareMessage(message);
+      return message;
     }
     // e2ee left undefined: linejs first tries plain and retries encrypted when LINE demands E2EE.
     const sent = await client.base.talk.sendMessage({ to: channel.channelId, text, contentMetadata, ...reply });
@@ -628,7 +656,9 @@ export class EvexLineProvider implements LineProvider {
     const contentMetadata = { STKVER: "100", STKPKGID: String(packageId), STKID: String(stickerId) };
     if (channel.kind === "square") {
       const { createdSquareMessage } = await client.base.square.sendMessage({ squareChatMid: channel.channelId, contentType: "STICKER", contentMetadata });
-      return this.squareToMessage(createdSquareMessage, me.displayName);
+      const message = this.squareToMessage(createdSquareMessage, me.displayName);
+      this.rememberSquareMessage(message);
+      return message;
     }
     const sent = await client.base.talk.sendMessage({ to: channel.channelId, contentType: "STICKER", contentMetadata });
     return this.talkToMessage({ ...sent, to: channel.channelId, from: me.userId, contentType: "STICKER", contentMetadata }, me.userId);
@@ -664,21 +694,30 @@ export class EvexLineProvider implements LineProvider {
   private outgoingMedia(channel: ChannelRef, me: Profile, id: string, contentType: "IMAGE" | "VIDEO"): Message {
     const toType = { user: "USER", room: "ROOM", group: "GROUP", square: "SQUARE_CHAT" }[channel.kind];
     const raw = { id, to: channel.channelId, from: me.userId, toType, contentType, contentMetadata: {}, createdTime: String(Date.now()) } as unknown as LineMessage;
-    return channel.kind === "square" ? this.squareToMessage({ message: raw } as LineSquareMessage, me.displayName) : this.talkToMessage(raw, me.userId);
+    if (channel.kind !== "square") return this.talkToMessage(raw, me.userId);
+    const message = this.squareToMessage({ message: raw } as LineSquareMessage, me.displayName);
+    this.rememberSquareMessage(message);
+    return message;
   }
 
   // linejs 3.4.2 `fetchUsers()` sends every friend mid in one getContactsV3 call, which
   // LINE rejects above 100 mids ("max_size":100). Page it here instead.
   private async fetchFriends(client: Client): Promise<Channel[]> {
     const { userFriendMids } = await client.base.relation.getUserFriendIds({ request: { blockStatus: "ALL" } });
+    const batches: string[][] = [];
+    for (let offset = 0; offset < (userFriendMids?.length ?? 0); offset += FRIEND_BATCH) batches.push(userFriendMids.slice(offset, offset + FRIEND_BATCH));
     const friends: Channel[] = [];
-    for (let offset = 0; offset < (userFriendMids?.length ?? 0); offset += FRIEND_BATCH) {
-      const { responses } = await client.base.relation.getContactsV3({ mids: userFriendMids.slice(offset, offset + FRIEND_BATCH) });
-      for (const contact of responses) {
-        const name = contact.friendDetail?.user?.overriddenName || contact.targetProfileDetail?.profileName || UNKNOWN_MEMBER;
-        const pictureId = avatarMediaId("profile", contact.targetProfileDetail?.pictureStatus);
-        this.rememberProfile(contact.targetUserMid, name, pictureId, true);
-        friends.push({ channelId: contact.targetUserMid, kind: "user", name, ...(pictureId ? { pictureId } : {}) });
+    // A few batches at a time: a large friend list is not a long line of sequential round trips,
+    // and LINE is not hit with every batch at once.
+    for (let wave = 0; wave < batches.length; wave += FRIEND_BATCH_CONCURRENCY) {
+      const answers = await Promise.all(batches.slice(wave, wave + FRIEND_BATCH_CONCURRENCY).map((mids) => client.base.relation.getContactsV3({ mids })));
+      for (const { responses } of answers) {
+        for (const contact of responses) {
+          const name = contact.friendDetail?.user?.overriddenName || contact.targetProfileDetail?.profileName || UNKNOWN_MEMBER;
+          const pictureId = avatarMediaId("profile", contact.targetProfileDetail?.pictureStatus);
+          this.rememberProfile(contact.targetUserMid, name, pictureId, true);
+          friends.push({ channelId: contact.targetUserMid, kind: "user", name, ...(pictureId ? { pictureId } : {}) });
+        }
       }
     }
     return friends;
@@ -687,9 +726,10 @@ export class EvexLineProvider implements LineProvider {
   async fetchChannels(): Promise<Channel[]> {
     const client = this.client;
     if (!client || this.stopped) throw new Error("NOT_AUTHENTICATED");
+    // Square access is optional (accounts without OpenChat must still list talk chats); all four start at once.
+    const squaresLoading = Promise.allSettled([client.fetchJoinedSquares(), client.fetchJoinedSquareChats()]);
     const [chats, friends] = await Promise.all([client.fetchJoinedChats(), this.fetchFriends(client)]);
-    // Square access is optional; accounts without OpenChat must still list talk chats.
-    const [squares, squareChats] = await Promise.allSettled([client.fetchJoinedSquares(), client.fetchJoinedSquareChats()]);
+    const [squares, squareChats] = await squaresLoading;
     const channels: Channel[] = [...friends];
     for (const chat of chats) {
       const type = String(chat.raw.type);
