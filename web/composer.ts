@@ -72,7 +72,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
 
   let channelId: string | undefined;
   let connected = false;
-  let pending: { requestId: string; kind: SendKind; timer: ReturnType<typeof setTimeout> } | undefined;
+  let pending: { requestId: string; kind: SendKind; chatId: string; timer: ReturnType<typeof setTimeout> } | undefined;
   let uploading = false;
   // An image waiting to be sent (pasted, dropped); `followUpText` sends the draft right after it.
   let staged: { file: File; url: string } | undefined;
@@ -83,6 +83,8 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
   let packages: StickerPackage[] | undefined;
   let stickerRequest: string | undefined;
   let activePackage: number | undefined;
+  // Unsent text per chat, kept in page memory only (never stored): switching chats and back restores it.
+  const drafts = new Map<string, { text: string; mentioned: { userId: string; name: string }[]; reply: ReplyTarget | undefined }>();
 
   function showNote(text: string, isError = false): void {
     note.textContent = text;
@@ -124,7 +126,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
       showNote("送出逾時，請確認連線後重試；草稿已保留。", true);
       refresh();
     }, kind === "media" ? MEDIA_RESPONSE_TIMEOUT_MS : RESPONSE_TIMEOUT_MS);
-    pending = { requestId, kind, timer };
+    pending = { requestId, kind, chatId: channelId, timer };
     showNote("送出中…");
     refresh();
   }
@@ -398,12 +400,18 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     },
     setChannel(next) {
       if (next === channelId) return;
+      if (channelId !== undefined) {
+        if (draft.value.trim() !== "" || replyTarget) drafts.set(channelId, { text: draft.value, mentioned, reply: replyTarget });
+        else drafts.delete(channelId);
+      }
       channelId = next;
-      // A draft (and a staged image) belongs to the conversation it was written in.
-      draft.value = "";
+      // Each conversation gets its own draft back; a staged image is not carried over.
+      const saved = next !== undefined ? drafts.get(next) : undefined;
+      draft.value = saved?.text ?? "";
+      mentioned = saved?.mentioned ?? [];
+      replyTarget = saved?.reply;
+      renderReply();
       clearStaged();
-      clearReply();
-      mentioned = [];
       resizeDraft();
       showNote("");
       refresh();
@@ -421,13 +429,17 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     },
     handleSent(requestId) {
       if (pending?.requestId !== requestId) return false;
-      const { kind } = pending;
+      const { kind, chatId } = pending;
       finish();
       if (kind === "text") {
-        draft.value = "";
-        clearReply();
-        mentioned = [];
-        resizeDraft();
+        // The chat may have been switched while sending: only that chat's draft is spent.
+        drafts.delete(chatId);
+        if (chatId === channelId) {
+          draft.value = "";
+          clearReply();
+          mentioned = [];
+          resizeDraft();
+        }
       }
       if (kind === "sticker") panel.hidden = true;
       const sendText = kind === "media" && followUpText;
@@ -462,6 +474,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
       uploading = false;
       channelId = undefined;
       draft.value = "";
+      drafts.clear();
       clearStaged();
       clearReply();
       mentioned = [];
