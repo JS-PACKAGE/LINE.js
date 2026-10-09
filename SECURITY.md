@@ -229,7 +229,9 @@ Be aware of these. They are not bugs, and reports that only restate them will be
    sending as abuse and restrict the account. Keep `api.sendsPerMinute` low and use a secondary
    account.
 8. **Browser-side state.** The web page keeps the conversation in the page's memory; a browser
-   extension or a compromised browser profile can read it.
+   extension or a compromised browser profile can read it. Desktop notifications are off by default;
+   when turned on, sender names and message previews appear in the operating system's notification
+   center, outside the page.
 
 ## 7. Hardening checklist for users
 

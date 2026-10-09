@@ -12,6 +12,7 @@ import { showMenu, type MenuItem } from "./menu.js";
 import { registerServiceWorker } from "./pwa.js";
 import { createUpdateNotice } from "./update.js";
 import { copyImage, downloadMedia } from "./save.js";
+import { createNotifier } from "./notify.js";
 
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const login = $<HTMLElement>("#login");
@@ -95,6 +96,7 @@ function send(frame: ClientFrame): boolean {
 }
 
 const composer = createComposer(send);
+const notifier = createNotifier($<HTMLButtonElement>("#notify"), (chatId) => openChat(chatId));
 
 function clearSecrets(): void {
   qrBox.hidden = true;
@@ -235,7 +237,7 @@ function renderChannels(): void {
 }
 
 channelList.addEventListener("contextmenu", (event) => {
-  const id = (event.target as Element).closest<HTMLElement>("li")?.dataset.channelId;
+  const id = chatAt(event.target);
   const channel = channels.find((entry) => entry.channelId === id);
   if (!channel) return;
   event.preventDefault();
@@ -702,6 +704,7 @@ function reportRead(): void {
     if (known !== undefined && id <= known) return;
     if (send({ type: "chat:read", chatId: selected, messageId: newest.messageId })) {
       reportedRead[selected] = id;
+      notifier.clear(selected);
       // What was just reported as read is no longer unread, whether it arrived while hidden or not.
       if (unread[selected]) {
         delete unread[selected];
@@ -773,6 +776,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       if (frame.type === "message" && message.senderId !== myUserId && (message.channelId !== selected || document.visibilityState !== "visible")) {
         unread[message.channelId] = (unread[message.channelId] ?? 0) + 1;
         liveCounted.add(message.channelId);
+        notifier.notify(message, channels.find((channel) => channel.channelId === message.channelId)?.name ?? "", previewOf(message));
       }
       scheduleChannels();
       return;
@@ -921,9 +925,7 @@ logoutButton.addEventListener("click", async () => {
   send({ type: "auth:logout" });
 });
 
-function selectChannel(item: EventTarget | null): void {
-  const id = (item as HTMLElement | null)?.closest<HTMLElement>("li")?.dataset.channelId;
-  if (!id) return;
+function openChat(id: string): void {
   if (id !== selected) {
     const list = messages[id] ?? [];
     const count = unread[id] ?? 0;
@@ -939,12 +941,20 @@ function selectChannel(item: EventTarget | null): void {
   if (!historyOf[id]?.loaded) requestHistory(id);
   reportRead();
 }
-channelList.addEventListener("click", (event) => selectChannel(event.target));
+
+/** The chat of the channel-list row an event happened in. */
+function chatAt(target: EventTarget | null): string | undefined {
+  return (target as Element | null)?.closest<HTMLElement>("li")?.dataset.channelId;
+}
+channelList.addEventListener("click", (event) => {
+  const id = chatAt(event.target);
+  if (id) openChat(id);
+});
 channelList.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" || event.key === " ") {
-    event.preventDefault();
-    selectChannel(event.target);
-  }
+  const id = chatAt(event.target);
+  if (!id || (event.key !== "Enter" && event.key !== " ")) return;
+  event.preventDefault();
+  openChat(id);
 });
 
 messageList.addEventListener("scroll", () => {
