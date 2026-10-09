@@ -38,6 +38,13 @@ export interface Mention {
   end: number;
 }
 
+/** A tag inside a received text: `text.slice(start, end)`. No `userId` means "@All". */
+export interface TextMention {
+  start: number;
+  end: number;
+  userId?: string;
+}
+
 /** A sticker package the account owns, with the stickers that can be sent from it. */
 export interface StickerPackage {
   packageId: number;
@@ -62,6 +69,8 @@ export interface Message {
   mediaId?: string;
   /** Id of the message this one answers (LINE "reply"). */
   replyTo?: string;
+  /** People tagged in `text`, sorted and non-overlapping. */
+  mentions?: TextMention[];
   decryptFailed?: boolean;
   /** The sender took the message back: its content is gone and only a placeholder remains. */
   unsent?: boolean;

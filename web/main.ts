@@ -1,6 +1,6 @@
 import QRCode from "qrcode";
 import "./style.css";
-import type { AuthState, Channel, Message, Profile } from "../src/model/dto.js";
+import type { AuthState, Channel, Message, Profile, TextMention } from "../src/model/dto.js";
 import type { ClientFrame, ListenState, ServerFrame } from "../src/ws/protocol.js";
 import { createComposer } from "./composer.js";
 import { confirmDialog } from "./dialog.js";
@@ -277,6 +277,23 @@ function scrollToLatest(): void {
   requestAnimationFrame(keepPinned);
 }
 
+/** Tagged people stand out, and so does a tag that means you (by name or "@All"); the rest gets links. */
+function textNodes(text: string, mentions: readonly TextMention[]): Node[] {
+  const nodes: Node[] = [];
+  let at = 0;
+  for (const mention of mentions) {
+    if (mention.start < at || mention.end > text.length) continue;
+    nodes.push(...linkifiedNodes(text.slice(at, mention.start)));
+    const tag = document.createElement("span");
+    tag.className = mention.userId === undefined || mention.userId === myUserId ? "mention mention-me" : "mention";
+    tag.textContent = text.slice(mention.start, mention.end);
+    nodes.push(tag);
+    at = mention.end;
+  }
+  nodes.push(...linkifiedNodes(text.slice(at)));
+  return nodes;
+}
+
 function messageBody(message: Message): HTMLElement {
   if (message.decryptFailed || message.unsent) {
     const body = document.createElement("p");
@@ -304,7 +321,7 @@ function messageBody(message: Message): HTMLElement {
   }
   const body = document.createElement("p");
   if (message.text) {
-    body.append(...linkifiedNodes(message.text));
+    body.append(...textNodes(message.text, message.mentions ?? []));
   } else {
     body.className = "placeholder";
     body.textContent = `［${CONTENT_LABEL[message.contentType] ?? "不支援的內容"}］`;
@@ -720,7 +737,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       const index = list.findIndex((entry) => entry.messageId === frame.messageId);
       if (index < 0) return;
       // Keep who sent it and when; the content is gone.
-      const { text: _text, mediaId: _media, replyTo: _reply, editedAt: _edited, decryptFailed: _unreadable, ...kept } = list[index]!;
+      const { text: _text, mediaId: _media, replyTo: _reply, mentions: _mentions, editedAt: _edited, decryptFailed: _unreadable, ...kept } = list[index]!;
       list[index] = { ...kept, unsent: true };
       if (frame.chatId === selected) renderMessages("keep");
       return;

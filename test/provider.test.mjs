@@ -170,3 +170,22 @@ test("talk and OpenChat take-backs reach the hub; malformed ones are dropped, an
   assert.deepEqual(unsent, [[GROUP_A, "700"], [GROUP_B, "701"], [SQUARE, "703"]]);
   assert.equal(await provider.fetchMessageMedia("700"), undefined, "a taken-back picture is not downloaded");
 });
+
+test("tags in a received text keep their ranges; @All has no person; ranges that do not fit are dropped", async () => {
+  const { received, emit } = await activeProvider(fakeBase());
+  const text = "@小明 @All 你好";
+  const mention = (entries) => ({ MENTION: JSON.stringify({ MENTIONEES: entries }) });
+  emit("message", talk("801", GROUP_A, mid(2), text, { contentMetadata: mention([
+    { S: "4", E: "8", A: "1" },
+    { S: "0", E: "3", M: ME },
+    { S: "1", E: "5", M: mid(3) },
+    { S: "9", E: "99", M: mid(4) },
+    { S: "x", E: "2", M: mid(5) },
+    { S: "0", E: "1", M: "../../etc" },
+  ]) }));
+  emit("message", talk("802", GROUP_A, mid(2), "壞的", { contentMetadata: { MENTION: "{not json" } }));
+  await settle();
+  assert.deepEqual(received[0].message.mentions, [{ start: 0, end: 3, userId: ME }, { start: 4, end: 8 }]);
+  assert.equal(received[1].message.mentions, undefined);
+  assert.equal(received[1].message.text, "壞的");
+});

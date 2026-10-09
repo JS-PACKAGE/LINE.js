@@ -4,7 +4,7 @@ import { LINEStruct } from "@evex/linejs/thrift";
 import type { Message as LineMessage, SquareMessage as LineSquareMessage } from "@evex/linejs-types";
 import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
 import type { Channel, ChannelRef, HistoryPage, MemberRole, Mention, Message, Profile, ReadPosition, StickerPackage } from "../model/dto.js";
-import { memberRole, mentionMetadata, replyTarget } from "./members.js";
+import { memberRole, mentionMetadata, parseMentions, replyTarget } from "./members.js";
 import { parseReadOperation, parseReadRanges, parseUnsendOperation } from "./read.js";
 import { parseOwnedProducts, parsePackageMeta, type PackageMeta } from "./stickers.js";
 import { chatEventMids, chatEventText, isChatEvent } from "./chatEvent.js";
@@ -302,6 +302,7 @@ export class EvexLineProvider implements LineProvider {
     const stickerId = contentType === "STICKER" || contentType === "7" ? fields.metadata?.STKID : undefined;
     // Only a numeric id may become a sticker media id: it is later spliced into a CDN URL path.
     const mediaId = fields.mediaId ?? (stickerId && /^\d{1,12}$/.test(stickerId) ? `sticker-${stickerId}${fields.metadata?.STKOPT === "A" ? "-a" : ""}` : undefined);
+    const mentions = isText && text ? parseMentions(fields.metadata, text) : [];
     return {
       messageId: String(fields.id),
       channelId: fields.channelId,
@@ -315,6 +316,7 @@ export class EvexLineProvider implements LineProvider {
       createdAt: Number.isFinite(created) && created > 0 ? created : Date.now(),
       ...(mediaId ? { mediaId } : {}),
       ...(fields.replyTo ? { replyTo: fields.replyTo } : {}),
+      ...(mentions.length > 0 ? { mentions } : {}),
       // Fail closed: an E2EE payload without readable text is a placeholder, never a guess.
       ...(isText && !text && fields.encrypted ? { decryptFailed: true } : {}),
     };
@@ -659,7 +661,9 @@ export class EvexLineProvider implements LineProvider {
     const contentMetadata = mentionMetadata(options.mentions ?? []);
     const reply = options.replyTo ? { relatedMessageId: options.replyTo } : {};
     // The echo carries what we sent even if LINE's answer omits it (an E2EE reply has only ciphertext chunks).
-    const echo = ({ decryptFailed: _unreadable, ...message }: Message): Message => ({ ...message, text, ...(options.replyTo ? { replyTo: options.replyTo } : {}) });
+    const echo = ({ decryptFailed: _unreadable, ...message }: Message): Message => ({
+      ...message, text, ...(options.replyTo ? { replyTo: options.replyTo } : {}), ...(options.mentions?.length ? { mentions: options.mentions } : {}),
+    });
     if (channel.kind === "square") {
       const { createdSquareMessage } = await client.base.square.sendMessage({ squareChatMid: channel.channelId, text, contentMetadata, ...reply });
       const message = echo(this.squareToMessage(createdSquareMessage, me.displayName));

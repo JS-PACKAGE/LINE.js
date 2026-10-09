@@ -82,6 +82,8 @@ dialog#viewer button { position: fixed; top: 14px; right: 18px; background: #000
 .unread-divider::before, .unread-divider::after { content: ""; flex: 1; height: 1px; background: currentColor; opacity: .35; }
 .message-main p.placeholder, .empty { color: var(--muted); font-style: italic; }
 .message-main p a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.mention { color: var(--accent); font-weight: 600; }
+.mention-me { padding: 0 3px; border-radius: 4px; background: #ffe7a3; color: #6b4a00; }
 .system-event { margin: 4px auto; padding: 3px 12px; max-width: 90%; border-radius: 999px; background: var(--soft); color: var(--muted); font-size: 12px; text-align: center; overflow-wrap: anywhere; }
 .sticker { display: block; width: 140px; max-width: 60%; height: auto; margin-top: 6px; }
 .empty { margin: auto; text-align: center; }
@@ -155,6 +157,7 @@ dialog#confirm::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
   .pill[data-state="listening"] { background: #1c4a34; color: #a6e3c2; }
   .pill[data-state="reconnecting"] { background: #4a3a14; color: #f0d089; }
   #channels li[aria-selected="true"] { background: #2b5440; }
+  .mention-me { background: #5a4613; color: #ffe2a0; }
   footer { color: #95b0a1; }
 }
 @media (max-width: 720px) {
