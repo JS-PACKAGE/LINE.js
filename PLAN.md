@@ -134,6 +134,8 @@
 
 > v1.12（續）：`Message.card`：位置（`Message.location` 的名稱、地址、座標）、聯絡人（metadata `displayName`）、檔案（`FILE_NAME`／`FILE_SIZE`，不提供下載）、卡片訊息（`ALT_TEXT`）以文字小卡顯示；欄位缺漏或格式不合即不產生小卡，維持類型佔位。數字型 `contentType`（0–22）一律轉為名稱。通話的 metadata 未見於 linejs 3.4.2，只顯示「［通話］」。
 
+> v1.12（續）：新增 Client → Server `message:unsend`（`{ requestId, chatId, messageId }`，僅網頁、與 `message:send` 共用頻率上限）：只接受伺服器已顯示、且為本帳號所發的訊息（talk 以帳號 mid；OpenChat 以本服務送出訊息時 LINE 回傳的成員 id），經 adapter 呼叫 `talk.unsendMessage`／`square.unsendMessage`；失敗回 generic `UNSEND_FAILED`。
+
 ### Server → Client
 
 | type | 負載 |

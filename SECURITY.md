@@ -149,6 +149,7 @@ approval, and a regression against any of them is treated as a vulnerability.
 | WebSocket frames are capped (`maxPayload`, at most 256 KiB). Every socket has an `error` handler, so an oversized frame cannot crash the process. | `src/ws/hub.ts`, `src/config.ts` |
 | Per connection: `message:send` is limited (at most 5 per second); history and sticker requests are limited; uploads are limited per minute and by size. | `src/ws/hub.ts`, `src/http/server.ts`, `src/limit.ts` |
 | Inputs are validated: `chatId` format, text length (at most 8000), history `limit` (at most 100), positive-integer sticker ids, reply and mention targets that this server has already shown. | `src/ws/requests.ts`, `src/ws/hub.ts` |
+| Taking a message back (`message:unsend`) is page-only and shares the send rate limit. The server sends it to LINE only for a message it has shown that this account sent (its own mid, or in OpenChat the member id its own sends came back with); bots cannot. | `src/ws/hub.ts`, `src/ws/requests.ts` |
 | Uploaded media types are decided from the bytes, never from the client-supplied type or file name. | `src/media/service.ts` |
 | Binary data never travels over the WebSocket; it is served over HTTP. | design rule |
 

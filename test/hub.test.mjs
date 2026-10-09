@@ -93,6 +93,11 @@ class FakeProvider {
     const video = media.mime.startsWith("video/");
     return this.outgoing(channel, { messageId: "9001", contentType: video ? "VIDEO" : "IMAGE", mediaId: "msg-9001" });
   }
+  unsendError = undefined;
+  async unsendMessage(channel, messageId) {
+    this.calls.push(["unsend", channel, messageId]);
+    if (this.unsendError) throw this.unsendError;
+  }
 }
 
 async function freePort() {
@@ -584,6 +589,52 @@ test("a message taken back is replaced for every page, its media stops being ser
   assert.deepEqual(snapshot.messages[0], { messageId: "501", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", contentType: "VIDEO", createdAt: 1, unsent: true });
 });
 
+test("the page can take back the account's own message only; LINE failures stay generic", async (t) => {
+  const env = await signedIn(t);
+  const mine = { messageId: "601", channelId: CHAT, channelKind: "group", senderId: "u-me", senderName: "測試帳號", text: "打錯了", contentType: "NONE", createdAt: 1 };
+  env.hub.handleMessage(mine, "new");
+  env.hub.handleMessage({ ...mine, messageId: "602", senderId: "u1", senderName: "小明", text: "別人的" }, "new");
+  env.request({ type: "message:unsend", requestId: "x1", chatId: CHAT, messageId: "602" });
+  env.request({ type: "message:unsend", requestId: "x3", chatId: CHAT, messageId: "../601" });
+  for (const requestId of ["x1", "x3"]) assert.equal((await env.client.until((frame) => frame.requestId === requestId)).code, "INVALID_REQUEST", requestId);
+  assert.equal(env.provider.calls.some(([kind]) => kind === "unsend"), false, "nothing that is not ours reaches LINE");
+
+  env.provider.unsendError = new Error("LINE said no: token=secret");
+  env.request({ type: "message:unsend", requestId: "x4", chatId: CHAT, messageId: "601" });
+  const failure = await env.client.until((frame) => frame.requestId === "x4");
+  assert.equal(failure.code, "UNSEND_FAILED");
+  assert.ok(!JSON.stringify(failure).includes("secret"));
+  assert.equal(env.store.get("601", CHAT).text, "打錯了", "a refused take-back changes nothing");
+
+  env.provider.unsendError = undefined;
+  env.request({ type: "message:unsend", requestId: "x5", chatId: CHAT, messageId: "601" });
+  assert.deepEqual(await env.client.until((frame) => frame.type === "message:unsend"), { type: "message:unsend", chatId: CHAT, messageId: "601" });
+  assert.deepEqual(env.provider.calls.filter(([kind]) => kind === "unsend"), [["unsend", { channelId: CHAT, kind: "group" }, "601"], ["unsend", { channelId: CHAT, kind: "group" }, "601"]]);
+  env.request({ type: "message:unsend", requestId: "x6", chatId: CHAT, messageId: "601" });
+  assert.equal((await env.client.until((frame) => frame.requestId === "x6")).code, "INVALID_REQUEST", "already taken back");
+});
+
+test("in OpenChat the account's own member id is learned from its sends before anything there can be taken back", async (t) => {
+  const env = await start(t);
+  const SQUARE = `m${"s".repeat(32)}`;
+  env.provider.channels = [{ channelId: SQUARE, kind: "square", name: "社群" }];
+  await env.login.restore();
+  const client = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => client.socket.close());
+  await client.until((frame) => frame.type === "channels" && frame.channels.some((channel) => channel.channelId === SQUARE));
+  const request = (frame) => client.socket.send(JSON.stringify(frame));
+  // An earlier message of ours, sent from the phone under the member id LINE gives us in this OpenChat.
+  env.hub.handleMessage({ messageId: "701", channelId: SQUARE, channelKind: "square", senderId: "p-me-member", senderName: "我", text: "舊的", contentType: "NONE", createdAt: 1 }, "new");
+  request({ type: "message:unsend", requestId: "s1", chatId: SQUARE, messageId: "701" });
+  assert.equal((await client.until((frame) => frame.requestId === "s1")).code, "INVALID_REQUEST", "unknown until this server has sent something there");
+  env.provider.sendText = async (channel, text) => env.provider.outgoing(channel, { messageId: "702", text, senderId: "p-me-member" });
+  request({ type: "message:send", requestId: "s2", chatId: SQUARE, text: "新的" });
+  await client.until((frame) => frame.type === "sent" && frame.requestId === "s2");
+  request({ type: "message:unsend", requestId: "s3", chatId: SQUARE, messageId: "701" });
+  assert.deepEqual(await client.until((frame) => frame.type === "message:unsend"), { type: "message:unsend", chatId: SQUARE, messageId: "701" });
+  assert.deepEqual(env.provider.calls.filter(([kind]) => kind === "unsend"), [["unsend", { channelId: SQUARE, kind: "square" }, "701"]]);
+});
+
 test("avatars are served through the media route with the same cookie and id checks as stickers", async (t) => {
   const { port, cookie } = await start(t);
   const base = `http://127.0.0.1:${port}/media/`;
@@ -955,13 +1006,14 @@ test("everything outside send, history and ping is unknown to a bot", async (t) 
   const frames = [
     { type: "auth:start" }, { type: "auth:logout" }, { type: "chat:read", chatId: CHAT, messageId: "11" },
     { type: "stickers:list", requestId: "s1" }, { type: "channels:refresh" }, { type: "api:token:create" }, { type: "api:token:revoke" },
+    { type: "message:unsend", requestId: "u1", chatId: CHAT, messageId: "11" },
   ];
   for (const frame of frames) bot.socket.send(JSON.stringify(frame));
   await bot.until(() => bot.frames.filter((frame) => frame.type === "error").length === frames.length);
   assert.deepEqual([...new Set(bot.frames.filter((frame) => frame.type === "error").map((frame) => frame.code))], ["UNKNOWN_TYPE"]);
   assert.equal(env.login.state, "ready");
   assert.equal(env.apiTokens.verify(env.token), true);
-  assert.equal(env.provider.calls.some((call) => call[0] === "read" || call[0] === "stickers"), false);
+  assert.equal(env.provider.calls.some((call) => call[0] === "read" || call[0] === "stickers" || call[0] === "unsend"), false);
   bot.socket.send(JSON.stringify({ type: "ping" }));
 });
 

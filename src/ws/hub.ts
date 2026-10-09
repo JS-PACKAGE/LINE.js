@@ -11,7 +11,7 @@ import type { Channel, ChannelKind, Message, ReadPosition } from "../model/dto.j
 import type { UpdateInfo } from "../update/checker.js";
 import type { ChatStore } from "../model/store.js";
 import { PROTOCOL_VERSION, type ClientFrame, type ListenState, type ServerFrame } from "./protocol.js";
-import { parseChatRead, parseHistory, parseSend, requestIdOf } from "./requests.js";
+import { parseChatRead, parseHistory, parseSend, parseUnsend, requestIdOf } from "./requests.js";
 
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const HISTORY_PER_SECOND = 10;
@@ -60,6 +60,7 @@ const GENERIC = {
   STICKERS_FAILED: "無法載入貼圖清單，請稍後重試。",
   API_UNAVAILABLE: "機器人 API 未啟用。",
   API_FAILED: "無法更新 API Token，請稍後重試。",
+  UNSEND_FAILED: "無法收回這則訊息，請稍後重試。",
 } as const;
 
 function updateFrame(info: UpdateInfo): ServerFrame {
@@ -83,6 +84,8 @@ export function createHub(options: HubOptions): Hub {
   const seenReads = new Map<string, Map<string, bigint>>();
   // The latest LINE read-range lookup per chat (see sendReadSnapshot).
   const readFetches = new Map<string, { at: number; done: Promise<void> }>();
+  // OpenChat chat → the member id this account speaks under there, learned from its own sends.
+  const ownSquareSenders = new Map<string, string>();
 
   function send(socket: WebSocket, frame: ServerFrame): void {
     sendData(socket, JSON.stringify(frame));
@@ -251,11 +254,44 @@ export function createHub(options: HubOptions): Hub {
       }
       // LINE sends no live event for our own messages: show it now (a later duplicate is harmless).
       ingest(message, "new");
+      // In OpenChat this account speaks under a member id of its own; remember it so its messages can be taken back.
+      if (channel.kind === "square") ownSquareSenders.set(request.chatId, message.senderId);
       send(socket, { type: "sent", requestId: request.requestId, messageId: message.messageId });
     } catch (error) {
       logFailure("SEND_FAILED", error);
       fail(socket, "SEND_FAILED", request.requestId);
     }
+  }
+
+  /** Pages only. Only this account's own messages, as far as this server can tell, are ever sent to LINE. */
+  async function handleUnsendRequest(socket: WebSocket, frame: Record<string, unknown>): Promise<void> {
+    const parsed = parseUnsend(frame);
+    if (!parsed.ok) return fail(socket, "INVALID_REQUEST", parsed.requestId);
+    const { requestId, chatId, messageId } = parsed.value;
+    const channel = store.channelOf(chatId);
+    if (login.state !== "ready" || !channel) return fail(socket, "UNKNOWN_CHAT", requestId);
+    const message = store.get(messageId, chatId);
+    const mine = message !== undefined && (message.senderId === provider.getProfile().userId || message.senderId === ownSquareSenders.get(chatId));
+    if (!message || message.unsent || !mine) return fail(socket, "INVALID_REQUEST", requestId);
+    try {
+      await provider.unsendMessage({ channelId: chatId, kind: channel.kind }, messageId);
+      // LINE may or may not echo the take-back to this device: show it now (a later echo changes nothing).
+      takeBack(chatId, messageId);
+    } catch (error) {
+      logFailure("UNSEND_FAILED", error);
+      fail(socket, "UNSEND_FAILED", requestId);
+    }
+  }
+
+  /** A message was taken back (see Hub.handleUnsend). */
+  function takeBack(chatHint: string | undefined, messageId: string): void {
+    // Its picture, video or voice must not stay downloadable either.
+    media.forget(`msg-${messageId}`);
+    const placeholder = store.unsend(messageId, chatHint);
+    if (!placeholder) return;
+    const frame: ServerFrame = { type: "message:unsend", chatId: placeholder.channelId, messageId };
+    broadcast(frame);
+    if (botScope.has(placeholder.channelId)) broadcastBots(frame);
   }
 
   function ingest(message: Message, kind: "new" | "edit"): void {
@@ -347,6 +383,7 @@ export function createHub(options: HubOptions): Hub {
       markedRead.clear();
       seenReads.clear();
       readFetches.clear();
+      ownSquareSenders.clear();
       status = "starting";
     }
     broadcastAll({ type: "auth:state", state });
@@ -441,6 +478,11 @@ export function createHub(options: HubOptions): Hub {
           if (login.state === "ready") void refreshChannels();
           else fail(socket, "INVALID_REQUEST");
           return;
+        case "message:unsend":
+          // Changes the real account like a send does, so it shares the send budget.
+          if (!sendLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else void handleUnsendRequest(socket, frame as Record<string, unknown>);
+          return;
         case "chat:read":
           // Silent on purpose (see handleChatRead); the shared limiter keeps a script from hammering LINE.
           if (historyLimiter.allow()) void handleChatRead(frame as Record<string, unknown>);
@@ -490,15 +532,7 @@ export function createHub(options: HubOptions): Hub {
       broadcastAll({ type: "status", state });
     },
     handleMessage: ingest,
-    handleUnsend(chatHint, messageId) {
-      // Its picture, video or voice must not stay downloadable either.
-      media.forget(`msg-${messageId}`);
-      const placeholder = store.unsend(messageId, chatHint);
-      if (!placeholder) return;
-      const frame: ServerFrame = { type: "message:unsend", chatId: placeholder.channelId, messageId };
-      broadcast(frame);
-      if (botScope.has(placeholder.channelId)) broadcastBots(frame);
-    },
+    handleUnsend: takeBack,
     handleRead(chatId, position) {
       if (!store.hasChannel(chatId)) return;
       rememberRead(chatId, position);

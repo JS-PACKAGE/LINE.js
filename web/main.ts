@@ -77,6 +77,8 @@ let selected: string | undefined;
 let myUserId: string | undefined;
 // Other members' read positions per chat (last message each has read), used for "已讀" labels.
 let readPositions: Record<string, Record<string, bigint>> = {};
+// OpenChat chat → the member id this account's sends came back with there (it differs from myUserId).
+let mySquareSenders: Record<string, string> = {};
 // Where the "未讀" divider sits in the chat that was just opened; dropped when switching chats.
 let unreadFrom: { channelId: string; messageId: string; count: number } | undefined;
 // Newest message id per chat already reported to the server as read.
@@ -132,6 +134,7 @@ function applyAuthState(state: AuthState): void {
     pendingHistory = {};
     reportedRead = {};
     readPositions = {};
+    mySquareSenders = {};
     unreadFrom = undefined;
     composer.reset();
   }
@@ -406,9 +409,24 @@ function previewOf(message: Message): string {
   return text ? (text.length > 60 ? `${text.slice(0, 60)}…` : text) : `［${CONTENT_LABEL[message.contentType] ?? "訊息"}］`;
 }
 
+/** This account's own message: its own mid, or (in OpenChat) the member id its sends came back with. */
+function isMine(message: Message): boolean {
+  return message.senderId === myUserId || message.senderId === mySquareSenders[message.channelId];
+}
+
 /** Can this person be tagged? Anyone but me in a group, room or OpenChat. */
 function taggable(message: Message): boolean {
-  return message.channelKind !== "user" && message.senderId !== myUserId && message.senderId !== "";
+  return message.channelKind !== "user" && !isMine(message) && message.senderId !== "";
+}
+
+async function takeBack(message: Message): Promise<void> {
+  const confirmed = await confirmDialog({
+    title: "收回訊息",
+    message: "收回後，聊天室裡的所有人（包括你的其他裝置）都不會再看到這則訊息的內容。LINE 只允許收回一段時間內送出的訊息。",
+    confirmLabel: "收回",
+    danger: true,
+  });
+  if (confirmed) send({ type: "message:unsend", requestId: crypto.randomUUID(), chatId: message.channelId, messageId: message.messageId });
 }
 
 function openMessageMenu(message: Message, x: number, y: number): void {
@@ -428,6 +446,7 @@ function openMessageMenu(message: Message, x: number, y: number): void {
     }
     items.push({ label: isImage ? "下載圖片" : "下載影片", action: () => { void downloadMedia(mediaId).catch(() => {}); } });
   }
+  if (isMine(message) && !message.unsent && /^\d{1,24}$/.test(message.messageId)) items.push({ label: "收回", action: () => { void takeBack(message); } });
   showMenu(x, y, items);
 }
 
@@ -773,7 +792,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       const { message } = frame;
       upsertMessage(message);
       // A new message counts as unread unless the reader is looking at that chat right now.
-      if (frame.type === "message" && message.senderId !== myUserId && (message.channelId !== selected || document.visibilityState !== "visible")) {
+      if (frame.type === "message" && !isMine(message) && (message.channelId !== selected || document.visibilityState !== "visible")) {
         unread[message.channelId] = (unread[message.channelId] ?? 0) + 1;
         liveCounted.add(message.channelId);
         notifier.notify(message, channels.find((channel) => channel.channelId === message.channelId)?.name ?? "", previewOf(message));
@@ -809,9 +828,12 @@ async function handle(frame: ServerFrame): Promise<void> {
       if (frame.chatId === selected) renderMessages("keep");
       return;
     }
-    case "sent":
+    case "sent": {
+      const echo = selected ? messages[selected]?.find((message) => message.messageId === frame.messageId) : undefined;
+      if (echo?.channelKind === "square") mySquareSenders[echo.channelId] = echo.senderId;
       if (composer.handleSent(frame.requestId)) scrollToLatest();
       return;
+    }
     case "stickers":
       composer.handleStickers(frame.requestId, frame.packages);
       return;

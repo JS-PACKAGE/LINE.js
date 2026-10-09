@@ -108,3 +108,17 @@ export function parseChatRead(frame: Record<string, unknown>): Parsed<ReadReques
   if (typeof messageId !== "string" || !/^\d{1,24}$/.test(messageId)) return { ok: false };
   return { ok: true, value: { chatId, messageId } };
 }
+
+export interface UnsendRequest {
+  requestId: string;
+  chatId: string;
+  messageId: string;
+}
+
+/** "Take back my message": LINE's numeric message id in a valid chat. */
+export function parseUnsend(frame: Record<string, unknown>): Parsed<UnsendRequest> {
+  const base = header(frame);
+  if (!base) return { ok: false, ...(requestIdOf(frame) ? { requestId: requestIdOf(frame)! } : {}) };
+  if (typeof frame.messageId !== "string" || !MESSAGE_ID.test(frame.messageId)) return { ok: false, requestId: base.requestId };
+  return { ok: true, value: { ...base, messageId: frame.messageId } };
+}

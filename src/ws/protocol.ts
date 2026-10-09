@@ -37,6 +37,8 @@ export type ClientFrame =
   | { type: "history:fetch"; requestId: string; chatId: string; limit?: number; before?: string }
   | { type: "message:send"; requestId: string; chatId: string; text?: string; mentions?: Mention[]; mediaId?: string; sticker?: { packageId: number; stickerId: number } }
   | { type: "chat:read"; chatId: string; messageId: string }
+  /** Take back one of this account's own messages (pages only; bots cannot). */
+  | { type: "message:unsend"; requestId: string; chatId: string; messageId: string }
   | { type: "stickers:list"; requestId: string }
   | { type: "api:token:create"; requestId?: string }
   | { type: "api:token:revoke"; requestId?: string }

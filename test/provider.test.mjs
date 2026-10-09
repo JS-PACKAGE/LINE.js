@@ -198,3 +198,18 @@ test("a location sent with a numeric content type arrives named, with its card a
   assert.deepEqual(received[0].message.card, { kind: "location", title: "公司", address: "台北市", latitude: 25.03, longitude: 121.56 });
   assert.equal(received[0].message.text, undefined);
 });
+
+test("taking back calls talk or OpenChat unsend the way linejs' own unsend() does, and the media goes with it", async () => {
+  const calls = [];
+  const base = fakeBase({
+    talk: { async unsendMessage(request) { calls.push(["talk", request]); } },
+    square: { async unsendMessage(request) { calls.push(["square", request]); } },
+  });
+  const { provider, emit } = await activeProvider(base);
+  emit("message", talk("950", GROUP_A, ME, undefined, { contentType: "IMAGE" }));
+  await settle();
+  await provider.unsendMessage({ channelId: GROUP_A, kind: "group" }, "950");
+  await provider.unsendMessage({ channelId: SQUARE, kind: "square" }, "951");
+  assert.deepEqual(calls, [["talk", { messageId: "950" }], ["square", { messageId: "951", squareChatMid: SQUARE }]]);
+  assert.equal(await provider.fetchMessageMedia("950"), undefined);
+});

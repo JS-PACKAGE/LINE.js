@@ -58,6 +58,8 @@ export interface LineProvider {
   sendSticker(channel: ChannelRef, packageId: number, stickerId: number): Promise<Message>;
   /** The returned message is what the browser should show now: LINE sends no live event for our own sends. */
   sendMedia(channel: ChannelRef, media: MediaBytes): Promise<Message>;
+  /** Takes back one of this account's messages for everyone (LINE decides whether it still may). */
+  unsendMessage(channel: ChannelRef, messageId: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -716,6 +718,14 @@ export class EvexLineProvider implements LineProvider {
     const oType = isVideo ? "video" : media.mime === "image/gif" ? "gif" : "image";
     const message = await client.base.obs.uploadMediaByE2EE({ data: blob, oType, to: channel.channelId, filename, ...(durationMs ? { durationMs } : {}) });
     return this.talkToMessage({ ...message, to: channel.channelId, from: me.userId }, me.userId);
+  }
+
+  async unsendMessage(channel: ChannelRef, messageId: string): Promise<void> {
+    const client = this.requireClient();
+    // Same calls as linejs' TalkMessage.unsend()/SquareMessage.unsend(), without their extra ownership lookup (the hub checks).
+    if (channel.kind === "square") await client.base.square.unsendMessage({ messageId, squareChatMid: channel.channelId });
+    else await client.base.talk.unsendMessage({ messageId });
+    this.mediaOrigins.delete(messageId);
   }
 
   /** A plain upload's object id is the id of the message LINE created for it. */
