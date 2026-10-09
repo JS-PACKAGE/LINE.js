@@ -17,6 +17,7 @@ const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const HISTORY_PER_SECOND = 10;
 const NEW_CHANNEL_REFRESH_MS = 1000;
 const MAX_BOT_CONNECTIONS = 4;
+const READ_RANGE_FRESH_MS = 10_000;
 
 export interface HubOptions {
   server: Server;
@@ -78,28 +79,39 @@ export function createHub(options: HubOptions): Hub {
   // Latest read position per chat and reader, from LINE snapshots and live events. LINE has no
   // snapshot for 1:1 chats, so without this a page reload would forget who already read.
   const seenReads = new Map<string, Map<string, bigint>>();
+  // The latest LINE read-range lookup per chat (see sendReadSnapshot).
+  const readFetches = new Map<string, { at: number; done: Promise<void> }>();
 
   function send(socket: WebSocket, frame: ServerFrame): void {
+    sendData(socket, JSON.stringify(frame));
+  }
+
+  /** Sends an already serialized frame: a broadcast is turned into JSON once, not once per connection. */
+  function sendData(socket: WebSocket, data: string): void {
     if (socket.readyState !== WebSocket.OPEN) return;
     if (socket.bufferedAmount > MAX_BUFFERED_BYTES) {
       socket.terminate();
       return;
     }
-    socket.send(JSON.stringify(frame));
+    socket.send(data);
+  }
+
+  function sendEach(clients: Iterable<WebSocket>, frame: ServerFrame): void {
+    let data: string | undefined;
+    for (const socket of clients) sendData(socket, (data ??= JSON.stringify(frame)));
   }
 
   function broadcast(frame: ServerFrame): void {
-    for (const socket of wss.clients) send(socket, frame);
+    sendEach(wss.clients, frame);
   }
 
   /** Frames every kind of client may see: sign-in state and LINE connection state, never secrets. */
   function broadcastAll(frame: ServerFrame): void {
-    broadcast(frame);
-    broadcastBots(frame);
+    sendEach([...wss.clients, ...botWss.clients], frame);
   }
 
   function broadcastBots(frame: ServerFrame): void {
-    for (const socket of botWss.clients) send(socket, frame);
+    sendEach(botWss.clients, frame);
   }
 
   /** A bot sees only the chats listed in `api.chats`. */
@@ -184,11 +196,23 @@ export function createHub(options: HubOptions): Hub {
   }
 
   async function sendReadSnapshot(socket: WebSocket, chatId: string, kind: ChannelKind): Promise<void> {
-    try {
-      for (const position of await provider.fetchReadPositions({ channelId: chatId, kind })) rememberRead(chatId, position);
-    } catch (error) {
-      logFailure("READ_RANGE_FAILED", error);
+    // Opening a chat in several tabs, or reopening it, shares one LINE lookup for a short while:
+    // live read events keep `seenReads` current in between.
+    const recent = readFetches.get(chatId);
+    let fetching = recent && Date.now() - recent.at < READ_RANGE_FRESH_MS ? recent.done : undefined;
+    if (!fetching) {
+      fetching = provider.fetchReadPositions({ channelId: chatId, kind }).then(
+        // A logout while LINE was answering clears readFetches: the old account's receipts are dropped.
+        (positions) => { if (readFetches.get(chatId)?.done === fetching) for (const position of positions) rememberRead(chatId, position); },
+        (error: unknown) => {
+          // A failure is not remembered: the next open asks LINE again.
+          readFetches.delete(chatId);
+          logFailure("READ_RANGE_FAILED", error);
+        },
+      );
+      readFetches.set(chatId, { at: Date.now(), done: fetching });
     }
+    await fetching;
     const positions = [...(seenReads.get(chatId) ?? [])].map(([readerId, id]) => ({ readerId, messageId: String(id) }));
     if (positions.length > 0 && login.state === "ready") send(socket, { type: "read", chatId, positions });
   }
@@ -320,6 +344,7 @@ export function createHub(options: HubOptions): Hub {
       media.clear();
       markedRead.clear();
       seenReads.clear();
+      readFetches.clear();
       status = "starting";
     }
     broadcastAll({ type: "auth:state", state });

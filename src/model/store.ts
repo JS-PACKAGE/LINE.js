@@ -4,6 +4,8 @@ import type { Channel, Message } from "./dto.js";
 export class ChatStore {
   private channels: Record<string, Channel> = {};
   private messages: Record<string, Message[]> = {};
+  // Per chat, messageId → message: duplicate checks and lookups without scanning the list.
+  private byId: Record<string, Map<string, Message>> = {};
 
   constructor(private readonly perChannelLimit: number) {}
 
@@ -11,6 +13,7 @@ export class ChatStore {
   clear(): void {
     this.channels = {};
     this.messages = {};
+    this.byId = {};
   }
 
   setChannels(channels: Channel[]): void {
@@ -47,16 +50,32 @@ export class ChatStore {
   /** Returns false when the message is an identical duplicate. */
   upsert(message: Message, edited: boolean): boolean {
     const list = this.messages[message.channelId] ?? [];
-    const index = list.findIndex((entry) => entry.messageId === message.messageId);
-    if (index >= 0) {
+    const ids = this.byId[message.channelId] ?? new Map<string, Message>();
+    if (ids.has(message.messageId)) {
       if (!edited) return false;
-      list[index] = { ...message, editedAt: message.editedAt ?? Date.now() };
+      const updated = { ...message, editedAt: message.editedAt ?? Date.now() };
+      list[list.findIndex((entry) => entry.messageId === message.messageId)] = updated;
+      ids.set(message.messageId, updated);
     } else {
-      list.push(message);
-      list.sort((a, b) => a.createdAt - b.createdAt);
-      if (list.length > this.perChannelLimit) list.splice(0, list.length - this.perChannelLimit);
+      // Oldest first. Live messages land at the end; history and late arrivals are slotted in
+      // after any message with the same timestamp (the order a stable sort would give).
+      let at = list.length;
+      if (at > 0 && list[at - 1]!.createdAt > message.createdAt) {
+        let low = 0;
+        while (low < at) {
+          const middle = (low + at) >> 1;
+          if (list[middle]!.createdAt <= message.createdAt) low = middle + 1;
+          else at = middle;
+        }
+      }
+      list.splice(at, 0, message);
+      ids.set(message.messageId, message);
+      if (list.length > this.perChannelLimit) {
+        for (const dropped of list.splice(0, list.length - this.perChannelLimit)) ids.delete(dropped.messageId);
+      }
     }
     this.messages[message.channelId] = list;
+    this.byId[message.channelId] = ids;
     const channel = this.channels[message.channelId];
     if (channel && message.createdAt > (channel.lastMessageAt ?? 0)) {
       this.channels[message.channelId] = { ...channel, lastMessageAt: message.createdAt };
@@ -72,7 +91,7 @@ export class ChatStore {
   }
 
   get(messageId: string, channelId: string): Message | undefined {
-    return this.messages[channelId]?.find((entry) => entry.messageId === messageId);
+    return this.byId[channelId]?.get(messageId);
   }
 
   snapshotChannels(): Channel[] {

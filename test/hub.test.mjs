@@ -530,6 +530,15 @@ test("opening a chat reports where others have read, once; a failing lookup does
   assert.ok(!env.client.frames.some((frame) => frame.type === "error"));
 });
 
+test("opening the same chat again right away shares one LINE read-range lookup", async (t) => {
+  const env = await signedIn(t);
+  env.provider.readPositions = [{ readerId: "u1", messageId: "100" }];
+  env.request({ type: "history:fetch", requestId: "r1", chatId: CHAT });
+  env.request({ type: "history:fetch", requestId: "r2", chatId: CHAT });
+  await env.client.until(() => env.client.frames.filter((frame) => frame.type === "read").length === 2);
+  assert.equal(env.provider.calls.filter(([kind]) => kind === "read-range").length, 1);
+});
+
 test("live read events reach the browser only for chats the account has", async (t) => {
   const env = await signedIn(t);
   env.hub.handleRead(`c${"b".repeat(32)}`, { readerId: "u1", messageId: "5" });

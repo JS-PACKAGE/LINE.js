@@ -25,6 +25,17 @@ test("each channel keeps only its newest messages", () => {
   assert.deepEqual(store.messagesOf("c1").map((entry) => entry.messageId), ["m3", "m4", "m5"]);
   assert.equal(store.messagesOf("c2").length, 1);
   assert.deepEqual(store.chatsWithMessages().sort(), ["c1", "c2"]);
+  // What was trimmed is gone from the lookup too, and trimming keeps working as new messages arrive.
+  assert.equal(store.get("m1", "c1"), undefined);
+  assert.equal(store.get("m5", "c1").text, "text-m5");
+  assert.equal(store.upsert(message("m6", 6), false), true);
+  assert.deepEqual(store.messagesOf("c1").map((entry) => entry.messageId), ["m4", "m5", "m6"]);
+});
+
+test("late and same-time messages are slotted in creation order, after equal timestamps", () => {
+  const store = new ChatStore(500);
+  for (const [id, at] of [["a", 10], ["b", 30], ["c", 20], ["d", 20], ["e", 5], ["f", 30]]) store.upsert(message(id, at), false);
+  assert.deepEqual(store.messagesOf("c1").map((entry) => entry.messageId), ["e", "a", "c", "d", "b", "f"]);
 });
 
 test("a channel discovered only through a live message survives a channel refresh", () => {
