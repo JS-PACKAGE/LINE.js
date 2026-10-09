@@ -74,8 +74,12 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
   let connected = false;
   let pending: { requestId: string; kind: SendKind; chatId: string; timer: ReturnType<typeof setTimeout> } | undefined;
   let uploading = false;
-  // An image waiting to be sent (pasted, dropped); `followUpText` sends the draft right after it.
-  let staged: { file: File; url: string } | undefined;
+  // A selection (picked, dropped or pasted together) sent one file at a time after the first is previewed.
+  let queue: File[] = [];
+  // How many files the current selection had, so each preview shows its place in the whole run.
+  let selectionTotal = 0;
+  let staged: { file: File; url: string; index: number; total: number } | undefined;
+  let uploadRequest: XMLHttpRequest | undefined;
   let followUpText = false;
   let replyTarget: ReplyTarget | undefined;
   // People tagged through insertMention; only those whose "@name" is still in the text are sent.
@@ -173,33 +177,73 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     return "僅支援 PNG、JPEG、GIF 圖片與 MP4、MOV 影片。";
   }
 
-  async function uploadAndSend(picked: File, thenText: boolean): Promise<void> {
+  /** Uploads one file of the selection; the files sent before it count as already done in the percentage. */
+  function uploadOne(picked: File, prefix: string): Promise<string | undefined> {
     const label = VIDEO_TYPES.includes(picked.type) ? "影片" : "圖片";
-    uploading = true;
-    showNote(`上傳${label}中…`);
-    refresh();
-    try {
-      const response = await fetch("/media/upload", { method: "POST", headers: { "Content-Type": picked.type }, body: picked });
-      if (!response.ok) {
+    showNote(`${prefix}上傳${label}中…`);
+    const { promise, resolve } = Promise.withResolvers<string | undefined>();
+    const request = new XMLHttpRequest();
+    request.open("POST", "/media/upload");
+    request.setRequestHeader("Content-Type", picked.type);
+    request.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable) return;
+      showNote(`${prefix}上傳${label}中 ${Math.round((event.loaded / Math.max(event.total, 1)) * 100)}%`);
+    });
+    request.addEventListener("load", () => {
+      uploadRequest = undefined;
+      if (request.status < 200 || request.status >= 300) {
         const reasons: Record<number, string> = { 400: `這不是有效的${label}檔。`, 413: `${label}超過大小上限。`, 415: "僅支援 PNG、JPEG、GIF 圖片與 MP4、MOV 影片。", 429: "上傳太頻繁，請稍後再試。" };
-        throw new Error(reasons[response.status] ?? `${label}上傳失敗。`);
+        showNote(reasons[request.status] ?? `${label}上傳失敗。`, true);
+        return resolve(undefined);
       }
-      const { mediaId } = (await response.json()) as { mediaId: string };
-      uploading = false;
-      followUpText = thenText;
-      dispatch("media", { mediaId });
-    } catch (error) {
-      showNote(error instanceof Error && error.message.endsWith("。") ? error.message : `${label}上傳失敗。`, true);
-    } finally {
-      uploading = false;
-      refresh();
-    }
+      let body: unknown;
+      try {
+        body = JSON.parse(request.responseText) as unknown;
+      } catch {
+        body = undefined;
+      }
+      if (body && typeof body === "object" && "mediaId" in body && typeof body.mediaId === "string" && body.mediaId) resolve(body.mediaId);
+      else {
+        showNote(`${label}上傳失敗。`, true);
+        resolve(undefined);
+      }
+    });
+    request.addEventListener("error", () => {
+      showNote(`${label}上傳失敗。`, true);
+      resolve(undefined);
+    });
+    request.addEventListener("abort", () => {
+      showNote("已取消上傳；送出的文字已保留。", true);
+      resolve(undefined);
+    });
+    uploadRequest = request;
+    request.send(picked);
+    return promise;
   }
 
+  /** Sends the file in the preview; the rest of the selection follows one at a time after each ack. */
+  async function uploadAndSend(picked: File, thenText: boolean): Promise<void> {
+    uploading = true;
+    refresh();
+    const { index, total } = staged ?? { index: 1, total: 1 };
+    const name = picked.name || (VIDEO_TYPES.includes(picked.type) ? "影片" : "貼上的圖片");
+    const prefix = total > 1 ? `第 ${index}/${total} 個（${name}）：` : "";
+    const mediaId = await uploadOne(picked, prefix);
+    uploading = false;
+    if (!mediaId) {
+      followUpText = false;
+      refresh();
+      return;
+    }
+    // The draft is sent after the whole selection, as one trailing message.
+    if (thenText) followUpText = true;
+    dispatch("media", { mediaId });
+  }
+
+  /** Drops only the previewed file; the rest of the selection stays queued. */
   function clearStaged(): void {
     if (staged) URL.revokeObjectURL(staged.url);
     staged = undefined;
-    followUpText = false;
     attachmentImage.removeAttribute("src");
     attachmentImage.hidden = true;
     attachmentVideo.pause();
@@ -209,25 +253,56 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     attachmentBox.hidden = true;
   }
 
-  function stage(candidate: File): void {
+  /** Drops the whole selection (previewed file and everything queued after it). */
+  function clearSelection(): void {
+    queue = [];
+    selectionTotal = 0;
+    followUpText = false;
+    clearStaged();
+  }
+
+  /** Shows `first` in the preview and holds the rest of the selection to send after it, one at a time. */
+  function stageSelection(files: File[]): void {
+    const usable = files.filter((candidate) => IMAGE_TYPES.includes(candidate.type) || VIDEO_TYPES.includes(candidate.type));
+    const skipped = files.length - usable.length;
+    if (skipped > 0) showNote(`有 ${skipped} 個不是 PNG、JPEG、GIF 圖片或 MP4、MOV 影片，未加入。`, true);
+    const [first, ...rest] = usable;
+    if (!first) return;
+    queue = rest;
+    selectionTotal = usable.length;
+    stage(first, 1);
+  }
+
+  /** Picks up the next queued file after the current one has been sent. */
+  function advance(): void {
+    const next = queue.shift();
+    if (next) stage(next, selectionTotal - queue.length);
+    else clearSelection();
+  }
+
+  /** `index` is the file's 1-based place in the whole selection (`selectionTotal` files). */
+  function stage(candidate: File, index: number): void {
     const problem = mediaProblem(candidate);
     if (problem) return showNote(problem, true);
     clearStaged();
     const isVideo = VIDEO_TYPES.includes(candidate.type);
-    staged = { file: candidate, url: URL.createObjectURL(candidate) };
+    const total = selectionTotal;
+    staged = { file: candidate, url: URL.createObjectURL(candidate), index, total };
     // The preview is the browser's own decoder on a local blob; nothing is uploaded until "送出".
     const shown = isVideo ? attachmentVideo : attachmentImage;
     shown.src = staged.url;
     shown.hidden = false;
     const generic = candidate.name === "" || candidate.name === "image.png";
-    attachmentInfo.textContent = `${generic ? (isVideo ? "影片" : "貼上的圖片") : candidate.name}（${formatSize(candidate.size)}）`;
-    attachmentSend.textContent = isVideo ? "送出影片" : "送出圖片";
+    attachmentInfo.textContent = `${generic ? (isVideo ? "影片" : "貼上的圖片") : candidate.name}（${formatSize(candidate.size)}${total > 1 ? ` · 第 ${index}/${total} 個` : ""}）`;
+    attachmentSend.textContent = "送出";
     attachmentBox.hidden = false;
     showNote("");
     draft.focus();
   }
 
   function submit(): void {
+    // Whether to send the draft text is decided after the whole selection has gone, not here:
+    // the queue is only empty once the last file has been sent and acked.
     if (staged) void uploadAndSend(staged.file, draft.value.trim() !== "");
     else submitText();
   }
@@ -262,36 +337,36 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     const files = [...(event.clipboardData?.files ?? [])];
     if (files.length === 0 || event.clipboardData?.getData("text/plain")) return;
     event.preventDefault();
-    const media = files.find((candidate) => IMAGE_TYPES.includes(candidate.type) || VIDEO_TYPES.includes(candidate.type));
-    if (!media) return showNote("貼上的內容不是可傳送的媒體；目前只能傳送 PNG、JPEG、GIF 圖片與 MP4、MOV 影片。", true);
-    stage(media);
-    if (files.length > 1) showNote("一次只能送出一個檔案，已使用第一個。");
+    const media = files.filter((candidate) => IMAGE_TYPES.includes(candidate.type) || VIDEO_TYPES.includes(candidate.type));
+    if (media.length === 0) return showNote("貼上的內容不是可傳送的媒體；目前只能傳送 PNG、JPEG、GIF 圖片與 MP4、MOV 影片。", true);
+    stageSelection(media);
   });
 
   form.addEventListener("dragover", (event) => {
     if ([...(event.dataTransfer?.types ?? [])].includes("Files")) event.preventDefault();
   });
   form.addEventListener("drop", (event) => {
-    const dropped = event.dataTransfer?.files?.[0];
-    if (!dropped) return;
+    const dropped = [...(event.dataTransfer?.files ?? [])];
+    if (dropped.length === 0) return;
     event.preventDefault();
-    stage(dropped);
+    stageSelection(dropped);
   });
 
   attachmentSend.addEventListener("click", submit);
   attachmentCancel.addEventListener("click", () => {
-    clearStaged();
+    // Cancel stops an upload in flight and drops the whole selection (previewed and queued).
+    uploadRequest?.abort();
+    uploadRequest = undefined;
+    clearSelection();
     draft.focus();
   });
 
   attach.addEventListener("click", () => file.click());
   file.addEventListener("change", () => {
-    const picked = file.files?.[0];
+    const picked = [...(file.files ?? [])];
     file.value = "";
-    if (!picked) return;
-    const problem = mediaProblem(picked);
-    if (problem) return showNote(problem, true);
-    void uploadAndSend(picked, false);
+    if (picked.length === 0) return;
+    stageSelection(picked);
   });
 
   function sendOwned(packageId: number, stickerId: number): void {
@@ -411,7 +486,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
       mentioned = saved?.mentioned ?? [];
       replyTarget = saved?.reply;
       renderReply();
-      clearStaged();
+      clearSelection();
       resizeDraft();
       showNote("");
       refresh();
@@ -433,6 +508,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
       finish();
       if (kind === "text") {
         // The chat may have been switched while sending: only that chat's draft is spent.
+        followUpText = false;
         drafts.delete(chatId);
         if (chatId === channelId) {
           draft.value = "";
@@ -442,8 +518,17 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
         }
       }
       if (kind === "sticker") panel.hidden = true;
+      // Captured before the trailing-text flag is spent just below.
       const sendText = kind === "media" && followUpText;
-      if (kind === "media") clearStaged();
+      if (kind === "media") {
+        // More of the selection follows; the draft is sent after the last file.
+        if (queue.length > 0) {
+          advance();
+          void uploadAndSend(staged!.file, false);
+          return true;
+        }
+        clearStaged();
+      }
       showNote(kind === "media" ? "已送出。" : "");
       refresh();
       draft.focus();
@@ -466,6 +551,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
       if (!requestId || pending?.requestId !== requestId) return false;
       finish();
       followUpText = false;
+      // A failed send keeps the whole selection so it can be retried; nothing is dropped silently.
       showNote(message, true);
       return true;
     },
@@ -475,7 +561,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
       channelId = undefined;
       draft.value = "";
       drafts.clear();
-      clearStaged();
+      clearSelection();
       clearReply();
       mentioned = [];
       packages = undefined;
