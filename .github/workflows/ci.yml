@@ -1,0 +1,26 @@
+name: CI
+
+# Local-only project, but the repo still gets commits and releases: every push and pull request must
+# typecheck, build, and pass the test suite on a clean install. No secrets are needed or used here.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --include=dev
+      - run: npm run typecheck
+      - run: npm test
+      # `npm audit` reports advisories; a high or critical advisory fails the release gate (see SECURITY.md).
+      - run: npm audit --audit-level=high
