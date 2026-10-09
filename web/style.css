@@ -33,6 +33,8 @@ footer { color: #667c73; font-size: 12px; line-height: 1.7; }
 .pill[data-state="reconnecting"] { background: #fff0c9; color: #7a5600; }
 .ghost { padding: 5px 12px; background: transparent; color: var(--muted); border: 1px solid var(--line); font-size: 13px; font-weight: 500; }
 .ghost:hover:not(:disabled) { color: #b3261e; border-color: #b3261e; }
+#notify[aria-pressed="true"], #notify:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+#notify[aria-pressed="true"] { font-weight: 600; }
 .tabs { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--line); }
 .tab { padding: 12px 8px; border-radius: 0; background: transparent; color: var(--muted); border-bottom: 3px solid transparent; font-weight: 600; }
 .tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }

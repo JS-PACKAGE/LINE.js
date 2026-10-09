@@ -26,7 +26,8 @@ export function createNotifier(button: HTMLButtonElement, open: (chatId: string)
     const on = enabled();
     button.ariaPressed = String(on);
     button.disabled = Notification.permission === "denied";
-    button.textContent = on ? "通知：開" : "通知：關";
+    // Short label: the sidebar header is narrow. On/off shows through aria-pressed (styled) and the title.
+    button.textContent = "通知";
     button.title = Notification.permission === "denied" ? "瀏覽器已封鎖此頁的通知，請在網站設定中允許" : on ? "關閉桌面通知" : "頁面不在前景時，以桌面通知提醒新訊息";
   };
   button.addEventListener("click", async () => {
