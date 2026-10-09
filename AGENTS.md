@@ -49,7 +49,7 @@ npm run cli -- login|logout|token
 ./linejs.sh start|stop|restart|update|login|logout|token   # Windows：.\linejs.ps1 <同樣指令>
 ```
 
-後端 `tsc` 建置，前端 Vite 建置；`npm test` 使用 `node --test` 與 Mock Provider。修改後做針對性驗證並啟動實際程序或操作瀏覽器，不可只憑型別檢查宣告完成。測試應驗證消費者可見行為、邊界、轉移與錯誤，不測程式字串或單純 wiring。
+後端 `tsc` 建置，前端 Vite 建置；`npm test` 使用 `node --test` 與 Mock Provider。修改後做針對性驗證並啟動實際程序或操作瀏覽器，不可只憑型別檢查宣告完成。測試應驗證消費者可見行為、邊界、轉移與錯誤，不測程式字串或單純 wiring。`.github/workflows/ci.yml` 於 push／PR 以 Node 22 乾淨安裝執行 typecheck、test 與 `npm audit --audit-level=high`（唯讀權限、不用任何 secret）；CI 通過不代替實際程序或瀏覽器驗證，也不代替 Gate 實測。
 
 Gate 依 [PLAN.md](PLAN.md) 逐關驗收，不跳關；Gate 0 遠端需存在四件必要文件及前置根檔。Gate 1 必須用**次要帳號** QR 掃碼，60 秒內接收真實訊息並驗證 session 權限。未經實測不得宣稱 Gate 通過。
 
