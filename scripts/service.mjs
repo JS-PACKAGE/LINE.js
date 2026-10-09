@@ -3,15 +3,16 @@
 //
 //   node scripts/service.mjs running   服務正在執行 → 印出 PID、結束碼 0；否則結束碼 1
 //   node scripts/service.mjs stop      停止正在執行的服務（沒有在執行也算成功）
-//   node scripts/service.mjs deps      node_modules 與 package-lock.json 一致 → 結束碼 0；否則印出原因、結束碼 1
+//   node scripts/service.mjs ready     依賴與建置輸出都是最新 → 結束碼 0；需重裝依賴（之後也要重建）→ 1；
+//                                      只需重新建置 → 3。後兩者會印出原因
 //
 // 服務啟動後把自己的 PID 寫進專案根目錄的 linejs.pid（src/main.ts），正常結束時移除。
 // 這裡只會終止「PID 檔指向、且命令列確實是本專案 dist/main.js」的程序；PID 檔過期（程序已結束、
 // PID 被別的程式沿用）時只清掉檔案，不會碰那個程序。
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { access, readFile, rm } from "node:fs/promises";
-import { resolve } from "node:path";
+import { access, readdir, readFile, rm, stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 let libcFamily;
@@ -87,6 +88,42 @@ async function dependencyProblem() {
   return undefined;
 }
 
+const BUILD_OUTPUTS = ["dist/main.js", "dist/web/index.html"];
+// What `npm run build` reads: tsc (tsconfig.json, src/) and vite (web/, plus package.json for the version shown
+// in the page); the lockfile stands for the dependencies the build was made with.
+const BUILD_INPUTS = ["src", "web", "package.json", "package-lock.json", "tsconfig.json"];
+
+/** Newest modification time among the paths and everything below them (directories too, so deletions count). */
+async function newestMtime(paths) {
+  let newest = 0;
+  for (const path of paths) {
+    const info = await stat(path).catch(() => undefined);
+    if (info === undefined) continue;
+    newest = Math.max(newest, info.mtimeMs);
+    if (!info.isDirectory()) continue;
+    for (const entry of await readdir(path, { recursive: true })) {
+      const child = await stat(join(path, entry)).catch(() => undefined);
+      if (child !== undefined) newest = Math.max(newest, child.mtimeMs);
+    }
+  }
+  return newest;
+}
+
+/**
+ * Why dist/ needs rebuilding, or undefined when it is current. Checking only that the output exists keeps
+ * running the old build after a plain `git pull` of source changes; git stamps the files it changes with the
+ * checkout time, so they come out newer than the last build.
+ */
+async function buildProblem() {
+  let built = Infinity;
+  for (const path of BUILD_OUTPUTS) {
+    const info = await stat(path).catch(() => undefined);
+    if (info === undefined) return `缺少 ${path}`;
+    built = Math.min(built, info.mtimeMs);
+  }
+  return (await newestMtime(BUILD_INPUTS)) > built ? "原始碼比建置輸出新" : undefined;
+}
+
 const PID_FILE = resolve("linejs.pid");
 const STOP_WAIT_MS = 20_000;
 
@@ -144,13 +181,18 @@ if (command === "running") {
   }
   await rm(PID_FILE, { force: true });
   console.error("服務已停止。");
-} else if (command === "deps") {
-  const problem = await dependencyProblem();
-  if (problem !== undefined) {
-    console.error(`依賴不完整或已過期：${problem}`);
+} else if (command === "ready") {
+  const dependencies = await dependencyProblem();
+  if (dependencies !== undefined) {
+    console.error(`依賴不完整或已過期：${dependencies}`);
     process.exit(1);
   }
+  const build = await buildProblem();
+  if (build !== undefined) {
+    console.error(`需要重新建置：${build}`);
+    process.exit(3);
+  }
 } else {
-  console.error("用法：node scripts/service.mjs running|stop|deps");
+  console.error("用法：node scripts/service.mjs running|stop|ready");
   process.exit(2);
 }

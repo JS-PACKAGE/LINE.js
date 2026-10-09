@@ -38,21 +38,21 @@ function Invoke-Checked([string]$What, [scriptblock]$Command) {
     if ($LASTEXITCODE -ne 0) { Fail "$What 失敗（結束碼 $LASTEXITCODE）。" $LASTEXITCODE }
 }
 
-# 依賴與建置輸出缺少時補齊；已齊全時不做任何事。
-# 只看 node_modules 目錄存在不夠：安裝中斷或 lockfile 已更新時會缺套件，啟動時才炸 ERR_MODULE_NOT_FOUND。
+# 依賴與建置輸出缺少或過期時補齊；都是最新時不做任何事（判斷見 scripts/service.mjs ready）。
+# 只看 node_modules／dist 存在不夠：安裝中斷或 lockfile 已更新時會缺套件，啟動時才炸 ERR_MODULE_NOT_FOUND；
+# 只 git pull 原始碼時則會繼續跑舊的 dist/。
 # 重新安裝依賴後一併重建，因為舊的 dist/ 是用舊依賴建出來的。--include=dev：建置需要 devDependencies，
 # NODE_ENV=production 時 npm 預設會略過它們。
 function Initialize-Project {
-    & node scripts/service.mjs deps
-    $rebuild = $LASTEXITCODE -ne 0
-    if ($rebuild) {
+    & node scripts/service.mjs ready
+    $status = $LASTEXITCODE
+    if ($status -eq 0) { return }
+    if ($status -ne 3) {
         Write-Host '▶ 安裝依賴（npm ci）'
         Invoke-Checked 'npm ci' { npm ci --include=dev }
     }
-    if ($rebuild -or -not ((Test-Path -LiteralPath 'dist/main.js') -and (Test-Path -LiteralPath 'dist/web/index.html'))) {
-        Write-Host '▶ 建置（npm run build）'
-        Invoke-Checked 'npm run build' { npm run build }
-    }
+    Write-Host '▶ 建置（npm run build）'
+    Invoke-Checked 'npm run build' { npm run build }
 }
 
 function Invoke-Node([string[]]$NodeArgs) {

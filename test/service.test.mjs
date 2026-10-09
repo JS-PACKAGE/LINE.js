@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -100,9 +100,16 @@ test("a garbage pid file and unknown commands are handled", { skip }, async (t) 
   assert.equal((await helper("bogus")).status, 2);
 });
 
+/** Writes the build output with the given modification time (seconds), by default a minute from now. */
+async function built(root, time = Date.now() / 1000 + 60) {
+  await mkdir(join(root, "dist", "web"), { recursive: true });
+  await writeFile(join(root, "dist", "web", "index.html"), "");
+  for (const output of ["dist/main.js", "dist/web/index.html"]) await utimes(join(root, output), time, time);
+}
+
 /**
  * Writes package-lock.json with the given entries and installs `installed` ({ path: version }) on top of what
- * is there, finishing with the hidden lockfile npm writes once an install completes.
+ * is there, finishing with the hidden lockfile npm writes once an install completes and a newer build.
  */
 async function dependencies(root, packages, installed) {
   await writeFile(join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: { "": {}, ...packages } }));
@@ -112,24 +119,25 @@ async function dependencies(root, packages, installed) {
   }
   await mkdir(join(root, "node_modules"), { recursive: true });
   await writeFile(join(root, "node_modules", ".package-lock.json"), "{}");
+  await built(root);
 }
 
-test("deps reports missing and mismatched packages, accepting versions npm cleaned up", async (t) => {
+test("ready reports missing and mismatched packages, accepting versions npm cleaned up", async (t) => {
   const { root, helper } = await project(t);
   const lock = { "node_modules/a": { version: "1.2.2" }, "node_modules/b": { version: "2.0.0" } };
   await dependencies(root, lock, { "node_modules/a": "v1.2.2" });
-  const missing = await helper("deps");
+  const missing = await helper("ready");
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /缺少 node_modules\/b/);
   await dependencies(root, lock, { "node_modules/b": "1.9.0" });
-  const stale = await helper("deps");
+  const stale = await helper("ready");
   assert.equal(stale.status, 1);
   assert.match(stale.stderr, /node_modules\/b 版本為 1\.9\.0，應為 2\.0\.0/);
   await dependencies(root, lock, { "node_modules/b": "2.0.0" });
-  assert.equal((await helper("deps")).status, 0);
+  assert.equal((await helper("ready")).status, 0);
 });
 
-test("deps requires the optional build for this platform and ignores other platforms' builds", async (t) => {
+test("ready requires the optional build for this platform and ignores other platforms' builds", async (t) => {
   const { root, helper } = await project(t);
   const lock = {
     "node_modules/tool": { version: "1.0.0" },
@@ -138,19 +146,41 @@ test("deps requires the optional build for this platform and ignores other platf
     "node_modules/maybe": { version: "1.0.0", optional: true },
   };
   await dependencies(root, lock, { "node_modules/tool": "1.0.0" });
-  const missing = await helper("deps");
+  const missing = await helper("ready");
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /缺少 node_modules\/@tool\/here/);
   await dependencies(root, lock, { "node_modules/@tool/here": "1.0.0" });
-  assert.equal((await helper("deps")).status, 0);
+  assert.equal((await helper("ready")).status, 0);
 });
 
-test("deps treats an install that never wrote npm's hidden lockfile as unfinished", async (t) => {
+test("ready treats an install that never wrote npm's hidden lockfile as unfinished", async (t) => {
   const { root, helper } = await project(t);
   await dependencies(root, { "node_modules/a": { version: "1.0.0" } }, { "node_modules/a": "1.0.0" });
-  assert.equal((await helper("deps")).status, 0);
+  assert.equal((await helper("ready")).status, 0);
   await rm(join(root, "node_modules", ".package-lock.json"));
-  const unfinished = await helper("deps");
+  const unfinished = await helper("ready");
   assert.equal(unfinished.status, 1);
   assert.match(unfinished.stderr, /上次安裝沒有完成/);
+});
+
+test("ready asks only for a rebuild when the build output is missing or older than the sources", async (t) => {
+  const { root, helper } = await project(t);
+  await dependencies(root, {}, {});
+  await mkdir(join(root, "src"));
+  await writeFile(join(root, "src", "main.ts"), "");
+  const now = Date.now() / 1000;
+  await built(root, now + 60);
+  assert.equal((await helper("ready")).status, 0);
+
+  await utimes(join(root, "src", "main.ts"), now + 120, now + 120);
+  const pulled = await helper("ready");
+  assert.equal(pulled.status, 3);
+  assert.match(pulled.stderr, /原始碼比建置輸出新/);
+  await built(root, now + 180);
+  assert.equal((await helper("ready")).status, 0);
+
+  await rm(join(root, "dist", "web", "index.html"));
+  const partial = await helper("ready");
+  assert.equal(partial.status, 3);
+  assert.match(partial.stderr, /缺少 dist\/web\/index\.html/);
 });
