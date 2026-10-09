@@ -158,12 +158,10 @@ function enterChat(profile: Profile): void {
   renderMessages();
 }
 
+/** Time of day only: the day itself is on the divider above each day's messages. */
 function formatTime(timestamp: number): string {
-  const date = new Date(timestamp);
-  const sameDay = date.toDateString() === new Date().toDateString();
   // hourCycle h23 (not hour12:false) so midnight reads 00:xx rather than 24:xx.
-  const clock = { hour: "2-digit", minute: "2-digit", hourCycle: "h23" } as const;
-  return date.toLocaleString("zh-TW", sameDay ? clock : { month: "numeric", day: "numeric", ...clock });
+  return new Date(timestamp).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
 // A friend belongs to the 聊天 tab only once there is a conversation with them;
@@ -548,6 +546,18 @@ historyRetry.textContent = "載入失敗，點此重試";
 historyRetry.addEventListener("click", () => { if (selected) requestHistory(selected); });
 const unreadDivider = document.createElement("div");
 unreadDivider.className = "unread-divider";
+// One divider per calendar day shown, reused across renders like the messages.
+let dayDividers = new Map<string, HTMLElement>();
+
+function dayLabel(at: number): string {
+  const date = new Date(at);
+  const today = new Date();
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  if (date.toDateString() === today.toDateString()) return "今天";
+  if (date.toDateString() === yesterday.toDateString()) return "昨天";
+  const sameYear = date.getFullYear() === today.getFullYear();
+  return date.toLocaleDateString("zh-TW", { ...(sameYear ? {} : { year: "numeric" }), month: "long", day: "numeric", weekday: "short" });
+}
 
 /** The message drawn at (or around) an event target in the open chat. */
 function messageAt(target: EventTarget | null): Message | undefined {
@@ -625,13 +635,24 @@ function renderMessages(anchor: "bottom" | "keep" | "prepend" = "bottom"): void 
   const labels = readLabels(channel.channelId, list);
   const divider = unreadFrom?.channelId === selected ? unreadFrom : undefined;
   const next = new Map<string, RenderedMessage>();
+  const nextDays = new Map<string, HTMLElement>();
   list.forEach((message, index) => {
+    const previous = list[index - 1];
+    const day = new Date(message.createdAt).toDateString();
+    const newDay = previous === undefined || new Date(previous.createdAt).toDateString() !== day;
+    if (newDay) {
+      const line = dayDividers.get(day) ?? Object.assign(document.createElement("div"), { className: "day-divider" });
+      // "今天"/"昨天" move on at midnight, so the text is refreshed on every render.
+      const label = dayLabel(message.createdAt);
+      if (line.textContent !== label) line.textContent = label;
+      nextDays.set(day, line);
+      nodes.push(line);
+    }
     if (divider?.messageId === message.messageId) {
       unreadDivider.textContent = `${divider.count} 則未讀訊息`;
       nodes.push(unreadDivider);
     }
-    const previous = list[index - 1];
-    const continued = previous !== undefined && previous.contentType !== "CHATEVENT" && previous.senderId === message.senderId && message.createdAt - previous.createdAt < CONTINUE_WITHIN_MS;
+    const continued = previous !== undefined && !newDay && previous.contentType !== "CHATEVENT" && previous.senderId === message.senderId && message.createdAt - previous.createdAt < CONTINUE_WITHIN_MS;
     const quoted = message.replyTo ? byId.get(message.replyTo) : undefined;
     const known = rendered.get(message.messageId);
     const entry = known && known.message === message && known.continued === continued && known.quoted === quoted ? known : messageNode(message, continued, quoted);
@@ -644,6 +665,7 @@ function renderMessages(anchor: "bottom" | "keep" | "prepend" = "bottom"): void 
     nodes.push(entry.node);
   });
   rendered = next;
+  dayDividers = nextDays;
   reconcile(messageList, nodes);
   if (anchor === "bottom" || (anchor === "keep" && atBottom)) messageList.scrollTop = messageList.scrollHeight;
   // Older messages were inserted above: keep what the reader was looking at in place.

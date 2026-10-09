@@ -89,6 +89,7 @@ dialog#viewer button { position: fixed; top: 14px; right: 18px; background: #000
 .card span { color: var(--muted); font-size: 13px; }
 .card a { color: var(--accent); font-size: 13px; }
 .system-event { margin: 4px auto; padding: 3px 12px; max-width: 90%; border-radius: 999px; background: var(--soft); color: var(--muted); font-size: 12px; text-align: center; overflow-wrap: anywhere; }
+.day-divider { align-self: center; padding: 2px 12px; border-radius: 999px; background: var(--soft); color: var(--muted); font-size: 12px; font-weight: 600; }
 .sticker { display: block; width: 140px; max-width: 60%; height: auto; margin-top: 6px; }
 .empty { margin: auto; text-align: center; }
 .history-note { text-align: center; color: var(--muted); font-size: 13px; padding: 4px 0 8px; }
