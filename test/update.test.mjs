@@ -198,7 +198,7 @@ test("update fast-forwards to the newest tag by version number, then installs an
   const result = await f.update();
   assert.equal(result.code, 0, result.out);
   assert.equal(await f.version(), "0.10.0", "0.10.0 beats 0.9.0 and the pre-release is ignored");
-  assert.deepEqual(await f.npmCalls(), ["ci", "run build"]);
+  assert.deepEqual(await f.npmCalls(), ["ci --include=dev", "run build"]);
   assert.match(result.out, /已更新到 v0\.10\.0/);
   assert.match(await f.update().then((r) => r.out), /已是最新版/);
 });
@@ -263,7 +263,7 @@ test("a failed install says how to go back, and unknown options are refused", as
   const failed = await f.update();
   assert.notEqual(failed.code, 0);
   assert.ok(failed.out.includes(`git checkout ${before}`), failed.out);
-  assert.deepEqual(await f.npmCalls(), ["ci"], "stops at the first failing step");
+  assert.deepEqual(await f.npmCalls(), ["ci --include=dev"], "stops at the first failing step");
 
   const odd = await f.update("--force");
   assert.notEqual(odd.code, 0);

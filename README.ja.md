@@ -247,7 +247,7 @@ npm run cli              # 不帶指令：顯示用法
 
 | コマンド | 実際の実行内容 | 説明 |
 |---|---|---|
-| `start` | `node dist/main.js` | 引数は受け付けません。`node_modules` が `package-lock.json` と一致しない場合（パッケージの欠落やバージョン不一致。インストールの中断や lockfile の更新後など）は先に `npm ci` と `npm run build`、ビルド出力（`dist/main.js`、`dist/web/index.html`）がなければ先に `npm run build` を実行します。両方揃っていれば準備処理をせず、そのまま起動します。フォアグラウンドで実行し、Ctrl+C で停止します。実行中のサービスがある場合は起動を拒否し、`restart` を使うよう案内します |
+| `start` | `node dist/main.js` | 引数は受け付けません。`node_modules` が `package-lock.json` と一致しない場合（パッケージの欠落やバージョン不一致。インストールの中断や lockfile の更新後など）は先に `npm ci --include=dev` と `npm run build`、ビルド出力（`dist/main.js`、`dist/web/index.html`）がなければ先に `npm run build` を実行します。両方揃っていれば準備処理をせず、そのまま起動します。フォアグラウンドで実行し、Ctrl+C で停止します。実行中のサービスがある場合は起動を拒否し、`restart` を使うよう案内します |
 | `stop` | `node scripts/service.mjs stop` | 引数は受け付けません。`linejs.pid` でサービスを見つけ、終了シグナル（`SIGTERM`。サービスは LINE 接続を閉じ、`session.json` を書き終えてから終了）を送り、最大 20 秒待ちます。実行されていない場合も成功とします |
 | `restart` | `stop` の後に `start` | 引数は受け付けません。実行中のサービスを停止し（実行されていなければ省略）、現在のターミナルを使ってフォアグラウンドで起動します。元のターミナルで動いていたサービスは終了します |
 | `update` | `node scripts/update.mjs …` | `npm run update` と同じです。オプションはそのまま渡し、`--check` は確認のみ、`--verify` は tag 署名を要求します。手順と中止条件は[バージョン更新](#バージョン更新)を参照してください。更新後は `start` を再実行する必要があります |
@@ -313,11 +313,11 @@ npm run update -- --verify      # 更新前額外要求最新 tag 通過 git ver
 4. 現在より新しいバージョンがなければ終了します（「已是最新版」（すでに最新版です））。`--check` もここで終了します。
 5. `--verify`：`git verify-tag` に成功する必要があります。
 6. 現在のコミットがその tag の祖先である場合にのみ、**fast-forward** で進めます（`merge --ff-only` のみ実行し、detached HEAD ではその tag に `checkout --detach` します）。ローカルにその tag に含まれないコミットがある場合は中止します。自分で merge／rebase してから更新してください。**あなたの内容は上書きしません**。
-7. `npm ci`（ロックファイルに従い、固定した依存関係をインストール）。
+7. `npm ci --include=dev`（ロックファイルに従い、固定した依存関係をインストール。ビルドに devDependencies が必要なため、`NODE_ENV=production` でもインストールします）。
 8. `npm run build`。
 9. 「已更新到 vX.Y.Z，請重新啟動服務」（vX.Y.Z に更新しました。サービスを再起動してください）と案内します。
 
-再起動：`npm start` を実行中のターミナルで Ctrl+C を押し、再び `npm start` を実行します。`session.json` を再利用するため、QR コードの再読み取りは不要です。手順 7、8 が失敗した場合、コードはすでに新バージョンに切り替わっています。メッセージに戻すためのコマンド（`git checkout <舊提交>`、続けて `npm ci && npm run build`）を表示します。
+再起動：`npm start` を実行中のターミナルで Ctrl+C を押し、再び `npm start` を実行します。`session.json` を再利用するため、QR コードの再読み取りは不要です。手順 7、8 が失敗した場合、コードはすでに新バージョンに切り替わっています。メッセージに戻すためのコマンド（`git checkout <舊提交>`、続けて `npm ci --include=dev && npm run build`）を表示します。
 
 - **Web ページからのワンクリック更新はありません**：Web 層の脆弱性がリモートコード実行に発展するのを防ぐため、意図的に設けていません。
 - **信頼モデル**：更新では `origin` リモートと GitHub の TLS を信頼します。tag に暗号学的な検証があるのは、`--verify` を使い、保守担当者が署名している場合のみです。より高い保証が必要な場合は、更新前に 2 つの tag の差分を自分で確認してください。

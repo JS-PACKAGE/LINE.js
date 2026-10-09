@@ -247,7 +247,7 @@ The root-level `linejs.sh` and `linejs.ps1` provide equivalent functionality, gr
 
 | Command | Actual execution | Description |
 |---|---|---|
-| `start` | `node dist/main.js` | Accepts no arguments. If `node_modules` does not match `package-lock.json` (missing packages or wrong versions, e.g. after an interrupted install or a lockfile change), runs `npm ci` and then `npm run build`; if build output (`dist/main.js`, `dist/web/index.html`) is missing, runs `npm run build`. When both are in place, starts directly without either step. Runs in the foreground; Ctrl+C stops it. Refuses to start if the service is already running and suggests `restart`. |
+| `start` | `node dist/main.js` | Accepts no arguments. If `node_modules` does not match `package-lock.json` (missing packages or wrong versions, e.g. after an interrupted install or a lockfile change), runs `npm ci --include=dev` and then `npm run build`; if build output (`dist/main.js`, `dist/web/index.html`) is missing, runs `npm run build`. When both are in place, starts directly without either step. Runs in the foreground; Ctrl+C stops it. Refuses to start if the service is already running and suggests `restart`. |
 | `stop` | `node scripts/service.mjs stop` | Accepts no arguments. Finds the service through `linejs.pid` and sends a termination signal (`SIGTERM`; the service closes its LINE connection and finishes writing `session.json` before exiting), waiting at most 20 seconds. Reports success even if it is not running. |
 | `restart` | `stop` then `start` | Accepts no arguments. Stops the running service first (skips if not running), then starts in the foreground, taking over this terminal; the service in the original terminal exits. |
 | `update` | `node scripts/update.mjs …` | Equivalent to `npm run update`, forwarding options unchanged: `--check` only checks, and `--verify` requires a tag signature. See [Version updates](#version-updates) for the workflow and abort conditions; run `start` again after updating. |
@@ -313,11 +313,11 @@ npm run update -- --verify      # 更新前額外要求最新 tag 通過 git ver
 4. Exit if none is newer than the current version (「已是最新版」 (Already up to date)); `--check` stops here.
 5. With `--verify`, `git verify-tag` must pass.
 6. The current commit must be an ancestor of the tag before advancing by **fast-forward** (only `merge --ff-only`; on a detached HEAD, use `checkout --detach` to that tag instead). If local commits are absent from the tag, abort; merge/rebase yourself before updating. **Your content is not overwritten**.
-7. Run `npm ci` (install pinned dependencies from the lockfile).
+7. Run `npm ci --include=dev` (install pinned dependencies from the lockfile; the build needs devDependencies, so they are installed even with `NODE_ENV=production`).
 8. Run `npm run build`.
 9. Show 「已更新到 vX.Y.Z，請重新啟動服務」 (Updated to vX.Y.Z; restart the service).
 
-To restart, press Ctrl+C in the terminal running `npm start`, then run `npm start` again. `session.json` is reused; no rescan is needed. If step 7 or 8 fails, the code has already switched to the new version; the message includes rollback commands (`git checkout <舊提交>` (<old commit>), then `npm ci && npm run build`).
+To restart, press Ctrl+C in the terminal running `npm start`, then run `npm start` again. `session.json` is reused; no rescan is needed. If step 7 or 8 fails, the code has already switched to the new version; the message includes rollback commands (`git checkout <舊提交>` (<old commit>), then `npm ci --include=dev && npm run build`).
 
 - **No one-click web update**: deliberate, to prevent a web-layer vulnerability from escalating into remote code execution.
 - **Trust model**: updates trust the `origin` remote and GitHub's TLS. Tags are cryptographically verified only with `--verify` and a maintainer-signed tag. If you require stronger assurance, inspect the diff between the two tags before updating.

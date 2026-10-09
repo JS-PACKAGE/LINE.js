@@ -36,7 +36,7 @@ function run(description, command, commandArgs) {
   console.info(`\n▶ ${description}`);
   const result = spawnSync(command, commandArgs, { stdio: "inherit", shell: process.platform === "win32" });
   if (result.status !== 0) {
-    fail(`${description}失敗。程式碼已切換到新版；若要退回，執行：git checkout ${before}，再 npm ci && npm run build。`);
+    fail(`${description}失敗。程式碼已切換到新版；若要退回，執行：git checkout ${before}，再 npm ci --include=dev && npm run build。`);
   }
 }
 
@@ -76,6 +76,7 @@ if (!git("merge-base", "--is-ancestor", "HEAD", tagRef).ok) {
 if (git("symbolic-ref", "-q", "HEAD").ok) mustGit("fast-forward", "merge", "--ff-only", tagRef);
 else mustGit("切換到新版", "checkout", "--detach", tagRef);
 
-run("安裝依賴（npm ci）", "npm", ["ci"]);
+// --include=dev：建置需要 devDependencies（tsc、vite），NODE_ENV=production 時 npm 預設會略過它們。
+run("安裝依賴（npm ci）", "npm", ["ci", "--include=dev"]);
 run("建置（npm run build）", "npm", ["run", "build"]);
 console.info(`\n已更新到 ${newest}。請重新啟動服務（Ctrl+C 後再 npm start）；已開啟的網頁會提示重新整理。`);

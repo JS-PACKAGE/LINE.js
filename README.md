@@ -247,7 +247,7 @@ npm run cli              # 不帶指令：顯示用法
 
 | 指令 | 實際執行 | 說明 |
 |---|---|---|
-| `start` | `node dist/main.js` | 不接受參數。`node_modules` 與 `package-lock.json` 不一致（缺套件、版本不符，例如安裝中斷或 lockfile 已更新）時先 `npm ci` 再 `npm run build`；沒有建置輸出（`dist/main.js`、`dist/web/index.html`）時先 `npm run build`；兩者齊全時不做任何事，直接啟動。前景執行，Ctrl+C 停止。服務已在執行時拒絕再啟動，並提示改用 `restart` |
+| `start` | `node dist/main.js` | 不接受參數。`node_modules` 與 `package-lock.json` 不一致（缺套件、版本不符，例如安裝中斷或 lockfile 已更新）時先 `npm ci --include=dev` 再 `npm run build`；沒有建置輸出（`dist/main.js`、`dist/web/index.html`）時先 `npm run build`；兩者齊全時不做任何事，直接啟動。前景執行，Ctrl+C 停止。服務已在執行時拒絕再啟動，並提示改用 `restart` |
 | `stop` | `node scripts/service.mjs stop` | 不接受參數。依 `linejs.pid` 找到服務，送出結束訊號（`SIGTERM`，服務會先關閉 LINE 連線並寫好 `session.json` 再結束），最多等 20 秒；沒有在執行也回報成功 |
 | `restart` | `stop` 再 `start` | 不接受參數。先停止正在執行的服務（沒有在執行就略過），再以前景啟動，接手目前這個終端機；原本那個終端機裡的服務會結束 |
 | `update` | `node scripts/update.mjs …` | 即 `npm run update`，選項原樣傳入：`--check` 只檢查、`--verify` 要求 tag 簽章。流程與中止條件見[版本更新](#版本更新)；更新完要重新執行 `start` |
@@ -313,11 +313,11 @@ npm run update -- --verify      # 更新前額外要求最新 tag 通過 git ver
 4. 沒有比目前版本新的就結束（「已是最新版」）；`--check` 到這裡就結束。
 5. `--verify`：`git verify-tag` 必須通過。
 6. 目前的提交必須是該 tag 的祖先，才以 **fast-forward** 前進（只做 `merge --ff-only`；在 detached HEAD 時改為 `checkout --detach` 該 tag）。本機有該 tag 沒有包含的提交時中止，請自行 merge／rebase 後再更新，**不會覆寫你的內容**。
-7. `npm ci`（依鎖檔安裝釘選的依賴）。
+7. `npm ci --include=dev`（依鎖檔安裝釘選的依賴；建置需要 devDependencies，`NODE_ENV=production` 時也照裝）。
 8. `npm run build`。
 9. 提示「已更新到 vX.Y.Z，請重新啟動服務」。
 
-重新啟動：在跑 `npm start` 的終端機按 Ctrl+C，再 `npm start`。`session.json` 會復用，不需要重新掃碼。如果第 7、8 步失敗，程式碼已切到新版，訊息會附上退回指令（`git checkout <舊提交>`，再 `npm ci && npm run build`）。
+重新啟動：在跑 `npm start` 的終端機按 Ctrl+C，再 `npm start`。`session.json` 會復用，不需要重新掃碼。如果第 7、8 步失敗，程式碼已切到新版，訊息會附上退回指令（`git checkout <舊提交>`，再 `npm ci --include=dev && npm run build`）。
 
 - **沒有網頁一鍵更新**：這是刻意的，避免網頁層的任何漏洞升級為遠端程式碼執行。
 - **信任模型**：更新信任 `origin` 遠端與 GitHub 的 TLS；tag 只有在使用 `--verify` 且維護者簽署時才有密碼學驗證。需要更高保證的人，更新前請自行檢視兩個 tag 之間的差異。
