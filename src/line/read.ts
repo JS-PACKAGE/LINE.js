@@ -31,6 +31,17 @@ export function parseReadOperation(
 }
 
 /**
+ * NOTIFIED_DESTROY_MESSAGE (someone took a message back) / DESTROY_MESSAGE (this account did, on another
+ * device): (chat, message id). linejs does not document the parameter layout, so only a well-formed
+ * pair is accepted, and the chat is a hint: the caller acts only on a message it already has.
+ */
+export function parseUnsendOperation(operation: { param1?: unknown; param2?: unknown }): { chatId: string; messageId: string } | undefined {
+  const chatId = mid(operation.param1);
+  const messageId = numericId(operation.param2);
+  return chatId && messageId ? { chatId, messageId } : undefined;
+}
+
+/**
  * getMessageReadRange answers with untyped thrift: ranges[reader] is a list of
  * { 1: startMessageId, 2: endMessageId, 3: startTime, 4: endTime }. Only the highest end id matters.
  */

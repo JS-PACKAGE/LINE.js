@@ -559,6 +559,31 @@ test("live read events reach the browser only for chats the account has", async 
   assert.deepEqual(env.client.frames.filter((frame) => frame.type === "read"), [{ type: "read", chatId: CHAT, positions: [{ readerId: "u1", messageId: "7" }] }]);
 });
 
+test("a message taken back is replaced for every page, its media stops being served from cache, and a reload shows only the placeholder", async (t) => {
+  const env = await signedIn(t);
+  let fetches = 0;
+  const fetchMedia = env.provider.fetchMessageMedia.bind(env.provider);
+  env.provider.fetchMessageMedia = (id) => { fetches += 1; return fetchMedia(id); };
+  env.hub.handleMessage({ messageId: "501", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", contentType: "VIDEO", mediaId: "msg-501", createdAt: 1 }, "new");
+  const media = (cookie) => fetch(`http://127.0.0.1:${env.port}/media/msg-501`, { headers: { Cookie: cookie } });
+  await (await media(env.cookie)).arrayBuffer();
+  await (await media(env.cookie)).arrayBuffer();
+  assert.equal(fetches, 1, "cached before");
+  env.hub.handleUnsend("u-not-the-chat", "501");
+  assert.deepEqual(await env.client.until((frame) => frame.type === "message:unsend"), { type: "message:unsend", chatId: CHAT, messageId: "501" });
+  await (await media(env.cookie)).arrayBuffer();
+  assert.equal(fetches, 2, "the cached bytes were dropped");
+  env.hub.handleUnsend(CHAT, "501");
+  env.hub.handleUnsend(CHAT, "999");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(env.client.frames.filter((frame) => frame.type === "message:unsend").length, 1, "repeats and unknown ids are silent");
+
+  const late = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => late.socket.close());
+  const snapshot = await late.until((frame) => frame.type === "messages");
+  assert.deepEqual(snapshot.messages[0], { messageId: "501", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", contentType: "VIDEO", createdAt: 1, unsent: true });
+});
+
 test("avatars are served through the media route with the same cookie and id checks as stickers", async (t) => {
   const { port, cookie } = await start(t);
   const base = `http://127.0.0.1:${port}/media/`;
@@ -891,6 +916,11 @@ test("a bot sees its sign-in state and only the chats it is allowed, with no rep
   assert.equal((await bot.until((frame) => frame.type === "message")).message.text, "指令");
   assert.equal((await bot.until((frame) => frame.type === "message:edit")).message.text, "指令（改）");
   assert.deepEqual(bot.frames.filter((frame) => frame.type === "message").map((frame) => frame.message.messageId), ["11"]);
+  env.hub.handleUnsend("c1", "10");
+  env.hub.handleUnsend(CHAT, "11");
+  assert.deepEqual(await bot.until((frame) => frame.type === "message:unsend"), { type: "message:unsend", chatId: CHAT, messageId: "11" });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(bot.frames.filter((frame) => frame.type === "message:unsend").length, 1, "nothing from chats outside api.chats");
 });
 
 test("a bot can send text and read history in an allowed chat only", async (t) => {

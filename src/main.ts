@@ -23,6 +23,10 @@ async function main(): Promise<void> {
       hub.handleMessage(message, kind);
     },
     onRead: (chatId, position) => hub.handleRead(chatId, position),
+    onUnsend: (chatHint, messageId) => {
+      console.info(`LINE 訊息收回：id=${messageId}`);
+      hub.handleUnsend(chatHint, messageId);
+    },
     onStatus: (state) => {
       console.info(`LINE 狀態：${state}`);
       hub.setStatus(state);

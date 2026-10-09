@@ -52,6 +52,7 @@ Open `http://127.0.0.1:3789`. If `session.json` can be reused, you enter the cha
 **Other web behavior**:
 - **Links**: `http://` and `https://` URLs in message text become clickable links that open in a new tab (with `rel="noopener noreferrer"`, so the destination cannot access this page and receives no Referer). Trailing punctuation and extra closing parentheses are excluded from URLs; other protocols (such as `ftp://`) are not linked. The server does not fetch any URLs, and there are no link preview cards (deliberately: CSP and CORS prevent browser-side access, while server-side fetching risks SSRF and IP disclosure).
 - **System messages**: LINE membership events (`CHATEVENT`, currently supporting `C_MI`) display as small, centered gray pills, such as 「XX 新增 OO 至群組」 (XX added OO to the group). Other event types whose meanings have not been confirmed always display the placeholder 「［系統訊息］」 ([System message]); their content is not guessed.
+- **Take-backs**: when someone (or you, on another device) takes a message back, it becomes 「XX 已收回訊息」 (XX took back a message; your own read 「你已收回訊息」), replies quoting it show 「［已收回的訊息］」 ([Message taken back]), and its picture/video/voice is no longer served. If the take-back notice arrives before the message itself, only the placeholder is shown. Only message ids this service has already received are affected; nothing is guessed from the notice.
 - **Disconnection overlay**: if the WebSocket connection to the local service is interrupted, 「與伺服器斷線」 (Disconnected from the server) covers the entire screen. It disappears automatically on reconnection, and messages are resynchronized (using the full snapshot sent on connection: one frame per chat, merged and redrawn once by the page).
 - **Mobile layout**: at window widths ≤ 720px, the chat and friends lists move into a left drawer, opened with the 「☰」 hamburger button at the top left of the conversation header (click the backdrop or press Esc to close; selecting a chat closes it automatically). The drawer opens by default if no chat is selected. The desktop layout is unchanged.
 
@@ -96,6 +97,7 @@ Available:
 | Server → Client | `channels` | Channel snapshot; resent when channels are added or refreshed |
 | Server → Client | `messages` | Connect-time message snapshot: `{ chatId, messages }`, one frame per chat (old messages, never counted as unread) |
 | Server → Client | `message` / `message:edit` | Live messages and overwrites of existing messages |
+| Server → Client | `message:unsend` | `{ chatId, messageId }`: the message was taken back; show a placeholder (`Message.unsent: true`, no content) |
 | Server → Client | `status` / `error` | LINE listener status and generic errors |
 | Server → Client | `history` / `sent` | One history page (including `cursor`)/send confirmation |
 | Server → Client | `read` | Others' read positions (snapshot when opening a chat and live increments) |
@@ -140,7 +142,7 @@ Lets your own programs (bots) send and receive messages. **Disabled by default**
 | Service → Bot | `hello`, `auth:state`, `status` | Sent on connection; sending/receiving is unavailable until `auth:state` is `ready` (LINE is logged in) |
 | Service → Bot | `auth:ready` | Includes your own `profile.userId` to skip your own messages (messages sent from your phone also use this id) |
 | Service → Bot | `channels` | Only chat rooms in `api.chats`; resent on changes |
-| Service → Bot | `message`, `message:edit` | Only **live** messages from chat rooms in `api.chats`, including your own |
+| Service → Bot | `message`, `message:edit`, `message:unsend` | Only **live** messages, edits and take-backs from chat rooms in `api.chats`, including your own |
 | Service → Bot | `sent`, `history`, `error` | Responses to corresponding requests; errors contain only generic codes (`UNKNOWN_CHAT`, `INVALID_REQUEST`, `RATE_LIMITED`, `SEND_FAILED`…) |
 
 Everything else returns `UNKNOWN_TYPE`: no login/logout, `chat:read` (sending read receipts), `channels:refresh`, sticker lists, or Token management. **Old messages are not replayed** (bots start from “now” and do not respond to history again; use `history:fetch` for history). No `read`, `update:available`, or `api:state` is provided. Image/video and other media bytes are also inaccessible (bots see only the message's `contentType`).

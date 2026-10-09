@@ -37,6 +37,8 @@ export interface Hub {
   setStatus(state: ListenState): void;
   handleMessage(message: Message, kind: "new" | "edit"): void;
   handleRead(chatId: string, position: ReadPosition): void;
+  /** A message was taken back (by its sender or by this account); `chatHint` is where LINE placed it. */
+  handleUnsend(chatHint: string | undefined, messageId: string): void;
   /** Announces (or clears) the newest known release to everyone connected and to later connections. */
   setUpdate(info: UpdateInfo | undefined): void;
   close(): void;
@@ -488,6 +490,15 @@ export function createHub(options: HubOptions): Hub {
       broadcastAll({ type: "status", state });
     },
     handleMessage: ingest,
+    handleUnsend(chatHint, messageId) {
+      // Its picture, video or voice must not stay downloadable either.
+      media.forget(`msg-${messageId}`);
+      const placeholder = store.unsend(messageId, chatHint);
+      if (!placeholder) return;
+      const frame: ServerFrame = { type: "message:unsend", chatId: placeholder.channelId, messageId };
+      broadcast(frame);
+      if (botScope.has(placeholder.channelId)) broadcastBots(frame);
+    },
     handleRead(chatId, position) {
       if (!store.hasChannel(chatId)) return;
       rememberRead(chatId, position);

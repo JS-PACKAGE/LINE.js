@@ -63,6 +63,8 @@ export interface Message {
   /** Id of the message this one answers (LINE "reply"). */
   replyTo?: string;
   decryptFailed?: boolean;
+  /** The sender took the message back: its content is gone and only a placeholder remains. */
+  unsent?: boolean;
 }
 
 export interface Profile {

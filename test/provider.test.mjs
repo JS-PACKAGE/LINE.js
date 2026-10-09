@@ -147,3 +147,26 @@ test("OpenChat history stays current with live and own messages without walking 
   assert.deepEqual(page.messages.map((message) => message.text), ["舊一", "舊二", "即時", "我說的"]);
   assert.equal(walks, 1);
 });
+
+test("talk and OpenChat take-backs reach the hub; malformed ones are dropped, and the media is no longer fetched", async () => {
+  const base = fakeBase();
+  const unsent = [];
+  const storage = { async flush() {}, async get() {}, async set() {} };
+  const provider = new EvexLineProvider(storage, "DESKTOPWIN", {
+    onMessage() {}, onRead() {}, onStatus() {}, onError() {},
+    onUnsend: (chatHint, messageId) => unsent.push([chatHint, messageId]),
+  });
+  provider.listen = () => {};
+  provider.base = base;
+  await provider.activate(base);
+  provider.client.emit("message", talk("700", GROUP_A, mid(2), "", { contentType: "IMAGE" }));
+  await settle();
+  provider.client.emit("event", { type: "NOTIFIED_DESTROY_MESSAGE", param1: GROUP_A, param2: "700" });
+  provider.client.emit("event", { type: 64, param1: GROUP_B, param2: "701" });
+  provider.client.emit("event", { type: 65, param1: "../x", param2: "702" });
+  provider.client.emit("event", { type: 65, param1: GROUP_A, param2: "not-an-id" });
+  provider.client.emit("square:event", { type: "NOTIFIED_DESTROY_MESSAGE", payload: { notifiedDestroyMessage: { squareChatMid: SQUARE, messageId: "703" } } });
+  provider.client.emit("square:event", { type: 5, payload: { notifiedDestroyMessage: { squareChatMid: SQUARE, messageId: "x" } } });
+  assert.deepEqual(unsent, [[GROUP_A, "700"], [GROUP_B, "701"], [SQUARE, "703"]]);
+  assert.equal(await provider.fetchMessageMedia("700"), undefined, "a taken-back picture is not downloaded");
+});

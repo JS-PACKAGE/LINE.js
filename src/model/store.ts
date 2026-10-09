@@ -1,11 +1,25 @@
 import type { Channel, Message } from "./dto.js";
 
+// Ids of messages taken back, remembered so a copy that arrives later (a live event still waiting on a
+// member lookup, a history page) is stored as the placeholder. Message ids are unique across chats.
+const MAX_UNSENT_IDS = 2000;
+
+/** What remains of a message its sender took back: who sent it and when, never the content. */
+function unsentPlaceholder(message: Message): Message {
+  const { messageId, channelId, channelKind, senderId, senderName, senderPictureId, senderRole, contentType, createdAt } = message;
+  return {
+    messageId, channelId, channelKind, senderId, senderName, contentType, createdAt, unsent: true,
+    ...(senderPictureId ? { senderPictureId } : {}), ...(senderRole ? { senderRole } : {}),
+  };
+}
+
 /** In-memory only: messages are never persisted (plan §5). */
 export class ChatStore {
   private channels: Record<string, Channel> = {};
   private messages: Record<string, Message[]> = {};
   // Per chat, messageId → message: duplicate checks and lookups without scanning the list.
   private byId: Record<string, Map<string, Message>> = {};
+  private unsentIds = new Set<string>();
 
   constructor(private readonly perChannelLimit: number) {}
 
@@ -14,6 +28,7 @@ export class ChatStore {
     this.channels = {};
     this.messages = {};
     this.byId = {};
+    this.unsentIds.clear();
   }
 
   setChannels(channels: Channel[]): void {
@@ -48,11 +63,13 @@ export class ChatStore {
   }
 
   /** Returns false when the message is an identical duplicate. */
-  upsert(message: Message, edited: boolean): boolean {
+  upsert(incoming: Message, edited: boolean): boolean {
+    const message = this.unsentIds.has(incoming.messageId) ? unsentPlaceholder(incoming) : incoming;
     const list = this.messages[message.channelId] ?? [];
     const ids = this.byId[message.channelId] ?? new Map<string, Message>();
     if (ids.has(message.messageId)) {
-      if (!edited) return false;
+      // A late edit must not bring back what the sender took back.
+      if (!edited || ids.get(message.messageId)!.unsent) return false;
       const updated = { ...message, editedAt: message.editedAt ?? Date.now() };
       list[list.findIndex((entry) => entry.messageId === message.messageId)] = updated;
       ids.set(message.messageId, updated);
@@ -92,6 +109,28 @@ export class ChatStore {
 
   get(messageId: string, channelId: string): Message | undefined {
     return this.byId[channelId]?.get(messageId);
+  }
+
+  /**
+   * Replaces a message the sender took back with its placeholder. `chatHint` is where LINE says it was;
+   * message ids are unique across chats, so the others are searched when the hint does not match.
+   * Returns the placeholder, or undefined when nothing on record changed.
+   */
+  unsend(messageId: string, chatHint: string | undefined): Message | undefined {
+    this.unsentIds.add(messageId);
+    if (this.unsentIds.size > MAX_UNSENT_IDS) this.unsentIds.delete(this.unsentIds.values().next().value!);
+    const channelId = chatHint !== undefined && this.byId[chatHint]?.has(messageId)
+      ? chatHint
+      : Object.keys(this.byId).find((id) => this.byId[id]!.has(messageId));
+    if (channelId === undefined) return undefined;
+    const ids = this.byId[channelId]!;
+    const known = ids.get(messageId)!;
+    if (known.unsent) return undefined;
+    const placeholder = unsentPlaceholder(known);
+    const list = this.messages[channelId]!;
+    list[list.findIndex((entry) => entry.messageId === messageId)] = placeholder;
+    ids.set(messageId, placeholder);
+    return placeholder;
   }
 
   snapshotChannels(): Channel[] {

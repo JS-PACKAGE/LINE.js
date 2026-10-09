@@ -38,6 +38,28 @@ test("late and same-time messages are slotted in creation order, after equal tim
   assert.deepEqual(store.messagesOf("c1").map((entry) => entry.messageId), ["e", "a", "c", "d", "b", "f"]);
 });
 
+test("a message taken back keeps only who sent it and when, wherever LINE says it was, and stays taken back", () => {
+  const store = new ChatStore(500);
+  store.upsert(message("m1", 10, { mediaId: "msg-m1", contentType: "IMAGE", replyTo: "m0", senderPictureId: "avatar-p-abcdefgh" }), false);
+  const placeholder = store.unsend("m1", "wrong-chat-hint");
+  assert.deepEqual(placeholder, { messageId: "m1", channelId: "c1", channelKind: "group", senderId: "u1", senderName: "小明", contentType: "IMAGE", createdAt: 10, unsent: true, senderPictureId: "avatar-p-abcdefgh" });
+  assert.deepEqual(store.messagesOf("c1"), [placeholder]);
+  assert.equal(store.unsend("m1", "c1"), undefined, "a second notice changes nothing");
+  assert.equal(store.upsert(message("m1", 10, { text: "改過的" }), true), false, "an edit cannot bring it back");
+  assert.equal(store.get("m1", "c1").text, undefined);
+});
+
+test("a message taken back before it arrived is stored as the placeholder", () => {
+  const store = new ChatStore(500);
+  assert.equal(store.unsend("late", "c1"), undefined);
+  assert.equal(store.upsert(message("late", 5), false), true);
+  assert.equal(store.get("late", "c1").unsent, true);
+  assert.equal(store.get("late", "c1").text, undefined);
+  store.clear();
+  store.upsert(message("late", 5), false);
+  assert.equal(store.get("late", "c1").text, "text-late", "a new account starts with no remembered take-backs");
+});
+
 test("a channel discovered only through a live message survives a channel refresh", () => {
   const store = new ChatStore(500);
   store.upsert(message("m1", 100, { channelKind: "user", senderName: "好友" }), false);

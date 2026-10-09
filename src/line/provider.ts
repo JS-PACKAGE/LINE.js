@@ -5,7 +5,7 @@ import type { Message as LineMessage, SquareMessage as LineSquareMessage } from 
 import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
 import type { Channel, ChannelRef, HistoryPage, MemberRole, Mention, Message, Profile, ReadPosition, StickerPackage } from "../model/dto.js";
 import { memberRole, mentionMetadata, replyTarget } from "./members.js";
-import { parseReadOperation, parseReadRanges } from "./read.js";
+import { parseReadOperation, parseReadRanges, parseUnsendOperation } from "./read.js";
 import { parseOwnedProducts, parsePackageMeta, type PackageMeta } from "./stickers.js";
 import { chatEventMids, chatEventText, isChatEvent } from "./chatEvent.js";
 import { SessionStorage } from "./session.js";
@@ -18,6 +18,8 @@ export interface QRCallbacks {
 export interface ProviderEvents {
   onMessage: (message: Message, kind: "new" | "edit") => void;
   onRead: (chatId: string, position: ReadPosition) => void;
+  /** A message was taken back. `chatHint` is where LINE placed it (see parseUnsendOperation). */
+  onUnsend: (chatHint: string, messageId: string) => void;
   onStatus: (state: "listening" | "reconnecting") => void;
   onError: (code: "SESSION_WRITE_FAILED" | "LINE_LISTEN_FAILED" | "MESSAGE_PARSE_FAILED") => void;
 }
@@ -220,11 +222,30 @@ export class EvexLineProvider implements LineProvider {
     client.on("message:edit", (message) => deliver(talkChat(message.raw), "talk", message.raw.from, () => this.talkToMessage(message.raw, profile.userId), "edit"));
     client.on("square:message", (message) => deliver(message.raw.message.to, "square", message.raw.message.from, () => this.squareToMessage(message.raw), "new"));
     client.on("event", (operation) => {
-      if (this.client !== client || !["NOTIFIED_READ_MESSAGE", "55"].includes(String(operation.type))) return;
-      const read = parseReadOperation(operation, profile.userId);
-      if (read) this.events.onRead(read.chatId, read.position);
+      if (this.client !== client) return;
+      const type = String(operation.type);
+      if (type === "NOTIFIED_READ_MESSAGE" || type === "55") {
+        const read = parseReadOperation(operation, profile.userId);
+        if (read) this.events.onRead(read.chatId, read.position);
+      } else if (type === "NOTIFIED_DESTROY_MESSAGE" || type === "65" || type === "DESTROY_MESSAGE" || type === "64") {
+        const unsent = parseUnsendOperation(operation);
+        if (unsent) this.unsent(unsent.chatId, unsent.messageId);
+      }
+    });
+    client.on("square:event", (event) => {
+      if (this.client !== client || !["NOTIFIED_DESTROY_MESSAGE", "5"].includes(String(event.type))) return;
+      const destroyed = event.payload?.notifiedDestroyMessage;
+      if (typeof destroyed?.squareChatMid === "string" && typeof destroyed.messageId === "string" && /^\d{1,24}$/.test(destroyed.messageId)) {
+        this.unsent(destroyed.squareChatMid, destroyed.messageId);
+      }
     });
     this.listen();
+  }
+
+  /** The message's media is no longer fetchable through us, and the hub replaces what it shows. */
+  private unsent(chatHint: string, messageId: string): void {
+    this.mediaOrigins.delete(messageId);
+    this.events.onUnsend(chatHint, messageId);
   }
 
   private listen(): void {

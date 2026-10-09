@@ -52,6 +52,7 @@ npm start
 **其他網頁行為**：
 - **連結**：訊息文字中的 `http://`、`https://` 網址會變成可點的連結，在新分頁開啟（帶 `rel="noopener noreferrer"`，對方網站拿不到本頁，也不會收到 Referer）；句尾標點與多餘的右括號不算進網址，其他協定（如 `ftp://`）不轉連結。伺服器不會去抓取任何網址，也沒有連結預覽卡片（刻意不做：瀏覽器端受 CSP 與 CORS 限制讀不到，伺服器代抓則有 SSRF 與洩露 IP 的風險）。
 - **系統訊息**：LINE 的成員異動事件（`CHATEVENT`，目前支援 `C_MI`）顯示為置中的灰色小膠囊，例如「XX 新增 OO 至群組」；其他未確認含義的事件類型一律顯示「［系統訊息］」佔位，不猜測內容。
+- **收回**：對方（或你在其他裝置上）收回訊息時，該訊息改為「XX 已收回訊息」（自己的顯示「你已收回訊息」），引用它的回覆顯示「［已收回的訊息］」，圖片／影片／語音也不再提供下載；收回通知比訊息本身先到時同樣只顯示佔位。只處理本服務已收過的訊息 id，不依通知內容猜測是哪一則。
 - **斷線覆蓋**：與本機服務的 WebSocket 中斷時，整個畫面會被「與伺服器斷線」覆蓋；恢復後自動移除並重新同步訊息（沿用連線時的完整 snapshot，每個聊天室一個影格，頁面合併後一次重繪）。
 - **手機版**：視窗寬度 ≤ 720px 時，聊天與好友清單收進左側抽屜，由對話標題列左上角的「☰」漢堡按鈕開啟（點背景或按 Esc 關閉，選取聊天室後自動關閉）；尚未選聊天室時預設展開。桌機版面不變。
 
@@ -96,6 +97,7 @@ npm start
 | Server → Client | `channels` | 頻道 snapshot；新增頻道或刷新後重送 |
 | Server → Client | `messages` | 連線時的訊息 snapshot：`{ chatId, messages }`，每個聊天室一個影格（舊訊息，不計未讀） |
 | Server → Client | `message` / `message:edit` | 即時訊息與覆寫既有訊息 |
+| Server → Client | `message:unsend` | `{ chatId, messageId }`：該訊息已被收回，改顯示佔位（`Message.unsent: true`，不含內容） |
 | Server → Client | `status` / `error` | LINE 監聽狀態與 generic 錯誤 |
 | Server → Client | `history` / `sent` | 歷史一頁（含 `cursor`）／發送確認 |
 | Server → Client | `read` | 他人已讀位置（開啟聊天的快照與即時增量） |
@@ -140,7 +142,7 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 | 服務 → 機器人 | `hello`、`auth:state`、`status` | 連線即送；`auth:state` 不是 `ready`（LINE 尚未登入）時還不能收發 |
 | 服務 → 機器人 | `auth:ready` | 含自己的 `profile.userId`，用來略過自己發的訊息（你在手機上發的也會是這個 id） |
 | 服務 → 機器人 | `channels` | 只含 `api.chats` 內的聊天室；有變動時重送 |
-| 服務 → 機器人 | `message`、`message:edit` | 只有 `api.chats` 內聊天室的**即時**訊息；包含你自己發的 |
+| 服務 → 機器人 | `message`、`message:edit`、`message:unsend` | 只有 `api.chats` 內聊天室的**即時**訊息、編輯與收回；包含你自己發的 |
 | 服務 → 機器人 | `sent`、`history`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`…） |
 
 其餘一律回 `UNKNOWN_TYPE`：沒有登入／登出、`chat:read`（已讀回報）、`channels:refresh`、貼圖清單、Token 管理。**不重播舊訊息**（機器人從「現在」開始，不會重複回應歷史；要歷史請用 `history:fetch`）；不給 `read`、`update:available`、`api:state`；圖片／影片等媒體位元組也無法取得（機器人只看到訊息的 `contentType`）。

@@ -18,6 +18,8 @@ export type ServerFrame =
   /** Connect-time snapshot of one chat's cached messages, oldest first. Old news: never counted as unread. */
   | { type: "messages"; chatId: string; messages: readonly Message[] }
   | { type: "message:edit"; message: Message }
+  /** The sender took a message back: show a placeholder instead of its content. */
+  | { type: "message:unsend"; chatId: string; messageId: string }
   | { type: "status"; state: ListenState }
   | { type: "history"; requestId: string; chatId: string; messages: Message[]; hasMore: boolean; cursor?: string }
   | { type: "sent"; requestId: string; messageId: string }

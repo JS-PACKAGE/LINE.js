@@ -278,10 +278,10 @@ function scrollToLatest(): void {
 }
 
 function messageBody(message: Message): HTMLElement {
-  if (message.decryptFailed) {
+  if (message.decryptFailed || message.unsent) {
     const body = document.createElement("p");
     body.className = "placeholder";
-    body.textContent = "無法解密此訊息";
+    body.textContent = message.unsent ? (message.senderId === myUserId ? "你已收回訊息" : `${message.senderName} 已收回訊息`) : "無法解密此訊息";
     return body;
   }
   const media = message.mediaId ? mediaElement(message.contentType, message.mediaId, keepPinned) : undefined;
@@ -337,6 +337,7 @@ function readLabels(channelId: string, list: readonly Message[]): (string | unde
 
 /** One-line text for quoting a message: its text, or the label of what it carries. */
 function previewOf(message: Message): string {
+  if (message.unsent) return "［已收回的訊息］";
   const text = message.text?.replace(/\s+/g, " ").trim();
   return text ? (text.length > 60 ? `${text.slice(0, 60)}…` : text) : `［${CONTENT_LABEL[message.contentType] ?? "訊息"}］`;
 }
@@ -348,8 +349,8 @@ function taggable(message: Message): boolean {
 
 function openMessageMenu(message: Message, x: number, y: number): void {
   const items: MenuItem[] = [];
-  // Replies point at LINE's numeric message id; local placeholders have none yet.
-  if (/^\d{1,24}$/.test(message.messageId)) {
+  // Replies point at LINE's numeric message id; local placeholders have none yet, and a message taken back cannot be answered.
+  if (!message.unsent && /^\d{1,24}$/.test(message.messageId)) {
     items.push({ label: "回覆", action: () => composer.setReply({ messageId: message.messageId, senderName: message.senderName, preview: previewOf(message) }) });
   }
   if (taggable(message)) items.push({ label: `@ 提及 ${message.senderName}`, action: () => composer.insertMention({ userId: message.senderId, name: message.senderName }) });
@@ -712,6 +713,16 @@ async function handle(frame: ServerFrame): Promise<void> {
         liveCounted.add(message.channelId);
       }
       scheduleChannels();
+      return;
+    }
+    case "message:unsend": {
+      const list = messages[frame.chatId] ?? [];
+      const index = list.findIndex((entry) => entry.messageId === frame.messageId);
+      if (index < 0) return;
+      // Keep who sent it and when; the content is gone.
+      const { text: _text, mediaId: _media, replyTo: _reply, editedAt: _edited, decryptFailed: _unreadable, ...kept } = list[index]!;
+      list[index] = { ...kept, unsent: true };
+      if (frame.chatId === selected) renderMessages("keep");
       return;
     }
     case "messages":

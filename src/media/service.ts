@@ -119,6 +119,14 @@ export class MediaService {
     for (const [id, entry] of this.uploads) if (entry.expires <= now) this.uploads.delete(id);
   }
 
+  /** Drops one cached item (a message taken back must not stay downloadable). */
+  forget(id: string): void {
+    const entry = this.cache.get(id);
+    if (!entry) return;
+    this.cache.delete(id);
+    this.size -= entry.bytes.length;
+  }
+
   clear(): void {
     this.cache.clear();
     this.uploads.clear();
