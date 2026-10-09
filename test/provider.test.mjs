@@ -213,3 +213,61 @@ test("taking back calls talk or OpenChat unsend the way linejs' own unsend() doe
   assert.deepEqual(calls, [["talk", { messageId: "950" }], ["square", { messageId: "951", squareChatMid: SQUARE }]]);
   assert.equal(await provider.fetchMessageMedia("950"), undefined);
 });
+
+test("talk history: an undecryptable message is a placeholder, decrypted ones keep text and reply, and the cursor's own message is not repeated", async () => {
+  const requests = [];
+  const at = (id) => String(1_700_000_000_000 + id);
+  const e2ee = (id, extra = {}) => ({ id: String(id), to: GROUP_A, from: mid(2), toType: "GROUP", contentType: "NONE", createdTime: at(id), deliveredTime: at(id), contentMetadata: { e2eeVersion: "2" }, chunks: ["密文"], ...extra });
+  const base = fakeBase({
+    talk: {
+      async getRecentMessagesV2(request) {
+        requests.push(request.messagesCount);
+        return [
+          e2ee(3, { messageRelationType: "REPLY", relatedMessageId: "2" }),
+          e2ee(2),
+          { ...e2ee(1, { contentMetadata: {}, chunks: undefined, text: "明文", messageRelationType: 3, relatedMessageId: "../x" }) },
+        ];
+      },
+      async getPreviousMessagesV2WithRequest({ request }) {
+        requests.push(request.messagesCount);
+        return [{ ...e2ee(1, { contentMetadata: {}, chunks: undefined, text: "明文" }) }, e2ee(0, { contentMetadata: {}, chunks: undefined, text: "更早" })];
+      },
+    },
+  });
+  base.e2ee = {
+    async decryptE2EEMessage(raw) {
+      if (raw.id === "2") throw new Error("no key");
+      return { ...raw, text: "解開了" };
+    },
+  };
+  const { provider } = await activeProvider(base);
+  const channel = { channelId: GROUP_A, kind: "group" };
+  const page = await provider.fetchHistory(channel, 3);
+  assert.deepEqual(page.messages.map((message) => [message.messageId, message.text, message.decryptFailed, message.replyTo]), [
+    ["1", "明文", undefined, undefined],
+    ["2", undefined, true, undefined],
+    ["3", "解開了", undefined, "2"],
+  ]);
+  assert.equal(page.hasMore, true);
+  assert.equal(page.cursor, `${at(1)}:1`);
+  const older = await provider.fetchHistory(channel, 3, page.cursor);
+  assert.deepEqual(older.messages.map((message) => message.text), ["更早"]);
+  assert.equal(older.hasMore, false);
+  assert.deepEqual(requests, [3, 4]);
+});
+
+test("received stickers become sticker media ids only for numeric ids; animated ones are marked", async () => {
+  const { received, emit } = await activeProvider(fakeBase());
+  const sticker = (id, metadata) => talk(id, GROUP_A, mid(2), undefined, { contentType: "STICKER", contentMetadata: { STKPKGID: "1", ...metadata } });
+  emit("message", sticker("961", { STKID: "52002734" }));
+  emit("message", sticker("962", { STKID: "52002735", STKOPT: "A" }));
+  emit("message", sticker("963", { STKID: "../../session" }));
+  emit("message", sticker("964", {}));
+  await settle();
+  assert.deepEqual(received.map(({ message }) => [message.contentType, message.mediaId]), [
+    ["STICKER", "sticker-52002734"],
+    ["STICKER", "sticker-52002735-a"],
+    ["STICKER", undefined],
+    ["STICKER", undefined],
+  ]);
+});
