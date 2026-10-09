@@ -8,7 +8,7 @@ import { createAvatar } from "./avatar.js";
 import { mediaElement } from "./media.js";
 import { linkifiedNodes } from "./links.js";
 import { createRoleBadge } from "./badge.js";
-import { showMenu, type MenuItem } from "./menu.js";
+import { enableLongPress, showMenu, type MenuItem } from "./menu.js";
 import { registerServiceWorker } from "./pwa.js";
 import { createUpdateNotice } from "./update.js";
 import { copyImage, downloadMedia } from "./save.js";
@@ -564,6 +564,10 @@ function messageAt(target: EventTarget | null): Message | undefined {
   const id = (target as Element | null)?.closest<HTMLElement>(".message")?.dataset.messageId;
   return id ? rendered.get(id)?.message : undefined;
 }
+
+// Touch screens open the same menus with a long press.
+enableLongPress(messageList);
+enableLongPress(channelList);
 
 messageList.addEventListener("contextmenu", (event) => {
   const message = messageAt(event.target);

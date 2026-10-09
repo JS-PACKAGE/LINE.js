@@ -68,3 +68,43 @@ export function showMenu(x: number, y: number, items: MenuItem[]): void {
   document.addEventListener("scroll", close, true);
   closeCurrent = close;
 }
+
+const LONG_PRESS_MS = 500;
+const MOVE_TOLERANCE_PX = 10;
+
+/**
+ * Touch screens have no right click, and iOS fires no `contextmenu` on a long press: holding a finger
+ * still on something inside `container` sends it the same `contextmenu` a right click would, so the
+ * usual menu opens. Moving (scrolling) cancels it, and the click that lifting the finger makes is dropped.
+ */
+export function enableLongPress(container: HTMLElement): void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let start: { x: number; y: number; target: EventTarget | null } | undefined;
+  let fired = false;
+  const cancel = (): void => {
+    clearTimeout(timer);
+    start = undefined;
+  };
+  container.addEventListener("pointerdown", (event) => {
+    cancel();
+    fired = false;
+    if (event.pointerType !== "touch") return;
+    const pressed = { x: event.clientX, y: event.clientY, target: event.target };
+    start = pressed;
+    timer = setTimeout(() => {
+      fired = true;
+      start = undefined;
+      pressed.target?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: pressed.x, clientY: pressed.y }));
+    }, LONG_PRESS_MS);
+  });
+  container.addEventListener("pointermove", (event) => {
+    if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > MOVE_TOLERANCE_PX) cancel();
+  });
+  for (const type of ["pointerup", "pointercancel"] as const) container.addEventListener(type, cancel);
+  container.addEventListener("click", (event) => {
+    if (!fired) return;
+    fired = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+}
