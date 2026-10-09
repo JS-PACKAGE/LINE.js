@@ -177,47 +177,54 @@ function renderTabs(): void {
   chatsUnread.textContent = total > 99 ? "99+" : String(total);
 }
 
+// Drawn channel rows, reused while the channel, its badge and the tab are unchanged.
+const channelRows = new Map<string, { node: HTMLLIElement; channel: Channel; count: number | undefined; tab: "chats" | "friends" }>();
+
+function channelRow(channel: Channel, count: number | undefined): HTMLLIElement {
+  const item = document.createElement("li");
+  item.role = "option";
+  item.tabIndex = 0;
+  item.dataset.channelId = channel.channelId;
+  const name = document.createElement("span");
+  name.className = "channel-name";
+  name.textContent = channel.name;
+  item.append(createAvatar(channel.pictureId, channel.name), name);
+  if (tab === "chats") {
+    const kind = document.createElement("small");
+    kind.textContent = KIND_LABEL[channel.kind] + (channel.memberCount ? ` · ${channel.memberCount} 人` : "");
+    item.append(kind);
+  }
+  if (count) {
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = count > 99 ? "99+" : String(count);
+    item.append(badge);
+  }
+  return item;
+}
+
 function renderChannels(): void {
   const keyword = filter.value.trim().toLocaleLowerCase();
   const inTab = channels.filter((channel) => (tab === "friends" ? channel.kind === "user" : hasConversation(channel)));
   const visible = inTab.filter((channel) => channel.name.toLocaleLowerCase().includes(keyword));
   // Conversations keep the server's activity order; the friend list reads alphabetically.
   if (tab === "friends") visible.sort((a, b) => a.name.localeCompare(b.name, "zh-TW"));
-  channelList.replaceChildren(...visible.map((channel) => {
-    const item = document.createElement("li");
-    item.role = "option";
-    item.tabIndex = 0;
-    item.dataset.channelId = channel.channelId;
-    item.ariaSelected = String(channel.channelId === selected);
-    const name = document.createElement("span");
-    name.className = "channel-name";
-    name.textContent = channel.name;
-    item.addEventListener("contextmenu", (event) => {
-      event.preventDefault();
-      showMenu(event.clientX, event.clientY, [{
-        label: "顯示頻道 ID",
-        action: () => {
-          void confirmDialog({ title: channel.name, message: channel.channelId, confirmLabel: "複製 ID", cancelLabel: "關閉" }).then((copy) => {
-            if (copy) void navigator.clipboard?.writeText(channel.channelId).catch(() => {});
-          });
-        },
-      }]);
-    });
-    item.append(createAvatar(channel.pictureId, channel.name), name);
-    if (tab === "chats") {
-      const kind = document.createElement("small");
-      kind.textContent = KIND_LABEL[channel.kind] + (channel.memberCount ? ` · ${channel.memberCount} 人` : "");
-      item.append(kind);
-    }
+  const nodes = visible.map((channel) => {
     const count = unread[channel.channelId];
-    if (count) {
-      const badge = document.createElement("span");
-      badge.className = "badge";
-      badge.textContent = count > 99 ? "99+" : String(count);
-      item.append(badge);
+    let row = channelRows.get(channel.channelId);
+    if (!row || row.channel !== channel || row.count !== count || row.tab !== tab) {
+      row = { node: channelRow(channel, count), channel, count, tab };
+      channelRows.set(channel.channelId, row);
     }
-    return item;
-  }));
+    row.node.ariaSelected = String(channel.channelId === selected);
+    return row.node;
+  });
+  // Rows of channels that are gone (logout, another account) are not kept around.
+  if (channelRows.size > channels.length) {
+    const current = new Set(channels.map((channel) => channel.channelId));
+    for (const id of channelRows.keys()) if (!current.has(id)) channelRows.delete(id);
+  }
+  reconcile(channelList, nodes);
   filter.placeholder = tab === "friends" ? "搜尋好友" : "搜尋聊天";
   channelList.ariaLabel = tab === "friends" ? "好友" : "聊天";
   channelsEmpty.hidden = visible.length > 0;
@@ -226,6 +233,21 @@ function renderChannels(): void {
   else channelsEmpty.textContent = tab === "friends" ? "尚無好友。" : "尚無聊天。";
   renderTabs();
 }
+
+channelList.addEventListener("contextmenu", (event) => {
+  const id = (event.target as Element).closest<HTMLElement>("li")?.dataset.channelId;
+  const channel = channels.find((entry) => entry.channelId === id);
+  if (!channel) return;
+  event.preventDefault();
+  showMenu(event.clientX, event.clientY, [{
+    label: "顯示頻道 ID",
+    action: () => {
+      void confirmDialog({ title: channel.name, message: channel.channelId, confirmLabel: "複製 ID", cancelLabel: "關閉" }).then((copy) => {
+        if (copy) void navigator.clipboard?.writeText(channel.channelId).catch(() => {});
+      });
+    },
+  }]);
+});
 
 // Bursts of frames (a reconnect snapshot, a busy group) rebuild the channel list once per frame drawn.
 let channelsScheduled = false;
@@ -290,18 +312,25 @@ function messageBody(message: Message): HTMLElement {
   return body;
 }
 
-/** How many other members have read one of my own messages; undefined where receipts do not apply. */
-function readCount(message: Message): number | undefined {
-  if (message.senderId !== myUserId || message.channelKind === "square" || !/^\d{1,20}$/.test(message.messageId)) return undefined;
-  const id = BigInt(message.messageId);
-  return Object.values(readPositions[message.channelId] ?? {}).filter((position) => position >= id).length;
-}
-
-/** "已讀" (1:1) or "已讀 N" (groups) under each of my messages that someone has read. */
-function readLabels(list: Message[]): (string | undefined)[] {
+/**
+ * "已讀" (1:1) or "已讀 N" (groups) under each of my messages that someone has read; undefined where
+ * receipts do not apply. Readers' positions are sorted once, then each message is a binary search.
+ */
+function readLabels(channelId: string, list: readonly Message[]): (string | undefined)[] {
+  const positions = Object.values(readPositions[channelId] ?? {}).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   return list.map((message) => {
-    const count = readCount(message);
-    if (!count) return undefined;
+    if (positions.length === 0 || message.senderId !== myUserId || message.channelKind === "square" || !/^\d{1,20}$/.test(message.messageId)) return undefined;
+    const id = BigInt(message.messageId);
+    // First reader position at or past this message: everyone from there on has read it.
+    let low = 0;
+    let high = positions.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (positions[middle]! < id) low = middle + 1;
+      else high = middle;
+    }
+    const count = positions.length - low;
+    if (count === 0) return undefined;
     return message.channelKind === "user" ? "已讀" : `已讀 ${count}`;
   });
 }
@@ -337,39 +366,38 @@ function openMessageMenu(message: Message, x: number, y: number): void {
   showMenu(x, y, items);
 }
 
-function quoteNode(message: Message): HTMLElement {
-  const original = (messages[message.channelId] ?? []).find((entry) => entry.messageId === message.replyTo);
+function quoteNode(message: Message, original: Message | undefined): HTMLElement {
   const quote = document.createElement("button");
   quote.type = "button";
   quote.className = "reply-quote";
   quote.textContent = original ? `${original.senderName}：${previewOf(original)}` : "回覆一則較早的訊息";
   quote.disabled = !original;
-  quote.addEventListener("click", () => {
-    const target = [...messageList.querySelectorAll<HTMLElement>(".message")].find((node) => node.dataset.messageId === message.replyTo);
-    if (!target) return;
-    target.scrollIntoView({ block: "center", behavior: "smooth" });
-    target.classList.add("flash");
-    setTimeout(() => target.classList.remove("flash"), 1500);
-  });
+  quote.dataset.replyTo = message.replyTo;
   return quote;
 }
 
-function messageNode(message: Message, previous: Message | undefined, readLabel: string | undefined): HTMLElement {
+/** A drawn message and what it was drawn from: the node is reused while none of these change. */
+interface RenderedMessage {
+  node: HTMLElement;
+  message: Message;
+  continued: boolean;
+  quoted: Message | undefined;
+  /** The read label slot, updated in place (receipts change far more often than messages). */
+  read: HTMLElement | undefined;
+}
+
+function messageNode(message: Message, continued: boolean, quoted: Message | undefined): RenderedMessage {
   if (message.contentType === "CHATEVENT" && message.text) {
     const notice = document.createElement("p");
     notice.className = "system-event";
     notice.dataset.messageId = message.messageId;
     notice.textContent = message.text;
-    return notice;
+    return { node: notice, message, continued, quoted, read: undefined };
   }
-  const continued = previous?.contentType !== "CHATEVENT" && previous?.senderId === message.senderId && message.createdAt - previous.createdAt < CONTINUE_WITHIN_MS;
+  // Menus, mentions and quote jumps are handled by delegated listeners on the message list.
   const item = document.createElement("article");
   item.className = continued ? "message continued" : "message";
   item.dataset.messageId = message.messageId;
-  item.addEventListener("contextmenu", (event) => {
-    event.preventDefault();
-    openMessageMenu(message, event.clientX, event.clientY);
-  });
   const main = document.createElement("div");
   main.className = "message-main";
   const when = formatTime(message.createdAt) + (message.editedAt ? "（已編輯）" : "");
@@ -379,17 +407,10 @@ function messageNode(message: Message, previous: Message | undefined, readLabel:
     sender.textContent = message.senderName;
     if (taggable(message)) {
       // Clicking another person's name tags them in the composer.
-      const tag = (): void => composer.insertMention({ userId: message.senderId, name: message.senderName });
       sender.className = "mentionable";
       sender.role = "button";
       sender.tabIndex = 0;
       sender.title = `@ 提及 ${message.senderName}`;
-      sender.addEventListener("click", tag);
-      sender.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        tag();
-      });
     }
     head.append(sender);
     if (message.senderRole) head.append(createRoleBadge(message.senderRole));
@@ -399,34 +420,101 @@ function messageNode(message: Message, previous: Message | undefined, readLabel:
     // Same sender just above: no repeated avatar or name.
     item.append(document.createElement("span"));
   }
-  // The time sits after the message, like LINE does.
-  if (message.replyTo) main.append(quoteNode(message));
+  if (message.replyTo) main.append(quoteNode(message, quoted));
   const row = document.createElement("div");
   row.className = "message-row";
   const meta = document.createElement("div");
   meta.className = "message-meta";
-  if (readLabel) {
-    const read = document.createElement("small");
-    read.className = "read-state";
-    read.textContent = readLabel;
-    meta.append(read);
-  }
+  const read = document.createElement("small");
+  read.className = "read-state";
+  read.hidden = true;
+  // The time sits after the message, like LINE does.
   const time = document.createElement("time");
   time.textContent = when;
-  meta.append(time);
+  meta.append(read, time);
   row.append(messageBody(message), meta);
   main.append(row);
   item.append(main);
-  return item;
+  return { node: item, message, continued, quoted, read };
 }
+
+/**
+ * Puts exactly `nodes` into `parent`, in order, touching only what changed. Nodes already in place stay
+ * attached, so a playing video or voice message keeps playing and loaded pictures are not reloaded.
+ */
+function reconcile(parent: HTMLElement, nodes: readonly Node[]): void {
+  const keep = new Set(nodes);
+  for (const child of [...parent.childNodes]) if (!keep.has(child)) child.remove();
+  let cursor = parent.firstChild;
+  for (const node of nodes) {
+    if (node === cursor) cursor = cursor.nextSibling;
+    else parent.insertBefore(node, cursor);
+  }
+}
+
+// What is on screen for the open chat, keyed by message id; dropped when another chat is opened.
+let rendered = new Map<string, RenderedMessage>();
+let renderedChannel: string | undefined;
+const historyMarker = document.createElement("div");
+historyMarker.className = "history-note";
+const historyRetry = document.createElement("button");
+historyRetry.type = "button";
+historyRetry.className = "ghost";
+historyRetry.textContent = "載入失敗，點此重試";
+historyRetry.addEventListener("click", () => { if (selected) requestHistory(selected); });
+const unreadDivider = document.createElement("div");
+unreadDivider.className = "unread-divider";
+
+/** The message drawn at (or around) an event target in the open chat. */
+function messageAt(target: EventTarget | null): Message | undefined {
+  const id = (target as Element | null)?.closest<HTMLElement>(".message")?.dataset.messageId;
+  return id ? rendered.get(id)?.message : undefined;
+}
+
+messageList.addEventListener("contextmenu", (event) => {
+  const message = messageAt(event.target);
+  if (!message) return;
+  event.preventDefault();
+  openMessageMenu(message, event.clientX, event.clientY);
+});
+messageList.addEventListener("click", (event) => {
+  const target = event.target as Element;
+  const quote = target.closest<HTMLElement>(".reply-quote");
+  if (quote) {
+    const original = quote.dataset.replyTo ? rendered.get(quote.dataset.replyTo)?.node : undefined;
+    if (!original) return;
+    original.scrollIntoView({ block: "center", behavior: "smooth" });
+    original.classList.add("flash");
+    setTimeout(() => original.classList.remove("flash"), 1500);
+    return;
+  }
+  const message = target.closest(".mentionable") ? messageAt(target) : undefined;
+  if (message) composer.insertMention({ userId: message.senderId, name: message.senderName });
+});
+messageList.addEventListener("keydown", (event) => {
+  if ((event.key !== "Enter" && event.key !== " ") || !(event.target as Element).closest(".mentionable")) return;
+  const message = messageAt(event.target);
+  if (!message) return;
+  event.preventDefault();
+  composer.insertMention({ userId: message.senderId, name: message.senderName });
+});
 
 function renderMessages(anchor: "bottom" | "keep" | "prepend" = "bottom"): void {
   const channel = channels.find((entry) => entry.channelId === selected);
   channelTitle.textContent = channel?.name ?? "選擇一個聊天室";
-  channelAvatar.replaceChildren(...(channel ? [createAvatar(channel.pictureId, channel.name, { zoomable: true })] : []));
+  // The header avatar is redrawn only when it would look different.
+  const avatarKey = channel ? `${channel.channelId}\n${channel.pictureId ?? ""}\n${channel.name}` : "";
+  if (channelAvatar.dataset.key !== avatarKey) {
+    channelAvatar.dataset.key = avatarKey;
+    channelAvatar.replaceChildren(...(channel ? [createAvatar(channel.pictureId, channel.name, { zoomable: true })] : []));
+  }
   channelMeta.textContent = channel ? KIND_LABEL[channel.kind] : "";
   const list = selected ? (messages[selected] ?? []) : [];
   const state = selected ? historyOf[selected] : undefined;
+  if (renderedChannel !== selected) {
+    rendered = new Map();
+    renderedChannel = selected;
+  }
   const previousHeight = messageList.scrollHeight;
   const previousTop = messageList.scrollTop;
   // Re-renders that add a line (a read label, a divider) must not push the newest message out of view.
@@ -438,36 +526,41 @@ function renderMessages(anchor: "bottom" | "keep" | "prepend" = "bottom"): void 
     else if (state?.loading || !state?.loaded) empty.textContent = state?.failed ? "無法載入歷史訊息。" : "載入訊息中…";
     else empty.textContent = "這個聊天室還沒有訊息。";
     messageList.replaceChildren(empty);
+    rendered = new Map();
     return;
   }
-  const nodes: HTMLElement[] = [];
+  const nodes: Node[] = [];
   if (state) {
-    const marker = document.createElement("div");
-    marker.className = "history-note";
-    if (state.loading) marker.textContent = "載入更早的訊息…";
-    else if (state.failed) {
-      const retry = document.createElement("button");
-      retry.type = "button";
-      retry.className = "ghost";
-      retry.textContent = "載入失敗，點此重試";
-      retry.addEventListener("click", () => { if (selected) requestHistory(selected); });
-      marker.append(retry);
-    } else if (state.hasMore) marker.textContent = "向上捲動以載入更早的訊息";
-    else marker.textContent = "— 已經是最早的訊息 —";
-    nodes.push(marker);
+    if (state.loading) historyMarker.textContent = "載入更早的訊息…";
+    else if (state.failed) historyMarker.replaceChildren(historyRetry);
+    else if (state.hasMore) historyMarker.textContent = "向上捲動以載入更早的訊息";
+    else historyMarker.textContent = "— 已經是最早的訊息 —";
+    nodes.push(historyMarker);
   }
-  const labels = readLabels(list);
+  const byId = new Map(list.map((message) => [message.messageId, message]));
+  const labels = readLabels(channel.channelId, list);
   const divider = unreadFrom?.channelId === selected ? unreadFrom : undefined;
+  const next = new Map<string, RenderedMessage>();
   list.forEach((message, index) => {
     if (divider?.messageId === message.messageId) {
-      const line = document.createElement("div");
-      line.className = "unread-divider";
-      line.textContent = `${divider.count} 則未讀訊息`;
-      nodes.push(line);
+      unreadDivider.textContent = `${divider.count} 則未讀訊息`;
+      nodes.push(unreadDivider);
     }
-    nodes.push(messageNode(message, list[index - 1], labels[index]));
+    const previous = list[index - 1];
+    const continued = previous !== undefined && previous.contentType !== "CHATEVENT" && previous.senderId === message.senderId && message.createdAt - previous.createdAt < CONTINUE_WITHIN_MS;
+    const quoted = message.replyTo ? byId.get(message.replyTo) : undefined;
+    const known = rendered.get(message.messageId);
+    const entry = known && known.message === message && known.continued === continued && known.quoted === quoted ? known : messageNode(message, continued, quoted);
+    if (entry.read) {
+      const label = labels[index];
+      entry.read.hidden = label === undefined;
+      if (entry.read.textContent !== (label ?? "")) entry.read.textContent = label ?? "";
+    }
+    next.set(message.messageId, entry);
+    nodes.push(entry.node);
   });
-  messageList.replaceChildren(...nodes);
+  rendered = next;
+  reconcile(messageList, nodes);
   if (anchor === "bottom" || (anchor === "keep" && atBottom)) messageList.scrollTop = messageList.scrollHeight;
   // Older messages were inserted above: keep what the reader was looking at in place.
   else if (anchor === "prepend") messageList.scrollTop = previousTop + (messageList.scrollHeight - previousHeight);
@@ -723,7 +816,7 @@ start.addEventListener("click", () => {
   send({ type: "auth:start" });
 });
 
-filter.addEventListener("input", renderChannels);
+filter.addEventListener("input", scheduleChannels);
 
 function switchTab(next: "chats" | "friends"): void {
   if (tab === next) return;
