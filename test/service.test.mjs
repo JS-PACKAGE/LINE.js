@@ -99,3 +99,43 @@ test("a garbage pid file and unknown commands are handled", { skip }, async (t) 
   }
   assert.equal((await helper("bogus")).status, 2);
 });
+
+/** Writes package-lock.json with the given entries and installs `installed` ({ path: version }) on top of what is there. */
+async function dependencies(root, packages, installed) {
+  await writeFile(join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: { "": {}, ...packages } }));
+  for (const [path, version] of Object.entries(installed)) {
+    await mkdir(join(root, path), { recursive: true });
+    await writeFile(join(root, path, "package.json"), JSON.stringify({ version }));
+  }
+}
+
+test("deps reports missing and mismatched packages, accepting versions npm cleaned up", async (t) => {
+  const { root, helper } = await project(t);
+  const lock = { "node_modules/a": { version: "1.2.2" }, "node_modules/b": { version: "2.0.0" } };
+  await dependencies(root, lock, { "node_modules/a": "v1.2.2" });
+  const missing = await helper("deps");
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /缺少 node_modules\/b/);
+  await dependencies(root, lock, { "node_modules/b": "1.9.0" });
+  const stale = await helper("deps");
+  assert.equal(stale.status, 1);
+  assert.match(stale.stderr, /node_modules\/b 版本為 1\.9\.0，應為 2\.0\.0/);
+  await dependencies(root, lock, { "node_modules/b": "2.0.0" });
+  assert.equal((await helper("deps")).status, 0);
+});
+
+test("deps requires the optional build for this platform and ignores other platforms' builds", async (t) => {
+  const { root, helper } = await project(t);
+  const lock = {
+    "node_modules/tool": { version: "1.0.0" },
+    "node_modules/@tool/here": { version: "1.0.0", optional: true, os: [process.platform], cpu: [process.arch] },
+    "node_modules/@tool/elsewhere": { version: "1.0.0", optional: true, os: [`!${process.platform}`] },
+    "node_modules/maybe": { version: "1.0.0", optional: true },
+  };
+  await dependencies(root, lock, { "node_modules/tool": "1.0.0" });
+  const missing = await helper("deps");
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /缺少 node_modules\/@tool\/here/);
+  await dependencies(root, lock, { "node_modules/@tool/here": "1.0.0" });
+  assert.equal((await helper("deps")).status, 0);
+});
