@@ -32,6 +32,11 @@ const channelTitle = $<HTMLHeadingElement>("#channel-title");
 const channelAvatar = $<HTMLSpanElement>("#channel-avatar");
 const channelMeta = $<HTMLSpanElement>("#channel-meta");
 const messageList = $<HTMLDivElement>("#messages");
+const searchToggle = $<HTMLButtonElement>("#search-toggle");
+const searchBar = $<HTMLDivElement>("#search-bar");
+const messageSearch = $<HTMLInputElement>("#message-search");
+const searchCount = $<HTMLSpanElement>("#search-count");
+const searchClose = $<HTMLButtonElement>("#search-close");
 const logoutButton = $<HTMLButtonElement>("#logout");
 const tabChats = $<HTMLButtonElement>("#tab-chats");
 const tabFriends = $<HTMLButtonElement>("#tab-friends");
@@ -86,6 +91,11 @@ let reportedRead: Record<string, bigint> = {};
 // True while the page and the service speak incompatible protocols: no frame but the next hello is trusted.
 let halted = false;
 let readTimer: ReturnType<typeof setTimeout> | undefined;
+
+// Searching looks through what is already loaded (every chat's messages) and jumps to a hit on click.
+let searching = false;
+let searchQuery = "";
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
 interface HistoryState { cursor?: string; hasMore: boolean; loading: boolean; loaded: boolean; failed: boolean }
 let historyOf: Record<string, HistoryState> = {};
@@ -280,20 +290,44 @@ function scrollToLatest(): void {
   requestAnimationFrame(keepPinned);
 }
 
-/** Tagged people stand out, and so does a tag that means you (by name or "@All"); the rest gets links. */
-function textNodes(text: string, mentions: readonly TextMention[]): Node[] {
+/**
+ * Message text as DOM: mention ranges become tags, search hits become <mark>, the rest keeps links.
+ * `hit` (a lower-cased query) only highlights when searching.
+ */
+function decorate(text: string, mentions: readonly TextMention[], hit: string): Node[] {
   const nodes: Node[] = [];
+  const emit = (part: string, mention?: TextMention): void => {
+    if (part === "") return;
+    if (mention) {
+      const tag = document.createElement("span");
+      tag.className = mention.userId === undefined || mention.userId === myUserId ? "mention mention-me" : "mention";
+      tag.textContent = part;
+      nodes.push(tag);
+      return;
+    }
+    if (hit) {
+      const lower = part.toLocaleLowerCase();
+      let at = 0;
+      for (let found = lower.indexOf(hit); found !== -1; found = lower.indexOf(hit, found + hit.length)) {
+        nodes.push(...linkifiedNodes(part.slice(at, found)));
+        const mark = document.createElement("mark");
+        mark.textContent = part.slice(found, found + hit.length);
+        nodes.push(mark);
+        at = found + hit.length;
+      }
+      nodes.push(...linkifiedNodes(part.slice(at)));
+      return;
+    }
+    nodes.push(...linkifiedNodes(part));
+  };
   let at = 0;
   for (const mention of mentions) {
     if (mention.start < at || mention.end > text.length) continue;
-    nodes.push(...linkifiedNodes(text.slice(at, mention.start)));
-    const tag = document.createElement("span");
-    tag.className = mention.userId === undefined || mention.userId === myUserId ? "mention mention-me" : "mention";
-    tag.textContent = text.slice(mention.start, mention.end);
-    nodes.push(tag);
+    emit(text.slice(at, mention.start));
+    emit(text.slice(mention.start, mention.end), mention);
     at = mention.end;
   }
-  nodes.push(...linkifiedNodes(text.slice(at)));
+  emit(text.slice(at));
   return nodes;
 }
 
@@ -325,7 +359,7 @@ function messageBody(message: Message): HTMLElement {
   if (message.card) return cardNode(message.card);
   const body = document.createElement("p");
   if (message.text) {
-    body.append(...textNodes(message.text, message.mentions ?? []));
+    body.append(...decorate(message.text, message.mentions ?? [], ""));
   } else {
     body.className = "placeholder";
     body.textContent = `［${CONTENT_LABEL[message.contentType] ?? "不支援的內容"}］`;
@@ -398,6 +432,123 @@ function readLabels(channelId: string, list: readonly Message[]): (string | unde
     return message.channelKind === "user" ? "已讀" : `已讀 ${count}`;
   });
 }
+
+// ---- Search over loaded messages -------------------------------------------------------
+
+interface SearchHit {
+  message: Message;
+  channel: Channel | undefined;
+}
+
+function searchHits(): SearchHit[] {
+  const query = searchQuery.trim().toLocaleLowerCase();
+  if (query === "") return [];
+  const hits: SearchHit[] = [];
+  for (const [channelId, list] of Object.entries(messages)) {
+    const channel = channels.find((entry) => entry.channelId === channelId);
+    for (const message of list) {
+      const sender = message.senderName.toLocaleLowerCase();
+      const body = (message.text ?? (message.card ? cardTitle(message.card) : "")).toLocaleLowerCase();
+      if (sender.includes(query) || body.includes(query)) hits.push({ message, channel });
+    }
+  }
+  return hits.reverse();
+}
+
+function jumpToMessage(message: Message): void {
+  closeSearch();
+  if (selected !== message.channelId) openChat(message.channelId);
+  const find = (): HTMLElement | undefined =>
+    [...messageList.querySelectorAll<HTMLElement>(".message, .system-event")].find((node) => node.dataset.messageId === message.messageId);
+  const node = find() ?? (renderMessages(), find());
+  if (!node) return;
+  node.scrollIntoView({ block: "center", behavior: "smooth" });
+  node.classList.add("flash");
+  setTimeout(() => node.classList.remove("flash"), 1500);
+}
+
+function renderSearch(): void {
+  const query = searchQuery.trim();
+  const hits = searchHits();
+  searchCount.textContent = query === "" ? "" : hits.length + " 則";
+  const rows: Node[] = [];
+  const note = document.createElement("p");
+  note.className = "history-note";
+  note.textContent = query === "" ? "輸入文字以搜尋所有已載入的訊息。" : hits.length === 0 ? "沒有符合的已載入訊息。" : hits.length + " 則符合（只涵蓋已載入的訊息）";
+  rows.push(note);
+  const hit = query.toLocaleLowerCase();
+  for (const { message, channel } of hits) {
+    const row = document.createElement("article");
+    row.className = "message";
+    row.dataset.messageId = message.messageId;
+    row.role = "button";
+    row.tabIndex = 0;
+    row.addEventListener("click", () => jumpToMessage(message));
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      jumpToMessage(message);
+    });
+    row.append(createAvatar(message.senderPictureId, message.senderName));
+    const main = document.createElement("div");
+    main.className = "message-main";
+    const head = document.createElement("header");
+    const sender = document.createElement("strong");
+    sender.textContent = message.senderName;
+    const where = document.createElement("small");
+    where.textContent = channel?.name ?? "";
+    const when = document.createElement("time");
+    when.textContent = formatTime(message.createdAt);
+    head.append(sender, where, when);
+    main.append(head);
+    const body = document.createElement("p");
+    if (message.unsent) {
+      body.className = "placeholder";
+      body.textContent = "（已收回的訊息）";
+    } else if (message.text) {
+      body.append(...decorate(message.text, message.mentions ?? [], hit));
+    } else if (message.card) {
+      body.append(...decorate(cardTitle(message.card), [], hit));
+    } else {
+      body.className = "placeholder";
+      body.textContent = "［" + (CONTENT_LABEL[message.contentType] ?? "訊息") + "］";
+    }
+    main.append(body);
+    row.append(main);
+    rows.push(row);
+  }
+  reconcile(messageList, rows);
+}
+
+function closeSearch(): void {
+  clearTimeout(searchTimer);
+  searching = false;
+  searchQuery = "";
+  messageSearch.value = "";
+  searchBar.hidden = true;
+  searchToggle.ariaPressed = "false";
+  renderMessages();
+}
+
+searchToggle.addEventListener("click", () => {
+  if (searching) return closeSearch();
+  searching = true;
+  searchBar.hidden = false;
+  searchToggle.ariaPressed = "true";
+  renderSearch();
+  messageSearch.focus();
+});
+searchClose.addEventListener("click", closeSearch);
+messageSearch.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    searchQuery = messageSearch.value;
+    renderSearch();
+  }, 120);
+});
+messageSearch.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeSearch();
+});
 
 /** One-line text for quoting a message: its text, or the label of what it carries. */
 function previewOf(message: Message): string {

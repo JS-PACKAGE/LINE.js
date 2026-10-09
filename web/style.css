@@ -53,6 +53,12 @@ footer { color: #667c73; font-size: 12px; line-height: 1.7; }
 
 .conversation { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .conversation-head { display: flex; align-items: center; gap: 12px; padding: 12px 24px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.search-bar { display: flex; align-items: center; gap: 8px; padding: 8px 24px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.search-bar input { flex: 1; min-width: 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: transparent; color: inherit; font: inherit; }
+.search-bar input:focus-visible { outline: none; border-color: var(--accent); }
+#search-count { flex: none; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.search-bar .ghost { flex: none; }
+mark { background: #ffe7a3; color: #6b4a00; padding: 0 2px; border-radius: 3px; }
 .conversation-head h2 { margin: 0; font-size: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #channel-meta { color: var(--muted); font-size: 13px; }
 #messages { flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; }
@@ -167,6 +173,7 @@ dialog#confirm::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
   .pill[data-state="reconnecting"] { background: #4a3a14; color: #f0d089; }
   #channels li[aria-selected="true"] { background: #2b5440; }
   .mention-me { background: #5a4613; color: #ffe2a0; }
+  mark { background: #5a4613; color: #ffe2a0; }
   footer { color: #95b0a1; }
 }
 @media (max-width: 720px) {

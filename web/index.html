@@ -63,7 +63,13 @@
           <span id="channel-avatar" class="avatar-slot"></span>
           <h2 id="channel-title">選擇一個聊天室</h2>
           <span id="channel-meta"></span>
+          <button id="search-toggle" type="button" class="ghost" aria-pressed="false" aria-controls="search-bar">搜尋</button>
         </header>
+        <div id="search-bar" class="search-bar" hidden>
+          <input id="message-search" type="search" placeholder="搜尋此聊天室的訊息" aria-label="搜尋訊息" autocomplete="off" />
+          <span id="search-count"></span>
+          <button id="search-close" type="button" class="ghost" aria-label="關閉搜尋">✕</button>
+        </div>
         <div id="messages" role="log" aria-live="polite" tabindex="0"></div>
         <form id="composer" class="composer" autocomplete="off">
           <p id="composer-note" role="status" aria-live="polite" hidden></p>
