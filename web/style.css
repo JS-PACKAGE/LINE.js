@@ -84,6 +84,10 @@ dialog#viewer button { position: fixed; top: 14px; right: 18px; background: #000
 .message-main p a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .mention { color: var(--accent); font-weight: 600; }
 .mention-me { padding: 0 3px; border-radius: 4px; background: #ffe7a3; color: #6b4a00; }
+.card { display: grid; gap: 2px; margin-top: 4px; padding: 9px 13px; max-width: min(360px, 100%); background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 4px 14px 14px 14px; overflow-wrap: anywhere; }
+.card small { color: var(--muted); font-size: 12px; }
+.card span { color: var(--muted); font-size: 13px; }
+.card a { color: var(--accent); font-size: 13px; }
 .system-event { margin: 4px auto; padding: 3px 12px; max-width: 90%; border-radius: 999px; background: var(--soft); color: var(--muted); font-size: 12px; text-align: center; overflow-wrap: anywhere; }
 .sticker { display: block; width: 140px; max-width: 60%; height: auto; margin-top: 6px; }
 .empty { margin: auto; text-align: center; }

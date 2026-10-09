@@ -189,3 +189,12 @@ test("tags in a received text keep their ranges; @All has no person; ranges that
   assert.equal(received[1].message.mentions, undefined);
   assert.equal(received[1].message.text, "壞的");
 });
+
+test("a location sent with a numeric content type arrives named, with its card and without text", async () => {
+  const { received, emit } = await activeProvider(fakeBase());
+  emit("message", talk("901", GROUP_A, mid(2), undefined, { contentType: 15, location: { title: "公司", address: "台北市", latitude: 25.03, longitude: 121.56 } }));
+  await settle();
+  assert.equal(received[0].message.contentType, "LOCATION");
+  assert.deepEqual(received[0].message.card, { kind: "location", title: "公司", address: "台北市", latitude: 25.03, longitude: 121.56 });
+  assert.equal(received[0].message.text, undefined);
+});

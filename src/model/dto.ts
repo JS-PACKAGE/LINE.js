@@ -45,6 +45,15 @@ export interface TextMention {
   userId?: string;
 }
 
+/** What a non-text, non-media message carries that can be shown as text (never fetched content). */
+export type MessageCard =
+  | { kind: "location"; title?: string; address?: string; latitude: number; longitude: number }
+  | { kind: "contact"; name: string }
+  /** Name and size only: files are not downloaded (out of scope). */
+  | { kind: "file"; name: string; size?: number }
+  /** LINE's own text stand-in for a rich card. */
+  | { kind: "flex"; altText: string };
+
 /** A sticker package the account owns, with the stickers that can be sent from it. */
 export interface StickerPackage {
   packageId: number;
@@ -71,6 +80,7 @@ export interface Message {
   replyTo?: string;
   /** People tagged in `text`, sorted and non-overlapping. */
   mentions?: TextMention[];
+  card?: MessageCard;
   decryptFailed?: boolean;
   /** The sender took the message back: its content is gone and only a placeholder remains. */
   unsent?: boolean;

@@ -1,6 +1,6 @@
 import QRCode from "qrcode";
 import "./style.css";
-import type { AuthState, Channel, Message, Profile, TextMention } from "../src/model/dto.js";
+import type { AuthState, Channel, Message, MessageCard, Profile, TextMention } from "../src/model/dto.js";
 import type { ClientFrame, ListenState, ServerFrame } from "../src/ws/protocol.js";
 import { createComposer } from "./composer.js";
 import { confirmDialog } from "./dialog.js";
@@ -56,7 +56,7 @@ document.addEventListener("keydown", (event) => {
 const KIND_LABEL: Record<Channel["kind"], string> = { user: "好友", group: "群組", room: "聊天室", square: "社群" };
 const LISTEN_LABEL: Record<ListenState, string> = { starting: "啟動中", listening: "即時接收中", reconnecting: "LINE 重新連線中" };
 const CONTENT_LABEL: Record<string, string> = {
-  IMAGE: "圖片", VIDEO: "影片", AUDIO: "語音", FILE: "檔案", STICKER: "貼圖", LOCATION: "位置", CONTACT: "聯絡人", FLEX: "卡片訊息", CHATEVENT: "系統訊息",
+  IMAGE: "圖片", VIDEO: "影片", AUDIO: "語音", FILE: "檔案", STICKER: "貼圖", LOCATION: "位置", CONTACT: "聯絡人", FLEX: "卡片訊息", CHATEVENT: "系統訊息", CALL: "通話",
 };
 
 let socket: WebSocket | undefined;
@@ -319,6 +319,7 @@ function messageBody(message: Message): HTMLElement {
     });
     return image;
   }
+  if (message.card) return cardNode(message.card);
   const body = document.createElement("p");
   if (message.text) {
     body.append(...textNodes(message.text, message.mentions ?? []));
@@ -327,6 +328,49 @@ function messageBody(message: Message): HTMLElement {
     body.textContent = `［${CONTENT_LABEL[message.contentType] ?? "不支援的內容"}］`;
   }
   return body;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** The one line that names what a card carries (also used to quote it). */
+function cardTitle(card: MessageCard): string {
+  switch (card.kind) {
+    case "location": return card.title ?? card.address ?? `${card.latitude.toFixed(5)}, ${card.longitude.toFixed(5)}`;
+    case "contact": return card.name;
+    case "file": return card.name;
+    case "flex": return card.altText;
+  }
+}
+
+/** A location, contact, file or rich card shown by what it says, never by fetching anything. */
+function cardNode(card: MessageCard): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "card";
+  const label = document.createElement("small");
+  label.textContent = { location: "位置", contact: "聯絡人", file: "檔案（無法在此下載）", flex: "卡片訊息" }[card.kind];
+  const title = document.createElement("strong");
+  title.textContent = cardTitle(card);
+  box.append(label, title);
+  const detail = card.kind === "location" && card.title && card.address ? card.address : card.kind === "file" && card.size !== undefined ? formatBytes(card.size) : undefined;
+  if (detail) {
+    const line = document.createElement("span");
+    line.textContent = detail;
+    box.append(line);
+  }
+  if (card.kind === "location") {
+    // Opening a map is the reader's choice; nothing is requested until they click.
+    const map = document.createElement("a");
+    map.href = `https://www.google.com/maps/search/?api=1&query=${card.latitude},${card.longitude}`;
+    map.target = "_blank";
+    map.rel = "noopener noreferrer";
+    map.textContent = "在地圖上開啟";
+    box.append(map);
+  }
+  return box;
 }
 
 /**
@@ -356,6 +400,7 @@ function readLabels(channelId: string, list: readonly Message[]): (string | unde
 function previewOf(message: Message): string {
   if (message.unsent) return "［已收回的訊息］";
   const text = message.text?.replace(/\s+/g, " ").trim();
+  if (!text && message.card) return `［${CONTENT_LABEL[message.contentType] ?? "訊息"}］${cardTitle(message.card).slice(0, 60)}`;
   return text ? (text.length > 60 ? `${text.slice(0, 60)}…` : text) : `［${CONTENT_LABEL[message.contentType] ?? "訊息"}］`;
 }
 
@@ -737,7 +782,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       const index = list.findIndex((entry) => entry.messageId === frame.messageId);
       if (index < 0) return;
       // Keep who sent it and when; the content is gone.
-      const { text: _text, mediaId: _media, replyTo: _reply, mentions: _mentions, editedAt: _edited, decryptFailed: _unreadable, ...kept } = list[index]!;
+      const { text: _text, mediaId: _media, replyTo: _reply, mentions: _mentions, card: _card, editedAt: _edited, decryptFailed: _unreadable, ...kept } = list[index]!;
       list[index] = { ...kept, unsent: true };
       if (frame.chatId === selected) renderMessages("keep");
       return;

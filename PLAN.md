@@ -132,6 +132,8 @@
 
 > v1.12（協定版本 2）：連線時的訊息快照改為每個聊天室一個 `messages` 影格（`{ chatId, messages }`），取代逐則帶 `replay: true` 的 `message`；`message` 只用於即時新訊息。前端合併後一次重繪，重連不再逐則重建畫面。新增 `message:unsend`（`{ chatId, messageId }`）：talk 的 `NOTIFIED_DESTROY_MESSAGE`／`DESTROY_MESSAGE` 與 OpenChat 的 `NOTIFIED_DESTROY_MESSAGE` 收回訊息時，快取改為只留寄件者與時間的佔位（`Message.unsent: true`），並停止供應該訊息的媒體；只處理伺服器已見過的訊息 id，通知早於訊息到達時以墓碑記住。`Message.mentions`：收到的文字中被 @ 的範圍（解析 `MENTION` metadata，範圍不合即丟棄），網頁以強調色標示，@ 自己或 @All 另以底色標出。
 
+> v1.12（續）：`Message.card`：位置（`Message.location` 的名稱、地址、座標）、聯絡人（metadata `displayName`）、檔案（`FILE_NAME`／`FILE_SIZE`，不提供下載）、卡片訊息（`ALT_TEXT`）以文字小卡顯示；欄位缺漏或格式不合即不產生小卡，維持類型佔位。數字型 `contentType`（0–22）一律轉為名稱。通話的 metadata 未見於 linejs 3.4.2，只顯示「［通話］」。
+
 ### Server → Client
 
 | type | 負載 |
@@ -190,6 +192,7 @@ Channel { channelId, kind: "user"｜"group"｜"room"｜"square", name,
 Message { messageId, channelId, channelKind, senderId, senderName, senderPictureId?, senderRole?,
           text?, contentType, createdAt, editedAt?, mediaId?, replyTo?,
           mentions?: { start, end, userId? }[],   // 收到的 @ 提及；無 userId 為 @All
+          card?: 位置｜聯絡人｜檔案（名稱、大小）｜卡片訊息替代文字,
           decryptFailed?, unsent? }               // unsent：已收回，只留寄件者與時間
 Media   { mediaId, mime, size, kind: "image"｜"sticker"｜"video"｜"audio" }
 ```

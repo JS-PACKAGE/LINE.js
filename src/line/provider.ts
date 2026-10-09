@@ -8,6 +8,7 @@ import { memberRole, mentionMetadata, parseMentions, replyTarget } from "./membe
 import { parseReadOperation, parseReadRanges, parseUnsendOperation } from "./read.js";
 import { parseOwnedProducts, parsePackageMeta, type PackageMeta } from "./stickers.js";
 import { chatEventMids, chatEventText, isChatEvent } from "./chatEvent.js";
+import { contentTypeName, messageCard } from "./cards.js";
 import { SessionStorage } from "./session.js";
 
 export interface QRCallbacks {
@@ -266,7 +267,7 @@ export class EvexLineProvider implements LineProvider {
     return this.toMessage({
       id: raw.id, channelId, channelKind, senderId: raw.from, text: raw.text, contentType,
       createdTime: raw.createdTime, encrypted: undecryptable || (raw.chunks?.length ?? 0) > 0, metadata: raw.contentMetadata,
-      mediaId: this.rememberMedia(raw, false), replyTo: replyTarget(raw.messageRelationType, raw.relatedMessageId), eventText,
+      mediaId: this.rememberMedia(raw, false), replyTo: replyTarget(raw.messageRelationType, raw.relatedMessageId), eventText, location: raw.location,
     });
   }
 
@@ -277,7 +278,7 @@ export class EvexLineProvider implements LineProvider {
     return this.toMessage({
       id: message.id, channelId: message.to, channelKind: "square", senderId: message.from, text: message.text, contentType: String(message.contentType),
       createdTime: message.createdTime, encrypted: (message.chunks?.length ?? 0) > 0, metadata: message.contentMetadata,
-      mediaId: this.rememberMedia(message, true), replyTo: replyTarget(message.messageRelationType, message.relatedMessageId),
+      mediaId: this.rememberMedia(message, true), replyTo: replyTarget(message.messageRelationType, message.relatedMessageId), location: message.location,
     });
   }
 
@@ -292,17 +293,18 @@ export class EvexLineProvider implements LineProvider {
   private toMessage(fields: {
     id: unknown; channelId: string; channelKind: Message["channelKind"]; senderId: string;
     text: string | undefined; contentType: string; createdTime: unknown; encrypted: boolean;
-    metadata: Record<string, string> | undefined; mediaId?: string | undefined; replyTo?: string | undefined; eventText?: string | undefined;
+    metadata: Record<string, string> | undefined; mediaId?: string | undefined; replyTo?: string | undefined; eventText?: string | undefined; location?: unknown;
   }): Message {
     const { text } = fields;
     // Numeric content types are normalised so the browser only ever sees one spelling.
-    const contentType = MEDIA_KIND[fields.contentType] ?? fields.contentType;
-    const isText = contentType === "NONE" || contentType === "0";
+    const contentType = contentTypeName(fields.contentType);
+    const isText = contentType === "NONE";
     const created = Number(fields.createdTime);
-    const stickerId = contentType === "STICKER" || contentType === "7" ? fields.metadata?.STKID : undefined;
+    const stickerId = contentType === "STICKER" ? fields.metadata?.STKID : undefined;
     // Only a numeric id may become a sticker media id: it is later spliced into a CDN URL path.
     const mediaId = fields.mediaId ?? (stickerId && /^\d{1,12}$/.test(stickerId) ? `sticker-${stickerId}${fields.metadata?.STKOPT === "A" ? "-a" : ""}` : undefined);
     const mentions = isText && text ? parseMentions(fields.metadata, text) : [];
+    const card = isText ? undefined : messageCard(contentType, fields.metadata, fields.location);
     return {
       messageId: String(fields.id),
       channelId: fields.channelId,
@@ -317,6 +319,7 @@ export class EvexLineProvider implements LineProvider {
       ...(mediaId ? { mediaId } : {}),
       ...(fields.replyTo ? { replyTo: fields.replyTo } : {}),
       ...(mentions.length > 0 ? { mentions } : {}),
+      ...(card ? { card } : {}),
       // Fail closed: an E2EE payload without readable text is a placeholder, never a guess.
       ...(isText && !text && fields.encrypted ? { decryptFailed: true } : {}),
     };
