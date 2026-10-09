@@ -47,6 +47,9 @@ function Initialize-Project {
     & node scripts/service.mjs ready
     $status = $LASTEXITCODE
     if ($status -eq 0) { return }
+    # login／logout／token 需要服務正在執行；這時重裝或重建會把它正在使用的 node_modules／dist 換掉。
+    $pidText = & node scripts/service.mjs running
+    if ($LASTEXITCODE -eq 0) { Fail "依賴或建置已過期，但服務正在執行（PID ${pidText}），不能在它底下重新安裝或建置。請先執行：.\linejs.ps1 restart" }
     if ($status -ne 3) {
         Write-Host '▶ 安裝依賴（npm ci）'
         Invoke-Checked 'npm ci' { npm ci --include=dev }

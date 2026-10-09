@@ -251,7 +251,7 @@ npm run cli              # 不帶指令：顯示用法
 | `stop` | `node scripts/service.mjs stop` | 不接受參數。依 `linejs.pid` 找到服務，送出結束訊號（`SIGTERM`，服務會先關閉 LINE 連線並寫好 `session.json` 再結束），最多等 20 秒；沒有在執行也回報成功 |
 | `restart` | `stop` 再 `start` | 不接受參數。先停止正在執行的服務（沒有在執行就略過），再以前景啟動，接手目前這個終端機；原本那個終端機裡的服務會結束 |
 | `update` | `node scripts/update.mjs …` | 即 `npm run update`，選項原樣傳入：`--check` 只檢查、`--verify` 要求 tag 簽章。流程與中止條件見[版本更新](#版本更新)；更新完要重新執行 `start` |
-| `login`／`logout`／`token` | `node scripts/cli.mjs <指令> …` | 即 `npm run cli -- <指令>`，選項（如 `--yes`）原樣傳入。**服務需已啟動**（另開一個終端機跑 `start`），細節與結束碼見[終端機介面（CLI）](#終端機介面cli) |
+| `login`／`logout`／`token` | `node scripts/cli.mjs <指令> …` | 即 `npm run cli -- <指令>`，選項（如 `--yes`）原樣傳入。**服務需已啟動**（另開一個終端機跑 `start`），細節與結束碼見[終端機介面（CLI）](#終端機介面cli)。依賴或建置已過期時不會在執行中的服務底下重新安裝或建置，而是提示先 `restart` |
 
 - 腳本先檢查 Node.js ≥ 22 與 npm，不符就以清楚訊息中止；結束碼原樣回傳（未知指令為 2）。
 - **`stop`／`restart` 怎麼找到服務**：服務啟動後把自己的 PID 寫進專案根目錄的 `linejs.pid`（權限 600、不入版控），正常結束時移除。腳本只會終止「`linejs.pid` 指向、**且命令列確實是本專案 `dist/main.js`**」的程序：PID 檔過期（服務當機沒清檔、或該 PID 已被別的程式沿用）時只會清掉檔案，不會碰那個程序。

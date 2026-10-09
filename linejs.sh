@@ -40,6 +40,10 @@ ensure_ready() {
   status=0
   node scripts/service.mjs ready || status=$?
   [ "$status" -eq 0 ] && return 0
+  # login／logout／token 需要服務正在執行；這時重裝或重建會把它正在使用的 node_modules／dist 換掉。
+  if pid=$(node scripts/service.mjs running); then
+    die "依賴或建置已過期，但服務正在執行（PID ${pid}），不能在它底下重新安裝或建置。請先執行：$0 restart"
+  fi
   if [ "$status" -ne 3 ]; then
     echo "▶ 安裝依賴（npm ci）"
     npm ci --include=dev
