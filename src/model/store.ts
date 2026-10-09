@@ -79,7 +79,13 @@ export class ChatStore {
     return Object.values(this.channels).sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0) || a.name.localeCompare(b.name));
   }
 
-  snapshotMessages(): Message[] {
-    return Object.values(this.messages).flat().sort((a, b) => a.createdAt - b.createdAt);
+  /** One chat's cached messages, oldest first. Read-only view of the cache: copy before keeping it. */
+  messagesOf(channelId: string): readonly Message[] {
+    return this.messages[channelId] ?? [];
+  }
+
+  /** Every chat that has cached messages. */
+  chatsWithMessages(): string[] {
+    return Object.keys(this.messages).filter((channelId) => this.messages[channelId]!.length > 0);
   }
 }

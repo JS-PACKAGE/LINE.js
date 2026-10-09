@@ -52,7 +52,7 @@ npm start
 **其他網頁行為**：
 - **連結**：訊息文字中的 `http://`、`https://` 網址會變成可點的連結，在新分頁開啟（帶 `rel="noopener noreferrer"`，對方網站拿不到本頁，也不會收到 Referer）；句尾標點與多餘的右括號不算進網址，其他協定（如 `ftp://`）不轉連結。伺服器不會去抓取任何網址，也沒有連結預覽卡片（刻意不做：瀏覽器端受 CSP 與 CORS 限制讀不到，伺服器代抓則有 SSRF 與洩露 IP 的風險）。
 - **系統訊息**：LINE 的成員異動事件（`CHATEVENT`，目前支援 `C_MI`）顯示為置中的灰色小膠囊，例如「XX 新增 OO 至群組」；其他未確認含義的事件類型一律顯示「［系統訊息］」佔位，不猜測內容。
-- **斷線覆蓋**：與本機服務的 WebSocket 中斷時，整個畫面會被「與伺服器斷線」覆蓋；恢復後自動移除並重新同步訊息（沿用連線時的完整 snapshot 重播）。
+- **斷線覆蓋**：與本機服務的 WebSocket 中斷時，整個畫面會被「與伺服器斷線」覆蓋；恢復後自動移除並重新同步訊息（沿用連線時的完整 snapshot，每個聊天室一個影格，頁面合併後一次重繪）。
 - **手機版**：視窗寬度 ≤ 720px 時，聊天與好友清單收進左側抽屜，由對話標題列左上角的「☰」漢堡按鈕開啟（點背景或按 Esc 關閉，選取聊天室後自動關閉）；尚未選聊天室時預設展開。桌機版面不變。
 
 可安裝為 PWA（瀏覽器「安裝」；含 favicon 與 manifest）。Service worker 只快取公開靜態檔，不碰 `/media/*` 與 `/ws`；頁面一律網路優先。網頁會鎖定瀏覽器原生右鍵選單（輸入欄位除外），右鍵改為訊息選單（聊天頻道上右鍵可顯示並複製頻道 ID），此為操作便利而非安全機制。聊天列表未讀數取自 LINE 端計數，開啟並回報已讀後清除。
@@ -89,11 +89,12 @@ npm start
 
 | 方向 | type | 用途 |
 |---|---|---|
-| Server → Client | `hello` | 協定版本 1 與伺服器版本；收到後前端清空本機快取，等待完整 snapshot |
+| Server → Client | `hello` | 協定版本 2 與伺服器版本；收到後前端清空本機快取，等待完整 snapshot |
 | Server → Client | `auth:state` | `restoring`／`idle`／`authenticating`／`ready`／`error` |
 | Server → Client | `auth:qr` / `auth:pin` | 一次性，只送給發起 `auth:start` 的連線 |
-| Server → Client | `auth:ready` | 登入完成與帳號資料；連線即送 snapshot（`channels` 與記憶體中的訊息） |
+| Server → Client | `auth:ready` | 登入完成與帳號資料；連線即送 snapshot（`channels`，以及記憶體中的訊息：每個聊天室一個 `messages` 影格） |
 | Server → Client | `channels` | 頻道 snapshot；新增頻道或刷新後重送 |
+| Server → Client | `messages` | 連線時的訊息 snapshot：`{ chatId, messages }`，每個聊天室一個影格（舊訊息，不計未讀） |
 | Server → Client | `message` / `message:edit` | 即時訊息與覆寫既有訊息 |
 | Server → Client | `status` / `error` | LINE 監聽狀態與 generic 錯誤 |
 | Server → Client | `history` / `sent` | 歷史一頁（含 `cursor`）／發送確認 |

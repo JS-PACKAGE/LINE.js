@@ -3,7 +3,7 @@ import type { AuthState, Channel, Mention, Message, Profile, ReadPosition, Stick
 export type ListenState = "starting" | "listening" | "reconnecting";
 
 /** Bumped only when frames change incompatibly; a page built for another number must reload. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export type ServerFrame =
   | { type: "hello"; protocol: number; serverVersion: string }
@@ -14,7 +14,9 @@ export type ServerFrame =
   | { type: "auth:pin"; code: string }
   | { type: "auth:ready"; profile: Profile }
   | { type: "channels"; channels: Channel[] }
-  | { type: "message"; message: Message; /** True for the connect-time snapshot: those messages are not new, so they must not count as unread. */ replay?: true }
+  | { type: "message"; message: Message }
+  /** Connect-time snapshot of one chat's cached messages, oldest first. Old news: never counted as unread. */
+  | { type: "messages"; chatId: string; messages: readonly Message[] }
   | { type: "message:edit"; message: Message }
   | { type: "status"; state: ListenState }
   | { type: "history"; requestId: string; chatId: string; messages: Message[]; hasMore: boolean; cursor?: string }

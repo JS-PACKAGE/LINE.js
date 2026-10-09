@@ -204,7 +204,7 @@ export function createHub(options: HubOptions): Hub {
     const target = { channelId: request.chatId, kind: channel.kind };
     if (request.kind === "text") {
       // Only people who have spoken in this chat can be tagged, and 1:1 chats have nobody to tag.
-      const speakers = new Set(store.snapshotMessages().filter((message) => message.channelId === request.chatId).map((message) => message.senderId));
+      const speakers = new Set(store.messagesOf(request.chatId).map((message) => message.senderId));
       if (request.mentions.length > 0 && (channel.kind === "user" || !request.mentions.every((mention) => speakers.has(mention.userId)))) {
         return fail(socket, "INVALID_REQUEST", request.requestId);
       }
@@ -307,7 +307,9 @@ export function createHub(options: HubOptions): Hub {
   function sendReady(socket: WebSocket): void {
     send(socket, { type: "auth:ready", profile: provider.getProfile() });
     sendChannels(socket);
-    for (const message of store.snapshotMessages()) send(socket, { type: "message", message, replay: true });
+    // One frame per chat (at most `cache.messagesPerChannel` messages), not one per message: a reconnect
+    // with thousands of cached messages must not cost the page thousands of frames and re-renders.
+    for (const chatId of store.chatsWithMessages()) send(socket, { type: "messages", chatId, messages: store.messagesOf(chatId) });
   }
 
   login.subscribe((state) => {

@@ -12,7 +12,7 @@ test("duplicate ids are dropped, edits overwrite in place, order follows creatio
   assert.equal(store.upsert(message("m1", 10), false), true);
   assert.equal(store.upsert(message("m1", 10, { text: "changed" }), false), false);
   assert.equal(store.upsert(message("m1", 10, { text: "edited" }), true), true);
-  const stored = store.snapshotMessages();
+  const stored = store.messagesOf("c1");
   assert.deepEqual(stored.map((entry) => entry.messageId), ["m1", "m2"]);
   assert.equal(stored[0].text, "edited");
   assert.ok(stored[0].editedAt);
@@ -22,8 +22,9 @@ test("each channel keeps only its newest messages", () => {
   const store = new ChatStore(3);
   for (let index = 1; index <= 5; index += 1) store.upsert(message(`m${index}`, index), false);
   store.upsert(message("other", 1, { channelId: "c2" }), false);
-  assert.deepEqual(store.snapshotMessages().filter((entry) => entry.channelId === "c1").map((entry) => entry.messageId), ["m3", "m4", "m5"]);
-  assert.equal(store.snapshotMessages().filter((entry) => entry.channelId === "c2").length, 1);
+  assert.deepEqual(store.messagesOf("c1").map((entry) => entry.messageId), ["m3", "m4", "m5"]);
+  assert.equal(store.messagesOf("c2").length, 1);
+  assert.deepEqual(store.chatsWithMessages().sort(), ["c1", "c2"]);
 });
 
 test("a channel discovered only through a live message survives a channel refresh", () => {

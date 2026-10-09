@@ -52,7 +52,7 @@ Open `http://127.0.0.1:3789`. If `session.json` can be reused, you enter the cha
 **Other web behavior**:
 - **Links**: `http://` and `https://` URLs in message text become clickable links that open in a new tab (with `rel="noopener noreferrer"`, so the destination cannot access this page and receives no Referer). Trailing punctuation and extra closing parentheses are excluded from URLs; other protocols (such as `ftp://`) are not linked. The server does not fetch any URLs, and there are no link preview cards (deliberately: CSP and CORS prevent browser-side access, while server-side fetching risks SSRF and IP disclosure).
 - **System messages**: LINE membership events (`CHATEVENT`, currently supporting `C_MI`) display as small, centered gray pills, such as 「XX 新增 OO 至群組」 (XX added OO to the group). Other event types whose meanings have not been confirmed always display the placeholder 「［系統訊息］」 ([System message]); their content is not guessed.
-- **Disconnection overlay**: if the WebSocket connection to the local service is interrupted, 「與伺服器斷線」 (Disconnected from the server) covers the entire screen. It disappears automatically on reconnection, and messages are resynchronized (using the full snapshot replay sent on connection).
+- **Disconnection overlay**: if the WebSocket connection to the local service is interrupted, 「與伺服器斷線」 (Disconnected from the server) covers the entire screen. It disappears automatically on reconnection, and messages are resynchronized (using the full snapshot sent on connection: one frame per chat, merged and redrawn once by the page).
 - **Mobile layout**: at window widths ≤ 720px, the chat and friends lists move into a left drawer, opened with the 「☰」 hamburger button at the top left of the conversation header (click the backdrop or press Esc to close; selecting a chat closes it automatically). The drawer opens by default if no chat is selected. The desktop layout is unchanged.
 
 The app can be installed as a PWA (the browser's 「安裝」 (Install) action; favicon and manifest included). The service worker caches only public static files, never `/media/*` or `/ws`; pages always use a network-first strategy. The web interface disables the browser's native context menu except in input fields, replacing it with a message menu (right-clicking a chat in the list shows and copies its channel ID); this is a convenience, not a security mechanism. Unread counts in the chat list come from LINE and are cleared after opening a chat and sending a read receipt.
@@ -89,11 +89,12 @@ Available:
 
 | Direction | type | Purpose |
 |---|---|---|
-| Server → Client | `hello` | Protocol version 1 and server version; on receipt, the frontend clears its local cache and waits for a full snapshot |
+| Server → Client | `hello` | Protocol version 2 and server version; on receipt, the frontend clears its local cache and waits for a full snapshot |
 | Server → Client | `auth:state` | `restoring`／`idle`／`authenticating`／`ready`／`error` |
 | Server → Client | `auth:qr` / `auth:pin` | One-time delivery, only to the connection that initiated `auth:start` |
-| Server → Client | `auth:ready` | Login completion and account data; a snapshot (`channels` and in-memory messages) is sent on connection |
+| Server → Client | `auth:ready` | Login completion and account data; a snapshot (`channels`, plus in-memory messages as one `messages` frame per chat) is sent on connection |
 | Server → Client | `channels` | Channel snapshot; resent when channels are added or refreshed |
+| Server → Client | `messages` | Connect-time message snapshot: `{ chatId, messages }`, one frame per chat (old messages, never counted as unread) |
 | Server → Client | `message` / `message:edit` | Live messages and overwrites of existing messages |
 | Server → Client | `status` / `error` | LINE listener status and generic errors |
 | Server → Client | `history` / `sent` | One history page (including `cursor`)/send confirmation |

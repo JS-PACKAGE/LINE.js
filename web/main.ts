@@ -227,6 +227,17 @@ function renderChannels(): void {
   renderTabs();
 }
 
+// Bursts of frames (a reconnect snapshot, a busy group) rebuild the channel list once per frame drawn.
+let channelsScheduled = false;
+function scheduleChannels(): void {
+  if (channelsScheduled) return;
+  channelsScheduled = true;
+  requestAnimationFrame(() => {
+    channelsScheduled = false;
+    renderChannels();
+  });
+}
+
 const CONTINUE_WITHIN_MS = 5 * 60_000;
 
 // True while the reader is at the newest message; media that finishes loading then keeps it in view.
@@ -463,13 +474,23 @@ function renderMessages(anchor: "bottom" | "keep" | "prepend" = "bottom"): void 
   else messageList.scrollTop = previousTop;
 }
 
-function mergeMessage(message: Message): void {
-  const list = messages[message.channelId] ?? [];
-  const index = list.findIndex((entry) => entry.messageId === message.messageId);
-  if (index >= 0) list[index] = message;
-  else list.push(message);
-  list.sort((a, b) => a.createdAt - b.createdAt);
-  messages[message.channelId] = list;
+/** Adds or replaces messages of one chat, sorting once per batch rather than once per message. */
+function mergeMessages(channelId: string, incoming: readonly Message[]): void {
+  const list = messages[channelId] ?? [];
+  const at = new Map(list.map((entry, index) => [entry.messageId, index]));
+  // Live messages almost always arrive newest-last: sort only when one landed out of order.
+  let unordered = false;
+  for (const message of incoming) {
+    const index = at.get(message.messageId);
+    if (index !== undefined) list[index] = message;
+    else {
+      unordered ||= list.length > 0 && message.createdAt < list[list.length - 1]!.createdAt;
+      at.set(message.messageId, list.length);
+      list.push(message);
+    }
+  }
+  if (unordered) list.sort((a, b) => a.createdAt - b.createdAt);
+  messages[channelId] = list;
 }
 
 function requestHistory(channelId: string): void {
@@ -489,7 +510,7 @@ function applyHistory(frame: Extract<ServerFrame, { type: "history" }>): void {
   if (!channelId || !state) return;
   delete pendingHistory[frame.requestId];
   const firstPage = !state.loaded;
-  for (const message of frame.messages) mergeMessage(message);
+  mergeMessages(channelId, frame.messages);
   state.loading = false;
   state.loaded = true;
   state.cursor = frame.cursor;
@@ -504,7 +525,7 @@ function applyHistory(frame: Extract<ServerFrame, { type: "history" }>): void {
 
 function upsertMessage(message: Message): void {
   const nearBottom = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 80;
-  mergeMessage(message);
+  mergeMessages(message.channelId, [message]);
   // Your own message always jumps into view, even when you were reading older history.
   if (message.channelId === selected) renderMessages(nearBottom || message.senderId === myUserId ? "bottom" : "keep");
   if (message.channelId === selected) reportRead();
@@ -592,14 +613,20 @@ async function handle(frame: ServerFrame): Promise<void> {
     case "message:edit": {
       const { message } = frame;
       upsertMessage(message);
-      // A replayed snapshot message is old news. A new one counts unless the reader is looking at that chat right now.
-      if (frame.type === "message" && !frame.replay && message.senderId !== myUserId && (message.channelId !== selected || document.visibilityState !== "visible")) {
+      // A new message counts as unread unless the reader is looking at that chat right now.
+      if (frame.type === "message" && message.senderId !== myUserId && (message.channelId !== selected || document.visibilityState !== "visible")) {
         unread[message.channelId] = (unread[message.channelId] ?? 0) + 1;
         liveCounted.add(message.channelId);
       }
-      renderChannels();
+      scheduleChannels();
       return;
     }
+    case "messages":
+      // Connect-time snapshot: old news, so it never counts as unread.
+      mergeMessages(frame.chatId, frame.messages);
+      if (frame.chatId === selected) renderMessages("keep");
+      scheduleChannels();
+      return;
     case "history":
       applyHistory(frame);
       return;

@@ -130,18 +130,21 @@
 
 > v1.11：新增**機器人 API** `ws://<host>:<port>/api/ws`（`api.enabled`，預設關閉；Bearer Token、不得帶 `Origin`；只開放 `message:send`（僅文字）、`history:fetch`、`ping`；只能存取 `api.chats`；連線不重播舊訊息）。新增 `api:state`／`api:token`（Server → 網頁）與 `api:token:create`／`api:token:revoke`（網頁 → Server）：Token 由網頁或 CLI（`npm run cli -- token`）產生，只顯示一次，伺服器只存 SHA-256（`api-token.json`）。新增終端機介面 `npm run cli -- login｜logout｜token`（經執行中的服務，登入時在終端機畫出 QR）。根目錄新增管理腳本 `linejs.sh`／`linejs.ps1`（`start｜stop｜restart｜update｜login｜logout｜token`，僅為既有指令的捷徑；服務啟動時寫 `linejs.pid`，`stop`／`restart` 只終止命令列為本專案 `dist/main.js` 的程序）。**裁示**：`server.host` 不再強制 127.0.0.1，以 `config.yaml` 為準（預設與範本仍為 127.0.0.1，非本機迴路啟動時印警告）。
 
+> v1.12（協定版本 2）：連線時的訊息快照改為每個聊天室一個 `messages` 影格（`{ chatId, messages }`），取代逐則帶 `replay: true` 的 `message`；`message` 只用於即時新訊息。前端合併後一次重繪，重連不再逐則重建畫面。
+
 ### Server → Client
 
 | type | 負載 |
 |---|---|
-| `hello` | `{ protocol: 1, serverVersion }` |
+| `hello` | `{ protocol: 2, serverVersion }` |
 | `update:available` | `{ version, current, url }`（url 僅限本專案 GitHub Release 頁） |
 | `auth:state` | `{ state: "restoring"｜"idle"｜"authenticating"｜"ready"｜"error" }`（連線即送、變動廣播；不含祕密） |
 | `auth:qr` | `{ url }`（一次性；只送給發起 `auth:start` 的連線） |
 | `auth:pin` | `{ code }`（一次性；僅畫面顯示） |
 | `auth:ready` | `{ profile }` |
 | `channels` | `{ channels: Channel[] }`（snapshot，連線即送、變動重送） |
-| `message` | `{ message: Message }` |
+| `messages` | `{ chatId, messages: Message[] }`（連線時快照，每個聊天室一個影格；舊訊息，不計未讀） |
+| `message` | `{ message: Message }`（即時新訊息） |
 | `message:edit` | `{ message: Message }` |
 | `history` | `{ requestId, chatId, messages: Message[], hasMore, cursor? }`（`cursor` 傳回 `before` 取更早一頁） |
 | `read` | `{ chatId, positions: { readerId, messageId }[] }`（他人已讀到哪則；開啟聊天時送快照，之後即時增量；社群無已讀） |

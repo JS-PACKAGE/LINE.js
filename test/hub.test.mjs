@@ -189,10 +189,12 @@ test("a restored session receives ready state, profile, channels and cached mess
   const ready = await client.until((frame) => frame.type === "auth:ready");
   assert.deepEqual(ready.profile, { userId: "u-me", displayName: "測試帳號" });
   await client.until((frame) => frame.type === "channels" && frame.channels.some((channel) => channel.channelId === "c1"));
-  const replayed = await client.until((frame) => frame.type === "message");
-  assert.equal(replayed.message.text, "你好");
+  const replayed = await client.until((frame) => frame.type === "messages");
+  assert.equal(replayed.chatId, "c1");
+  assert.deepEqual(replayed.messages.map((message) => message.text), ["你好"]);
+  assert.equal(client.frames.some((frame) => frame.type === "message"), false, "cached messages arrive as one snapshot frame per chat, never one frame each");
   assert.equal(client.frames[0].type, "hello");
-  assert.equal(client.frames[0].protocol, 1);
+  assert.equal(client.frames[0].protocol, 2);
 });
 
 test("live messages broadcast once; duplicates are suppressed and edits arrive as message:edit", async (t) => {
@@ -258,7 +260,7 @@ test("logout clears cached chat, returns every client to idle and reports an unc
   const second = connect(port, headers);
   t.after(() => { first.socket.close(); second.socket.close(); });
   await Promise.all([first.opened, second.opened]);
-  await first.until((frame) => frame.type === "message");
+  await first.until((frame) => frame.type === "messages");
   provider.logoutResult = { remoteRevoked: false };
   first.socket.send(JSON.stringify({ type: "auth:logout" }));
   await second.until((frame) => frame.type === "auth:state" && frame.state === "idle");
@@ -270,7 +272,7 @@ test("logout clears cached chat, returns every client to idle and reports an unc
   t.after(() => late.socket.close());
   await late.opened;
   await late.until((frame) => frame.type === "auth:state" && frame.state === "idle");
-  assert.ok(!late.frames.some((frame) => frame.type === "message" || frame.type === "channels" || frame.type === "auth:ready"));
+  assert.ok(!late.frames.some((frame) => frame.type === "message" || frame.type === "messages" || frame.type === "channels" || frame.type === "auth:ready"));
 });
 
 test("logout is refused when nobody is signed in; a failing logout ends in error without leaking details", async (t) => {
@@ -357,7 +359,7 @@ test("history is fetched with the default or requested limit, paged by cursor, a
   const late = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
   t.after(() => late.socket.close());
   await late.opened;
-  await late.until((frame) => frame.type === "message" && frame.message.messageId === "h2");
+  await late.until((frame) => frame.type === "messages" && frame.messages.some((message) => message.messageId === "h2"));
 });
 
 test("malformed history requests are refused before LINE is contacted; failures never leak internals", async (t) => {
@@ -734,7 +736,7 @@ test("the enlarged avatar asks for the original, the list avatar for the preview
   assert.equal((await fetch(`${base}avatarfull-p-${hash}`)).status, 404, "no cookie");
 });
 
-test("connect-time replays are marked so the page does not count them as unread, and a reported read clears LINE's badge", async (t) => {
+test("connect-time snapshots are a separate frame from live messages, and a reported read clears LINE's badge", async (t) => {
   const { port, cookie, login, hub, provider, store } = await start(t);
   provider.channels = [{ channelId: CHAT, kind: "group", name: "測試群組", unreadCount: 4 }];
   await login.restore();
@@ -744,9 +746,9 @@ test("connect-time replays are marked so the page does not count them as unread,
   await client.opened;
   const listed = await client.until((frame) => frame.type === "channels" && frame.channels.some((channel) => channel.channelId === CHAT));
   assert.equal(listed.channels.find((channel) => channel.channelId === CHAT).unreadCount, 4);
-  assert.equal((await client.until((frame) => frame.type === "message")).replay, true);
+  assert.deepEqual((await client.until((frame) => frame.type === "messages")).messages.map((message) => message.messageId), ["10"]);
   hub.handleMessage({ messageId: "11", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "新的", contentType: "NONE", createdAt: 2 }, "new");
-  assert.equal((await client.until((frame) => frame.type === "message" && frame.message.messageId === "11")).replay, undefined);
+  await client.until((frame) => frame.type === "message" && frame.message.messageId === "11");
   client.socket.send(JSON.stringify({ type: "chat:read", chatId: CHAT, messageId: "11" }));
   for (let attempt = 0; attempt < 50 && store.channelOf(CHAT).unreadCount; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(store.channelOf(CHAT).unreadCount, undefined);
@@ -861,7 +863,7 @@ test("a bot sees its sign-in state and only the chats it is allowed, with no rep
   assert.deepEqual(bot.frames.slice(0, 3).map((frame) => frame.type), ["hello", "auth:state", "status"]);
   assert.deepEqual(bot.frames.find((frame) => frame.type === "auth:ready").profile, { userId: "u-me", displayName: "測試帳號" });
   assert.deepEqual(bot.frames.findLast((frame) => frame.type === "channels").channels.map((channel) => channel.channelId), [CHAT]);
-  assert.equal(bot.frames.some((frame) => frame.type === "message" || frame.type === "api:state" || frame.type === "update:available"), false);
+  assert.equal(bot.frames.some((frame) => frame.type === "message" || frame.type === "messages" || frame.type === "api:state" || frame.type === "update:available"), false);
   env.hub.handleMessage({ messageId: "10", channelId: "c1", channelKind: "group", senderId: "u1", senderName: "小明", text: "別的群組", contentType: "NONE", createdAt: 2 }, "new");
   env.hub.handleMessage({ messageId: "11", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "指令", contentType: "NONE", createdAt: 3 }, "new");
   env.hub.handleMessage({ messageId: "11", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "指令（改）", contentType: "NONE", createdAt: 3 }, "edit");
