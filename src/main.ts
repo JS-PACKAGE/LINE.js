@@ -89,7 +89,7 @@ async function main(): Promise<void> {
     try {
       await provider.close();
       await releasePid();
-      process.exit(0);
+      process.exit(process.exitCode ?? 0);
     } catch {
       console.error("SESSION_WRITE_FAILED");
       await releasePid().catch(() => {});
@@ -98,6 +98,18 @@ async function main(): Promise<void> {
   };
   process.once("SIGINT", () => { void stop(); });
   process.once("SIGTERM", () => { void stop(); });
+  // linejs runs push and polling loops nobody awaits; one stray rejection must not take the service
+  // (and the signed-in session) down. Only a code and the message go to the log: upstream error
+  // objects can carry authentication material.
+  const describe = (error: unknown): string => (error instanceof Error ? `${error.name}: ${error.message}`.slice(0, 200) : "unknown");
+  process.on("unhandledRejection", (reason) => { console.error("UNHANDLED_REJECTION", describe(reason)); });
+  // A thrown exception may have left state behind it inconsistent: shut down cleanly (session flushed,
+  // pid file released) instead of dying mid-write, and let the user restart.
+  process.once("uncaughtException", (error) => {
+    console.error("UNCAUGHT_EXCEPTION", describe(error));
+    process.exitCode = 1;
+    void stop();
+  });
 }
 
 main().catch(() => {
