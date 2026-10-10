@@ -35,8 +35,11 @@ export class ChatStore {
     const next: Record<string, Channel> = {};
     for (const channel of channels) {
       const known = this.channels[channel.channelId];
-      const lastMessageAt = Math.max(channel.lastMessageAt ?? 0, known?.lastMessageAt ?? 0);
-      next[channel.channelId] = { ...channel, ...(lastMessageAt > 0 ? { lastMessageAt } : {}) };
+      // A live message this service saw may be newer than what LINE's summary says: keep the newest.
+      const newest = (channel.lastMessageAt ?? 0) >= (known?.lastMessageAt ?? 0) ? channel : known;
+      const lastMessageAt = newest?.lastMessageAt ?? 0;
+      const lastMessage = newest?.lastMessage ?? channel.lastMessage ?? known?.lastMessage;
+      next[channel.channelId] = { ...channel, ...(lastMessageAt > 0 ? { lastMessageAt } : {}), ...(lastMessage ? { lastMessage } : {}) };
     }
     // A channel that only appears through a live message must survive a refresh
     // that raced ahead of LINE's own listing.
@@ -100,14 +103,18 @@ export class ChatStore {
     this.messages[message.channelId] = list;
     this.byId[message.channelId] = ids;
     const channel = this.channels[message.channelId];
-    if (channel && message.createdAt > (channel.lastMessageAt ?? 0)) {
-      this.channels[message.channelId] = { ...channel, lastMessageAt: message.createdAt };
+    if (channel && stored.createdAt > (channel.lastMessageAt ?? 0)) {
+      this.channels[message.channelId] = { ...channel, lastMessageAt: stored.createdAt, lastMessage: stored };
+    } else if (channel && channel.lastMessage?.messageId === stored.messageId) {
+      // An edit of the newest message: the preview follows it.
+      this.channels[message.channelId] = { ...channel, lastMessage: stored };
     } else if (!channel) {
       this.channels[message.channelId] = {
         channelId: message.channelId,
         kind: message.channelKind,
         name: message.channelKind === "user" ? message.senderName : "未命名聊天",
-        lastMessageAt: message.createdAt,
+        lastMessageAt: stored.createdAt,
+        lastMessage: stored,
       };
     }
     return stored;
@@ -136,6 +143,8 @@ export class ChatStore {
     const list = this.messages[channelId]!;
     list[list.findIndex((entry) => entry.messageId === messageId)] = placeholder;
     ids.set(messageId, placeholder);
+    const channel = this.channels[channelId];
+    if (channel?.lastMessage?.messageId === messageId) this.channels[channelId] = { ...channel, lastMessage: placeholder };
     return placeholder;
   }
 

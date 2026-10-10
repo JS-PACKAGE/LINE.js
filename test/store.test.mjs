@@ -47,6 +47,28 @@ test("a full cache ignores older history pages but still answers with the take-b
   assert.equal(answered[1].text, "text-m4");
 });
 
+test("each channel's preview follows its newest message: live, edited, taken back, and merged with LINE's own summary", () => {
+  const store = new ChatStore(500);
+  store.setChannels([{ channelId: "c1", kind: "group", name: "群", lastMessageAt: 10, lastMessage: message("s1", 10, { text: "LINE 說的" }) }]);
+  assert.equal(store.channelOf("c1").lastMessage.text, "LINE 說的");
+  store.upsert(message("m2", 20), false);
+  assert.deepEqual([store.channelOf("c1").lastMessageAt, store.channelOf("c1").lastMessage.messageId], [20, "m2"]);
+  store.upsert(message("m1", 15), false);
+  assert.equal(store.channelOf("c1").lastMessage.messageId, "m2", "an older arrival does not replace the newest");
+  store.upsert(message("m2", 20, { text: "改過" }), true);
+  assert.equal(store.channelOf("c1").lastMessage.text, "改過", "an edit of the newest message is what the list shows");
+  // A refresh that still knows only the old summary must not roll the preview back.
+  store.setChannels([{ channelId: "c1", kind: "group", name: "群", lastMessageAt: 10, lastMessage: message("s1", 10, { text: "LINE 說的" }) }]);
+  assert.equal(store.channelOf("c1").lastMessage.messageId, "m2");
+  // ...while a newer summary wins.
+  store.setChannels([{ channelId: "c1", kind: "group", name: "群", lastMessageAt: 30, lastMessage: message("s2", 30, { text: "更新的" }) }]);
+  assert.equal(store.channelOf("c1").lastMessage.messageId, "s2");
+  store.upsert(message("m3", 40), false);
+  store.unsend("m3", "c1");
+  assert.equal(store.channelOf("c1").lastMessage.unsent, true, "a taken-back newest message previews as taken back");
+  assert.equal(store.channelOf("c1").lastMessage.text, undefined);
+});
+
 test("late and same-time messages are slotted in creation order, after equal timestamps", () => {
   const store = new ChatStore(500);
   for (const [id, at] of [["a", 10], ["b", 30], ["c", 20], ["d", 20], ["e", 5], ["f", 30]]) store.upsert(message(id, at), false);

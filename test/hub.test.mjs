@@ -851,6 +851,39 @@ test("connect-time snapshots are a separate frame from live messages, and a repo
   assert.equal(store.channelOf(CHAT).unreadCount, undefined);
 });
 
+test("each live message, edit, take-back and read updates that chat's list entry for pages; bots see none of it", async (t) => {
+  const { port, cookie, login, hub, provider, apiTokens } = await start(t, { api: { enabled: true, chats: [CHAT] } });
+  provider.channels = [{ channelId: CHAT, kind: "group", name: "測試群組", unreadCount: 4 }, { channelId: "c1", kind: "group", name: "另一個" }];
+  await login.restore();
+  const token = await apiTokens.create();
+  const client = connect(port, { Origin: `http://127.0.0.1:${port}`, Cookie: cookie });
+  const bot = connect(port, { Authorization: `Bearer ${token}` }, "/api/ws");
+  t.after(() => { client.socket.close(); bot.socket.close(); });
+  await client.opened;
+  await bot.opened;
+  await client.until((frame) => frame.type === "channels" && frame.channels.some((channel) => channel.channelId === CHAT));
+  const message = { messageId: "21", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "第一版", contentType: "NONE", createdAt: 1000 };
+  hub.handleMessage(message, "new");
+  const first = await client.until((frame) => frame.type === "channel");
+  assert.equal(client.frames.indexOf(first) > client.frames.findIndex((frame) => frame.type === "message"), true, "the message itself comes first");
+  assert.deepEqual([first.channel.channelId, first.channel.lastMessageAt, first.channel.lastMessage.text, first.channel.unreadCount], [CHAT, 1000, "第一版", 4]);
+  hub.handleMessage({ ...message, text: "第二版" }, "edit");
+  await client.until((frame) => frame.type === "channel" && frame.channel.lastMessage.text === "第二版");
+  hub.handleUnsend(CHAT, "21");
+  const taken = await client.until((frame) => frame.type === "channel" && frame.channel.lastMessage.unsent === true);
+  assert.equal(taken.channel.lastMessage.text, undefined);
+  hub.handleMessage({ ...message, messageId: "22", text: "再一則", createdAt: 1001 }, "new");
+  await client.until((frame) => frame.type === "message" && frame.message.messageId === "22");
+  client.socket.send(JSON.stringify({ type: "chat:read", chatId: CHAT, messageId: "22" }));
+  const read = await client.until((frame) => frame.type === "channel" && frame.channel.lastMessage.messageId === "22" && frame.channel.unreadCount === undefined);
+  assert.equal(read.channel.lastMessageAt, 1001);
+  hub.handleMessage(message, "new");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(client.frames.filter((frame) => frame.type === "channel").length, 5, "new, edit, take-back, new, read; an identical duplicate adds nothing");
+  assert.equal(bot.frames.some((frame) => frame.type === "channel"), false);
+  assert.equal(bot.frames.filter((frame) => frame.type === "message").length, 2);
+});
+
 test("a newer release is announced to every client, including ones that connect later and are not signed in", async (t) => {
   const { port, cookie, hub } = await start(t, { restore: false });
   const headers = { Origin: `http://127.0.0.1:${port}`, Cookie: cookie };

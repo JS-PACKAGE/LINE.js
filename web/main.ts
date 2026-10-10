@@ -174,10 +174,39 @@ function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
+/** List time: the clock today, "昨天", or the date; the row is narrow. */
+function listTime(at: number): string {
+  const date = new Date(at);
+  const today = new Date();
+  if (date.toDateString() === today.toDateString()) return formatTime(at);
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return "昨天";
+  return date.toLocaleDateString("zh-TW", { ...(date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }), month: "numeric", day: "numeric" });
+}
+
 // A friend belongs to the 聊天 tab only once there is a conversation with them;
 // groups, rooms and OpenChats are always conversations.
 function hasConversation(channel: Channel): boolean {
   return channel.kind !== "user" || channel.lastMessageAt !== undefined || (messages[channel.channelId]?.length ?? 0) > 0;
+}
+
+/** The newest message known for a chat: the server's list preview, unless this page has seen a newer one. */
+function latestOf(channel: Channel): Message | undefined {
+  const seen = messages[channel.channelId]?.at(-1);
+  const listed = channel.lastMessage;
+  return seen && (!listed || seen.createdAt >= listed.createdAt) ? seen : listed;
+}
+
+/** Most recent activity first, then by name: the same order the server's snapshot arrives in. */
+function sortChannels(): void {
+  channels.sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0) || a.name.localeCompare(b.name));
+}
+
+/** Takes LINE's unread count for a chat, unless this page has read or counted that chat itself. */
+function applyUnread(channel: Channel): void {
+  if (channel.channelId === selected || opened.has(channel.channelId) || liveCounted.has(channel.channelId)) return;
+  if (channel.unreadCount) unread[channel.channelId] = channel.unreadCount;
+  else delete unread[channel.channelId];
 }
 
 function renderTabs(): void {
@@ -190,22 +219,36 @@ function renderTabs(): void {
   chatsUnread.textContent = total > 99 ? "99+" : String(total);
 }
 
-// Drawn channel rows, reused while the channel, its badge and the tab are unchanged.
-const channelRows = new Map<string, { node: HTMLLIElement; channel: Channel; count: number | undefined; tab: "chats" | "friends" }>();
+// Drawn channel rows, reused while the channel, its badge, its preview, the tab and the day are unchanged.
+const channelRows = new Map<string, { node: HTMLLIElement; channel: Channel; count: number | undefined; latest: Message | undefined; tab: "chats" | "friends"; day: string }>();
 
-function channelRow(channel: Channel, count: number | undefined): HTMLLIElement {
+function channelRow(channel: Channel, count: number | undefined, latest: Message | undefined): HTMLLIElement {
   const item = document.createElement("li");
   item.role = "option";
   item.tabIndex = 0;
   item.dataset.channelId = channel.channelId;
+  const head = document.createElement("span");
+  head.className = "channel-head";
   const name = document.createElement("span");
   name.className = "channel-name";
   name.textContent = channel.name;
-  item.append(createAvatar(channel.pictureId, channel.name), name);
+  head.append(name);
+  item.append(createAvatar(channel.pictureId, channel.name), head);
   if (tab === "chats") {
-    const kind = document.createElement("small");
-    kind.textContent = KIND_LABEL[channel.kind] + (channel.memberCount ? ` · ${channel.memberCount} 人` : "");
-    item.append(kind);
+    const at = Math.max(channel.lastMessageAt ?? 0, latest?.createdAt ?? 0);
+    if (at > 0) {
+      const time = document.createElement("time");
+      time.className = "channel-time";
+      time.dateTime = new Date(at).toISOString();
+      time.textContent = listTime(at);
+      head.append(time);
+    }
+    const sub = document.createElement("small");
+    sub.className = "channel-sub";
+    // The last message, named after its sender where there is more than one; otherwise what kind of chat it is.
+    if (latest) sub.textContent = channel.kind === "user" || latest.contentType === "CHATEVENT" ? previewOf(latest) : `${latest.senderName}：${previewOf(latest)}`;
+    else sub.textContent = KIND_LABEL[channel.kind] + (channel.memberCount ? ` · ${channel.memberCount} 人` : "");
+    item.append(sub);
   }
   if (count) {
     const badge = document.createElement("span");
@@ -220,13 +263,15 @@ function renderChannels(): void {
   const keyword = filter.value.trim().toLocaleLowerCase();
   const inTab = channels.filter((channel) => (tab === "friends" ? channel.kind === "user" : hasConversation(channel)));
   const visible = inTab.filter((channel) => channel.name.toLocaleLowerCase().includes(keyword));
-  // Conversations keep the server's activity order; the friend list reads alphabetically.
+  // Conversations are ordered by activity (see sortChannels); the friend list reads alphabetically.
   if (tab === "friends") visible.sort((a, b) => a.name.localeCompare(b.name, "zh-TW"));
+  const day = new Date().toDateString();
   const nodes = visible.map((channel) => {
     const count = unread[channel.channelId];
+    const latest = tab === "chats" ? latestOf(channel) : undefined;
     let row = channelRows.get(channel.channelId);
-    if (!row || row.channel !== channel || row.count !== count || row.tab !== tab) {
-      row = { node: channelRow(channel, count), channel, count, tab };
+    if (!row || row.channel !== channel || row.count !== count || row.latest !== latest || row.tab !== tab || row.day !== day) {
+      row = { node: channelRow(channel, count, latest), channel, count, latest, tab, day };
       channelRows.set(channel.channelId, row);
     }
     row.node.ariaSelected = String(channel.channelId === selected);
@@ -280,6 +325,20 @@ let pinnedToBottom = true;
 function keepPinned(): void {
   if (pinnedToBottom) messageList.scrollTop = messageList.scrollHeight;
 }
+
+// "↓ 最新訊息" while the reader is away from the newest line; counts what arrived below meanwhile.
+const jump = $<HTMLButtonElement>("#jump");
+let unseenBelow = 0;
+function updateJump(): void {
+  const away = selected !== undefined && messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight > 200;
+  if (!away) unseenBelow = 0;
+  jump.hidden = !away;
+  jump.textContent = unseenBelow > 0 ? `↓ ${unseenBelow} 則新訊息` : "↓ 最新訊息";
+}
+jump.addEventListener("click", () => {
+  scrollToLatest();
+  updateJump();
+});
 
 // Sending is the one moment the reader certainly wants the newest line, wherever they had scrolled
 // to and whoever's id the echo carries (communities use another sender id): jump there and stay
@@ -776,6 +835,7 @@ function renderMessages(anchor: "bottom" | "keep" | "prepend" = "bottom"): void 
     else empty.textContent = "這個聊天室還沒有訊息。";
     messageList.replaceChildren(empty);
     rendered = new Map();
+    updateJump();
     return;
   }
   const nodes: Node[] = [];
@@ -826,6 +886,7 @@ function renderMessages(anchor: "bottom" | "keep" | "prepend" = "bottom"): void 
   // Older messages were inserted above: keep what the reader was looking at in place.
   else if (anchor === "prepend") messageList.scrollTop = previousTop + (messageList.scrollHeight - previousHeight);
   else messageList.scrollTop = previousTop;
+  updateJump();
 }
 
 /** Adds or replaces messages of one chat, sorting once per batch rather than once per message. */
@@ -877,12 +938,16 @@ function applyHistory(frame: Extract<ServerFrame, { type: "history" }>): void {
   reportRead();
 }
 
-function upsertMessage(message: Message): void {
+function upsertMessage(message: Message, fresh: boolean): void {
   const nearBottom = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 80;
   mergeMessages(message.channelId, [message]);
+  if (message.channelId !== selected) return;
   // Your own message always jumps into view, even when you were reading older history.
-  if (message.channelId === selected) renderMessages(nearBottom || message.senderId === myUserId ? "bottom" : "keep");
-  if (message.channelId === selected) reportRead();
+  const mine = isMine(message);
+  renderMessages(nearBottom || mine ? "bottom" : "keep");
+  if (fresh && !mine && !nearBottom) unseenBelow += 1;
+  updateJump();
+  reportRead();
 }
 
 /**
@@ -950,11 +1015,8 @@ async function handle(frame: ServerFrame): Promise<void> {
       return;
     case "channels":
       channels = frame.channels;
-      for (const channel of channels) {
-        if (channel.channelId === selected || opened.has(channel.channelId) || liveCounted.has(channel.channelId)) continue;
-        if (channel.unreadCount) unread[channel.channelId] = channel.unreadCount;
-        else delete unread[channel.channelId];
-      }
+      sortChannels();
+      for (const channel of channels) applyUnread(channel);
       if (selected && !channels.some((channel) => channel.channelId === selected)) {
         selected = undefined;
         composer.setChannel(undefined);
@@ -964,10 +1026,20 @@ async function handle(frame: ServerFrame): Promise<void> {
       // After a reconnect the snapshot replaces local state; refill the open conversation.
       if (selected && !historyOf[selected]?.loaded) requestHistory(selected);
       return;
+    case "channel": {
+      // One chat changed: it moves to where its activity puts it; its preview and badge follow.
+      const index = channels.findIndex((channel) => channel.channelId === frame.channel.channelId);
+      if (index < 0) channels.push(frame.channel);
+      else channels[index] = frame.channel;
+      sortChannels();
+      applyUnread(frame.channel);
+      scheduleChannels();
+      return;
+    }
     case "message":
     case "message:edit": {
       const { message } = frame;
-      upsertMessage(message);
+      upsertMessage(message, frame.type === "message");
       // A new message counts as unread unless the reader is looking at that chat right now.
       if (frame.type === "message" && !isMine(message) && (message.channelId !== selected || document.visibilityState !== "visible")) {
         unread[message.channelId] = (unread[message.channelId] ?? 0) + 1;
@@ -1187,6 +1259,7 @@ channelList.addEventListener("keydown", (event) => {
 
 messageList.addEventListener("scroll", () => {
   pinnedToBottom = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 80;
+  updateJump();
   const state = selected ? historyOf[selected] : undefined;
   // Near the top: load the next older page, unless the last attempt failed (then the user retries explicitly).
   if (selected && state?.loaded && state.hasMore && !state.loading && !state.failed && messageList.scrollTop < 80) requestHistory(selected);

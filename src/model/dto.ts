@@ -10,6 +10,8 @@ export interface Channel {
   unreadCount?: number;
   memberCount?: number;
   lastMessageAt?: number;
+  /** The newest message known for the list preview: from LINE's chat summary at load time, then live. */
+  lastMessage?: Message;
 }
 
 /** What the adapter needs to address a conversation. */

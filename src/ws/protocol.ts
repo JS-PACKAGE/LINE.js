@@ -14,6 +14,8 @@ export type ServerFrame =
   | { type: "auth:pin"; code: string }
   | { type: "auth:ready"; profile: Profile }
   | { type: "channels"; channels: Channel[] }
+  /** One chat changed (new activity, its preview, its badge): pages only, bots keep the plain message stream. */
+  | { type: "channel"; channel: Channel }
   | { type: "message"; message: Message }
   /** Connect-time snapshot of one chat's cached messages, oldest first. Old news: never counted as unread. */
   | { type: "messages"; chatId: string; messages: readonly Message[] }

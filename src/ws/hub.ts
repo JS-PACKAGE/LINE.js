@@ -306,22 +306,30 @@ export function createHub(options: HubOptions): Hub {
     }
   }
 
+  /** Tells pages one chat's list entry changed (the store replaces the object only when it did). */
+  function broadcastChannel(channelId: string, before: Channel | undefined): void {
+    const after = store.channelOf(channelId);
+    if (after && after !== before) broadcast({ type: "channel", channel: after });
+  }
+
   /** A message was taken back (see Hub.handleUnsend). */
   function takeBack(chatHint: string | undefined, messageId: string): void {
     // Its picture, video or voice must not stay downloadable either.
     media.forget(`msg-${messageId}`);
+    const before = chatHint !== undefined ? store.channelOf(chatHint) : undefined;
     const placeholder = store.unsend(messageId, chatHint);
     if (!placeholder) return;
     const frame: ServerFrame = { type: "message:unsend", chatId: placeholder.channelId, messageId };
     broadcast(frame);
     if (botScope.has(placeholder.channelId)) broadcastBots(frame);
+    broadcastChannel(placeholder.channelId, placeholder.channelId === chatHint ? before : undefined);
   }
 
   function ingest(message: Message, kind: "new" | "edit"): void {
-    const known = store.hasChannel(message.channelId);
+    const before = store.channelOf(message.channelId);
     const stored = store.upsert(message, kind === "edit");
     if (!stored) return;
-    if (!known) {
+    if (!before) {
       // The channel list is fetched lazily; show the chat now, name it after a refresh.
       broadcastChannels();
       clearTimeout(refreshTimer);
@@ -329,6 +337,8 @@ export function createHub(options: HubOptions): Hub {
     }
     broadcast({ type: kind === "edit" ? "message:edit" : "message", message: stored });
     if (botScope.has(message.channelId)) broadcastBots({ type: kind === "edit" ? "message:edit" : "message", message: stored });
+    // The list entry follows: activity order and preview move with the newest message.
+    if (before) broadcastChannel(message.channelId, before);
   }
 
   // The browser reports "I read this chat up to here" and gets no answer: a bad or refused frame is dropped.
@@ -345,8 +355,9 @@ export function createHub(options: HubOptions): Hub {
     markedRead.set(chatId, id);
     try {
       await provider.markRead({ channelId: chatId, kind: channel.kind }, messageId);
-      // Anyone opening the page later must not see the badge of a chat that was just read.
+      // Anyone opening the page later (or another tab now) must not see the badge of a chat that was just read.
       store.clearUnread(chatId);
+      broadcastChannel(chatId, channel);
     } catch (error) {
       if (known === undefined) markedRead.delete(chatId);
       else markedRead.set(chatId, known);

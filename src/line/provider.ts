@@ -87,6 +87,8 @@ const STICKER_PACKS_CACHE_MS = 10 * 60 * 1000;
 const PACK_META_CONCURRENCY = 4;
 const UNREAD_MAX_PAGES = 20;
 const MAX_UNREAD_SHOWN = 9999;
+// Decrypted "last message" of each chat, kept across list refreshes so E2EE previews are decrypted once.
+const MAX_PREVIEW_DECRYPTS = 1000;
 
 /** What the UI shows for a person. `settled` means LINE answered a profile lookup (or the friend list did). */
 interface MemberProfile {
@@ -123,6 +125,7 @@ export class EvexLineProvider implements LineProvider {
   // Messages whose media the browser may ask for, newest last. Requests are only honoured for
   // messages seen here, so the browser cannot use this session to probe arbitrary LINE objects.
   private mediaOrigins = new Map<string, { raw: LineMessage; square: boolean }>();
+  private previewDecrypts = new Map<string, { raw: LineMessage; undecryptable: boolean }>();
 
   constructor(
     private readonly storage: SessionStorage,
@@ -258,7 +261,8 @@ export class EvexLineProvider implements LineProvider {
     this.events.onStatus("listening");
   }
 
-  private talkToMessage(raw: LineMessage, myMid: string, undecryptable = false): Message {
+  /** `preview` (the chat list's last message) registers no media: only shown messages may be fetched. */
+  private talkToMessage(raw: LineMessage, myMid: string, undecryptable = false, preview = false): Message {
     const type = String(raw.toType);
     const channelKind = type === "USER" || type === "0" ? "user" : type === "ROOM" || type === "1" ? "room" : "group";
     const channelId = channelKind === "user" && raw.from === myMid ? raw.to : channelKind === "user" ? raw.from : raw.to;
@@ -269,19 +273,29 @@ export class EvexLineProvider implements LineProvider {
     return this.toMessage({
       id: raw.id, channelId, channelKind, senderId: raw.from, text: raw.text, contentType,
       createdTime: raw.createdTime, encrypted: undecryptable || (raw.chunks?.length ?? 0) > 0, metadata: raw.contentMetadata,
-      mediaId: this.rememberMedia(raw, false), replyTo: replyTarget(raw.messageRelationType, raw.relatedMessageId), eventText, location: raw.location,
+      mediaId: preview ? undefined : this.rememberMedia(raw, false), replyTo: replyTarget(raw.messageRelationType, raw.relatedMessageId), eventText, location: raw.location,
     });
   }
 
-  private squareToMessage(raw: LineSquareMessage, senderName?: string): Message {
+  private squareToMessage(raw: LineSquareMessage, senderName?: string, preview = false): Message {
     const message = raw.message;
     // History events carry the sender's display name; live events only carry a member mid.
     if (senderName) this.rememberName(message.from, senderName);
     return this.toMessage({
       id: message.id, channelId: message.to, channelKind: "square", senderId: message.from, text: message.text, contentType: String(message.contentType),
       createdTime: message.createdTime, encrypted: (message.chunks?.length ?? 0) > 0, metadata: message.contentMetadata,
-      mediaId: this.rememberMedia(message, true), replyTo: replyTarget(message.messageRelationType, message.relatedMessageId), location: message.location,
+      mediaId: preview ? undefined : this.rememberMedia(message, true), replyTo: replyTarget(message.messageRelationType, message.relatedMessageId), location: message.location,
     });
+  }
+
+  /** Fail closed: an E2EE message that cannot be decrypted stays a "cannot decrypt" placeholder, never a guess. */
+  private async decryptTalk(client: Client, raw: LineMessage): Promise<{ raw: LineMessage; undecryptable: boolean }> {
+    if (!raw.contentMetadata?.e2eeVersion) return { raw, undecryptable: false };
+    try {
+      return { raw: await client.base.e2ee.decryptE2EEMessage(raw), undecryptable: false };
+    } catch {
+      return { raw, undecryptable: true };
+    }
   }
 
   private rememberMedia(raw: LineMessage, square: boolean): string | undefined {
@@ -585,19 +599,7 @@ export class EvexLineProvider implements LineProvider {
     }
     const raws = fetched.filter((raw) => raw.id !== anchorId);
     const readable: { raw: LineMessage; undecryptable: boolean }[] = [];
-    for (const raw of raws) {
-      let decoded = raw;
-      let undecryptable = false;
-      if (raw.contentMetadata?.e2eeVersion) {
-        try {
-          decoded = await client.base.e2ee.decryptE2EEMessage(raw);
-        } catch {
-          // Fail closed: keep the message as a "cannot decrypt" placeholder, never guess content.
-          undecryptable = true;
-        }
-      }
-      readable.push({ raw: decoded, undecryptable });
-    }
+    for (const raw of raws) readable.push(await this.decryptTalk(client, raw));
     await this.resolveMembers(client, "talk", readable.flatMap((entry) => [entry.raw.from, ...chatEventMids(entry.raw.contentMetadata)]));
     const myMid = this.getProfile().userId;
     const messages = readable.map((entry) => this.talkToMessage(entry.raw, myMid, entry.undecryptable));
@@ -796,31 +798,41 @@ export class EvexLineProvider implements LineProvider {
         });
       }
     }
-    await this.attachUnreadCounts(client, channels);
+    await this.attachSummaries(client, channels);
     return channels;
   }
 
   /**
-   * Unread badges must match LINE (a chat read on the phone has none), not what this page happened
-   * to receive. Best effort: without counts the list simply shows no badges.
+   * Per chat, what LINE's own list shows: the unread count, when it was last active and its last message
+   * (the list preview). Badges must match LINE (a chat read on the phone has none), not what this page
+   * happened to receive. Best effort: without a summary the list simply shows no badge or preview.
    */
-  private async attachUnreadCounts(client: Client, channels: Channel[]): Promise<void> {
+  private async attachSummaries(client: Client, channels: Channel[]): Promise<void> {
     const counts = new Map<string, number>();
+    const activeAt = new Map<string, number>();
+    const talkLast = new Map<string, LineMessage>();
+    const squareLast = new Map<string, { raw: LineSquareMessage; name?: string }>();
     try {
       const seen = new Set<string>();
       let minChatId: string | undefined;
       for (let page = 0; page < UNREAD_MAX_PAGES; page += 1) {
-        const { messageBoxes, hasNext } = await client.base.talk.getMessageBoxes({ messageBoxListRequest: { withUnreadCount: true, ...(minChatId ? { minChatId } : {}) } });
+        const { messageBoxes, hasNext } = await client.base.talk.getMessageBoxes({
+          messageBoxListRequest: { withUnreadCount: true, lastMessagesPerMessageBoxCount: 1, ...(minChatId ? { minChatId } : {}) },
+        });
         const fresh = (messageBoxes ?? []).filter((box) => !seen.has(box.id));
         for (const box of fresh) {
           seen.add(box.id);
           counts.set(box.id, Number(box.unreadCount));
+          const delivered = Number(box.lastDeliveredMessageId?.deliveredTime);
+          if (Number.isFinite(delivered) && delivered > 0) activeAt.set(box.id, delivered);
+          const last = box.lastMessages?.[0];
+          if (last && typeof last.id === "string") talkLast.set(box.id, last);
         }
         if (!hasNext || fresh.length === 0) break;
         minChatId = fresh.at(-1)!.id;
       }
     } catch {
-      // Talk chats just show no badge this time.
+      // Talk chats just show no badge or preview this time.
     }
     const squares = channels.filter((channel) => channel.kind === "square");
     for (let offset = 0; offset < squares.length; offset += SQUARE_LOOKUP_CONCURRENCY) {
@@ -828,15 +840,59 @@ export class EvexLineProvider implements LineProvider {
         try {
           const { chatStatus } = await client.base.square.getSquareChatStatus({ request: { squareChatMid: channel.channelId } });
           counts.set(channel.channelId, Number(chatStatus.otherStatus.unreadMessageCount));
+          const last = chatStatus.lastMessage;
+          if (last?.message && typeof last.message.id === "string") squareLast.set(channel.channelId, { raw: last, name: chatStatus.senderDisplayName });
         } catch {
-          // This OpenChat shows no badge this time.
+          // This OpenChat shows no badge or preview this time.
         }
       }));
     }
+    const previews = await this.previewMessages(client, talkLast, squareLast);
     for (const channel of channels) {
       const count = counts.get(channel.channelId);
       if (count && Number.isFinite(count) && count > 0) channel.unreadCount = Math.min(count, MAX_UNREAD_SHOWN);
+      const preview = previews.get(channel.channelId);
+      const at = Math.max(activeAt.get(channel.channelId) ?? 0, preview?.createdAt ?? 0);
+      if (at > 0) channel.lastMessageAt = at;
+      if (preview) channel.lastMessage = preview;
     }
+  }
+
+  /** The last message of each chat as a preview: decrypted (once per message), named, but registering no media. */
+  private async previewMessages(client: Client, talkLast: Map<string, LineMessage>, squareLast: Map<string, { raw: LineSquareMessage; name?: string }>): Promise<Map<string, Message>> {
+    const previews = new Map<string, Message>();
+    const myMid = this.getProfile().userId;
+    const decrypted = new Map<string, { raw: LineMessage; undecryptable: boolean }>();
+    for (const [chatId, raw] of talkLast) {
+      let entry = this.previewDecrypts.get(raw.id);
+      if (!entry) {
+        entry = await this.decryptTalk(client, raw);
+        if (this.client !== client) return previews;
+        this.previewDecrypts.set(raw.id, entry);
+        if (this.previewDecrypts.size > MAX_PREVIEW_DECRYPTS) this.previewDecrypts.delete(this.previewDecrypts.keys().next().value!);
+      }
+      decrypted.set(chatId, entry);
+    }
+    for (const { raw, name } of squareLast.values()) if (name) this.rememberName(raw.message.from, name);
+    await this.resolveMembers(client, "talk", [...decrypted.values()].flatMap((entry) => [entry.raw.from, ...chatEventMids(entry.raw.contentMetadata)]));
+    await this.resolveMembers(client, "square", [...squareLast.values()].map(({ raw }) => raw.message.from));
+    for (const [chatId, entry] of decrypted) {
+      try {
+        const message = this.talkToMessage(entry.raw, myMid, entry.undecryptable, true);
+        // A box id is the chat; a message whose chat differs (a stray box) is not shown as this chat's preview.
+        if (message.channelId === chatId) previews.set(chatId, message);
+      } catch {
+        // A preview that does not parse is simply absent.
+      }
+    }
+    for (const [chatId, { raw }] of squareLast) {
+      try {
+        previews.set(chatId, this.squareToMessage(raw, undefined, true));
+      } catch {
+        // As above.
+      }
+    }
+    return previews;
   }
 
   getProfile(): Profile {
@@ -879,6 +935,7 @@ export class EvexLineProvider implements LineProvider {
     this.profiles.clear();
     this.lookupMisses.clear();
     this.mediaOrigins.clear();
+    this.previewDecrypts.clear();
     this.stickerPackages = undefined;
     this.squareCache.clear();
     this.retryDelay = 1000;

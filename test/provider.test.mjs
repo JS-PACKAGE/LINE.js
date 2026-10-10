@@ -122,6 +122,57 @@ test("friends are fetched in batches of 100, a few at a time, in LINE's order", 
   assert.deepEqual(channels.map((channel) => channel.channelId), friends);
 });
 
+test("the chat list carries LINE's unread count, activity time and last message; E2EE previews decrypt once and register no media", async () => {
+  const at = (n) => String(1_700_000_000_000 + n);
+  let boxRequests = 0;
+  let decrypts = 0;
+  const friend = mid(7);
+  const base = fakeBase({
+    talk: {
+      async getMessageBoxes({ messageBoxListRequest }) {
+        boxRequests += 1;
+        assert.equal(messageBoxListRequest.lastMessagesPerMessageBoxCount, 1);
+        return {
+          hasNext: false,
+          messageBoxes: [
+            { id: GROUP_A, unreadCount: 3n, lastDeliveredMessageId: { deliveredTime: at(50) }, lastMessages: [{ id: "50", to: GROUP_A, from: mid(2), toType: "GROUP", contentType: "IMAGE", createdTime: at(49), contentMetadata: {} }] },
+            { id: friend, unreadCount: 0n, lastDeliveredMessageId: { deliveredTime: at(40) }, lastMessages: [{ id: "40", to: ME, from: friend, toType: "USER", contentType: "NONE", createdTime: at(40), contentMetadata: { e2eeVersion: "2" }, chunks: ["密文"] }] },
+            // A box whose last message belongs elsewhere: no preview for it.
+            { id: GROUP_B, unreadCount: 0n, lastDeliveredMessageId: { deliveredTime: at(30) }, lastMessages: [{ id: "30", to: GROUP_A, from: mid(2), toType: "GROUP", contentType: "NONE", text: "走錯", createdTime: at(30), contentMetadata: {} }] },
+          ],
+        };
+      },
+    },
+    square: {
+      async getSquareChatStatus() {
+        return { chatStatus: { lastMessage: { message: { id: "60", to: SQUARE, from: "p-member", contentType: "NONE", text: "社群最新", createdTime: at(60), contentMetadata: {} } }, senderDisplayName: "社群成員", otherStatus: { unreadMessageCount: 2 } } };
+      },
+    },
+    relation: {
+      async getUserFriendIds() { return { userFriendMids: [friend] }; },
+      async getContactsV3({ mids }) { return { responses: mids.map((m) => ({ targetUserMid: m, targetProfileDetail: { profileName: "好友" } })) }; },
+    },
+  });
+  base.e2ee = { async decryptE2EEMessage(raw) { decrypts += 1; return { ...raw, text: "解開了" }; } };
+  const { provider } = await activeProvider(base, {
+    async fetchJoinedChats() { return [{ mid: GROUP_A, name: "群A", raw: { type: "GROUP" } }, { mid: GROUP_B, name: "群B", raw: { type: "GROUP" } }]; },
+    async fetchJoinedSquares() { return []; },
+    async fetchJoinedSquareChats() { return [{ raw: { squareChatMid: SQUARE, squareMid: "s1", name: "社群聊天" } }]; },
+  });
+  const byId = Object.fromEntries((await provider.fetchChannels()).map((channel) => [channel.channelId, channel]));
+  assert.equal(byId[GROUP_A].unreadCount, 3);
+  assert.equal(byId[GROUP_A].lastMessageAt, Number(at(50)), "activity time is the delivered time, even when it is newer than the message's own");
+  assert.deepEqual([byId[GROUP_A].lastMessage.contentType, byId[GROUP_A].lastMessage.senderName, byId[GROUP_A].lastMessage.mediaId], ["IMAGE", "名-aa2", undefined], "a preview never makes media fetchable");
+  assert.equal(await provider.fetchMessageMedia("50"), undefined);
+  assert.deepEqual([byId[friend].lastMessageAt, byId[friend].lastMessage.text, byId[friend].unreadCount], [Number(at(40)), "解開了", undefined]);
+  assert.equal(byId[GROUP_B].lastMessage, undefined);
+  assert.equal(byId[GROUP_B].lastMessageAt, Number(at(30)));
+  assert.deepEqual([byId[SQUARE].unreadCount, byId[SQUARE].lastMessage.text, byId[SQUARE].lastMessage.senderName, byId[SQUARE].lastMessageAt], [2, "社群最新", "社群成員", Number(at(60))]);
+  await provider.fetchChannels();
+  assert.equal(boxRequests, 2);
+  assert.equal(decrypts, 1, "the same last message is not decrypted again on the next refresh");
+});
+
 test("OpenChat history stays current with live and own messages without walking LINE's events again", async () => {
   let walks = 0;
   const event = (id, text) => ({ payload: { receiveMessage: { squareMessage: { message: { id, to: SQUARE, from: "p-member", contentType: "NONE", text, createdTime: String(1_700_000_000_000 + Number(id)), contentMetadata: {} } }, senderDisplayName: "社群成員" } } });
