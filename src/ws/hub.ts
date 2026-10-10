@@ -18,6 +18,9 @@ const HISTORY_PER_SECOND = 10;
 const NEW_CHANNEL_REFRESH_MS = 1000;
 const MAX_BOT_CONNECTIONS = 4;
 const READ_RANGE_FRESH_MS = 10_000;
+// A connection that has not answered a ping by the next round is gone (a sleeping laptop, a dropped
+// network): it is closed so broadcasts stop piling up behind it and the page can reconnect.
+const HEARTBEAT_MS = 30_000;
 
 export interface HubOptions {
   server: Server;
@@ -86,6 +89,26 @@ export function createHub(options: HubOptions): Hub {
   const readFetches = new Map<string, { at: number; done: Promise<void> }>();
   // OpenChat chat → the member id this account speaks under there, learned from its own sends.
   const ownSquareSenders = new Map<string, string>();
+  // Sockets that answered the last ping (browsers and the ws client both reply to pings on their own).
+  const alive = new WeakSet<WebSocket>();
+  const heartbeat = setInterval(() => {
+    for (const socket of [...wss.clients, ...botWss.clients]) {
+      if (!alive.has(socket)) {
+        socket.terminate();
+        continue;
+      }
+      alive.delete(socket);
+      socket.ping();
+    }
+  }, HEARTBEAT_MS);
+
+  function watch(socket: WebSocket): void {
+    // ws emits 'error' for protocol violations (e.g. frame over maxPayload) and
+    // closes the socket itself; an unhandled 'error' would take the process down.
+    socket.on("error", () => {});
+    alive.add(socket);
+    socket.on("pong", () => alive.add(socket));
+  }
 
   function send(socket: WebSocket, frame: ServerFrame): void {
     sendData(socket, JSON.stringify(frame));
@@ -416,7 +439,7 @@ export function createHub(options: HubOptions): Hub {
   });
 
   botWss.on("connection", (socket) => {
-    socket.on("error", () => {});
+    watch(socket);
     const sendLimiter = new SlidingWindowLimiter(config.limits.sendsPerSecond, 1000);
     const historyLimiter = new SlidingWindowLimiter(HISTORY_PER_SECOND, 1000);
     send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion });
@@ -432,6 +455,7 @@ export function createHub(options: HubOptions): Hub {
       if (!frame) return;
       switch (frame.type) {
         case "ping":
+          send(socket, { type: "pong" });
           return;
         case "history:fetch":
           if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
@@ -449,9 +473,7 @@ export function createHub(options: HubOptions): Hub {
   });
 
   wss.on("connection", (socket) => {
-    // ws emits 'error' for protocol violations (e.g. frame over maxPayload) and
-    // closes the socket itself; an unhandled 'error' would take the process down.
-    socket.on("error", () => {});
+    watch(socket);
     // Per connection: a runaway script must not be able to hammer LINE through us.
     const sendLimiter = new SlidingWindowLimiter(config.limits.sendsPerSecond, 1000);
     const historyLimiter = new SlidingWindowLimiter(HISTORY_PER_SECOND, 1000);
@@ -467,6 +489,7 @@ export function createHub(options: HubOptions): Hub {
       if (!frame) return;
       switch (frame.type) {
         case "ping":
+          send(socket, { type: "pong" });
           return;
         case "api:token:create":
         case "api:token:revoke":
@@ -543,6 +566,7 @@ export function createHub(options: HubOptions): Hub {
       if (info) broadcast(updateFrame(info));
     },
     close() {
+      clearInterval(heartbeat);
       clearTimeout(refreshTimer);
       for (const socket of [...wss.clients, ...botWss.clients]) socket.close(1001);
       botWss.close();

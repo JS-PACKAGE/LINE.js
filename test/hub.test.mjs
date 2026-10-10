@@ -1201,3 +1201,40 @@ test("cli reports a missing service and bad commands without a stack trace", asy
   const help = cliIo();
   assert.equal(await runCli([], help.api, { host: "127.0.0.1", port: probe.port }), 0);
 });
+
+test("a ping is answered with a pong, for pages and bots alike", async (t) => {
+  const { port, cookie } = await start(t);
+  const client = connect(port, { Origin: `http://127.0.0.1:${port}`, Cookie: cookie });
+  t.after(() => client.socket.close());
+  await client.opened;
+  client.socket.send(JSON.stringify({ type: "ping" }));
+  await client.until((frame) => frame.type === "pong");
+  const env = await botEnv(t);
+  const bot = await env.open();
+  bot.socket.send(JSON.stringify({ type: "ping" }));
+  await bot.until((frame) => frame.type === "pong");
+});
+
+test("a connection that stops answering pings is closed by the next heartbeat; one that answers stays", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { port, cookie } = await start(t);
+  const headers = { Origin: `http://127.0.0.1:${port}`, Cookie: cookie };
+  const healthy = connect(port, headers);
+  const silent = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers, autoPong: false });
+  t.after(() => { healthy.socket.close(); silent.close(); });
+  await healthy.opened;
+  await new Promise((resolve, reject) => { silent.once("open", resolve); silent.once("error", reject); });
+  const silentClosed = new Promise((resolve) => silent.once("close", resolve));
+  let pings = 0;
+  healthy.socket.on("ping", () => { pings += 1; });
+  // First round: both get a ping; the healthy one pongs (ws does that by itself), the silent one does not.
+  t.mock.timers.tick(30_000);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(silent.readyState, WebSocket.OPEN, "one missed pong is not yet fatal");
+  // Second round: the silent socket is terminated, the healthy one is pinged again.
+  t.mock.timers.tick(30_000);
+  await silentClosed;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(healthy.socket.readyState, WebSocket.OPEN);
+  assert.equal(pings, 2);
+});

@@ -1014,6 +1014,9 @@ async function handle(frame: ServerFrame): Promise<void> {
     case "stickers":
       composer.handleStickers(frame.requestId, frame.packages);
       return;
+    case "pong":
+      clearTimeout(pongTimer);
+      return;
     case "status":
       listenState.textContent = LISTEN_LABEL[frame.state];
       listenState.dataset.state = frame.state;
@@ -1056,23 +1059,24 @@ async function recoverStalePage(): Promise<void> {
   }
 }
 
+// A socket that stops answering pings (a laptop that slept, a dropped network) is abandoned
+// without waiting for the browser to notice the dead TCP connection, which can take minutes.
+const PING_INTERVAL_MS = 30_000;
+const PONG_TIMEOUT_MS = 10_000;
+let pongTimer: ReturnType<typeof setTimeout> | undefined;
+// Gives up on the current socket as if it had closed; set by connect().
+let abandon: (() => void) | undefined;
+
 function connect(): void {
-  socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  const self = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  socket = self;
   let opened = false;
-  socket.addEventListener("open", () => {
-    opened = true;
-    refusedConnects = 0;
-    reconnectDelay = 1000;
-    composer.setConnected(true);
-  });
-  socket.addEventListener("message", (event) => {
-    try {
-      void handle(JSON.parse(String(event.data)) as ServerFrame);
-    } catch {
-      status.textContent = "收到無法解析的伺服器資料。";
-    }
-  });
-  socket.addEventListener("close", () => {
+  const closed = (): void => {
+    // Already replaced (the heartbeat gave up on it): the late close event changes nothing.
+    if (socket !== self) return;
+    socket = undefined;
+    abandon = undefined;
+    clearTimeout(pongTimer);
     clearSecrets();
     composer.setConnected(false);
     offline.hidden = false;
@@ -1081,7 +1085,32 @@ function connect(): void {
     if (!opened && ++refusedConnects >= 3) void recoverStalePage();
     setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 10_000);
+  };
+  abandon = () => {
+    closed();
+    self.close();
+  };
+  self.addEventListener("open", () => {
+    opened = true;
+    refusedConnects = 0;
+    reconnectDelay = 1000;
+    composer.setConnected(true);
   });
+  self.addEventListener("message", (event) => {
+    if (socket !== self) return;
+    try {
+      void handle(JSON.parse(String(event.data)) as ServerFrame);
+    } catch {
+      status.textContent = "收到無法解析的伺服器資料。";
+    }
+  });
+  self.addEventListener("close", closed);
+}
+
+function heartbeat(): void {
+  if (!send({ type: "ping" })) return;
+  clearTimeout(pongTimer);
+  pongTimer = setTimeout(() => abandon?.(), PONG_TIMEOUT_MS);
 }
 
 start.addEventListener("click", () => {
@@ -1175,6 +1204,6 @@ document.addEventListener("contextmenu", (event) => {
   event.preventDefault();
 });
 registerServiceWorker();
-setInterval(() => send({ type: "ping" }), 30_000);
+setInterval(heartbeat, PING_INTERVAL_MS);
 window.addEventListener("pagehide", clearSecrets);
 connect();

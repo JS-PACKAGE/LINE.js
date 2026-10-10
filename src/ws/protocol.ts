@@ -29,6 +29,8 @@ export type ServerFrame =
   | { type: "api:state"; enabled: boolean; chats: string[]; createdAt?: number }
   /** A freshly made bot token: shown once, only to the connection that asked (the CLI), never repeated or stored in clear. */
   | { type: "api:token"; token: string }
+  /** Answer to a client `ping`: lets the page tell a silent connection from a dead one. */
+  | { type: "pong" }
   | { type: "error"; requestId?: string; code: string; message: string };
 
 export type ClientFrame =
