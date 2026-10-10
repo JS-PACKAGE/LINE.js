@@ -57,6 +57,12 @@ menuButton.addEventListener("click", () => setDrawer(app.dataset.drawer !== "ope
 drawerBackdrop.addEventListener("click", () => setDrawer(false));
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && app.dataset.drawer === "open") setDrawer(false);
+  // Cmd/Ctrl+K: search the loaded messages (the browser's own find stays on Cmd/Ctrl+F).
+  if (event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && signedIn) {
+    event.preventDefault();
+    if (searching) messageSearch.focus();
+    else searchToggle.click();
+  }
 });
 
 const KIND_LABEL: Record<Channel["kind"], string> = { user: "好友", group: "群組", room: "聊天室", square: "社群" };
@@ -1288,9 +1294,31 @@ channelList.addEventListener("click", (event) => {
 });
 channelList.addEventListener("keydown", (event) => {
   const id = chatAt(event.target);
-  if (!id || (event.key !== "Enter" && event.key !== " ")) return;
+  if (!id) return;
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    openChat(id);
+    return;
+  }
+  // Listbox keys: move between rows without opening them; Enter opens.
+  const rows = [...channelList.querySelectorAll<HTMLLIElement>("li")];
+  const index = rows.findIndex((row) => row.dataset.channelId === id);
+  const target = event.key === "ArrowDown" ? rows[index + 1] : event.key === "ArrowUp" ? rows[index - 1] : event.key === "Home" ? rows[0] : event.key === "End" ? rows.at(-1) : undefined;
+  if (event.key === "ArrowUp" && index === 0) {
+    event.preventDefault();
+    filter.focus();
+  } else if (target) {
+    event.preventDefault();
+    target.focus();
+  }
+});
+// From the filter, ↓ goes into the list it narrows.
+filter.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowDown") return;
+  const first = channelList.querySelector<HTMLLIElement>("li");
+  if (!first) return;
   event.preventDefault();
-  openChat(id);
+  first.focus();
 });
 
 messageList.addEventListener("scroll", () => {
