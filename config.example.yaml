@@ -1,10 +1,7 @@
 # 本機設定範本；首次啟動若沒有 config.yaml，程式會自動複製此檔。
 # config.yaml 可自行調整，不納入版本控制；session.json 含敏感憑證，請勿分享。
-#
-# Phase 1 使用 server 與 line 設定。
-# history、cache 與 limits 會先驗證設定值，於後續訊息／媒體功能實作時套用。
 
-# 同埠 HTTP 與後續 WebSocket 的監聽位置。
+# 同埠 HTTP 與 WebSocket 的監聽位置。
 server:
   # 預設且建議使用 127.0.0.1（僅本機可連）。可改成其他位址（主機名稱、IPv4 或 IPv6，不含埠），一切以本檔為準；
   # 但網頁不需帳號密碼，能連到該位址的人就能操作已登入的 LINE 帳號，改前請確認網路環境可信。

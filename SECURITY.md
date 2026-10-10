@@ -157,11 +157,11 @@ approval, and a regression against any of them is treated as a vulnerability.
 
 | Rule | Enforcement |
 |---|---|
-| Received media can only be requested for message ids this server has itself seen (`msg-<id>`), so the browser cannot use the logged-in session to probe arbitrary LINE objects. | `src/line/provider.ts`, `src/media/service.ts` |
+| Received media can only be requested for message ids this server has itself seen (`msg-<id>`), so the browser cannot use the logged-in session to probe arbitrary LINE objects. The chat list's last-message previews do not count as seen: they never make media fetchable. | `src/line/provider.ts`, `src/media/service.ts` |
 | Media types are determined from content bytes; SVG and HTML are never served as received media. | `src/media/service.ts` |
 | Download size is capped (`limits.downloadMaxBytes`, default 50 MiB, at most 100 MiB) and the media cache is a bounded LRU. | `src/line/provider.ts`, `src/media/service.ts` |
 | Message media is served `private, no-store`; it must not linger in the browser cache. | `src/http/server.ts` |
-| A message its sender took back keeps only sender and time in the cache; its media is dropped from the media cache and is no longer fetched from LINE. | `src/model/store.ts`, `src/ws/hub.ts`, `src/line/provider.ts` |
+| A message its sender took back keeps only sender and time in the cache (history pages and list previews included); its media is dropped from the media cache, a download already in progress is handed only to requests already waiting and never cached, and it is no longer fetched from LINE. | `src/model/store.ts`, `src/ws/hub.ts`, `src/line/provider.ts`, `src/media/service.ts` |
 | Avatar and sticker fetches use fixed LINE CDN origins with a timeout and `redirect: "error"`. | `src/line/provider.ts` |
 | Messages are never written to disk. At most 500 are kept per channel in memory, de-duplicated by message id. | `src/model/store.ts` |
 

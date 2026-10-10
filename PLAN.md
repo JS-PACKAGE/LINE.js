@@ -1,4 +1,4 @@
-# LINE.js 本機 LINE 網頁客戶端 企劃書 v1.11
+# LINE.js 本機 LINE 網頁客戶端 企劃書 v1.13
 
 一句話：以 **WebSocket** 為即時通道、以 **@evex/linejs v3.4.2** 為 LINE 連線核心的本機 TypeScript 網頁客戶端（**LINE.js**）——Node 後端以 QR 掃碼登入 LINE，將訊息與頻道清單經 ws 推送到監聽 `127.0.0.1:3789` 的網頁前端。
 
@@ -136,6 +136,8 @@
 
 > v1.12（續）：新增 Client → Server `message:unsend`（`{ requestId, chatId, messageId }`，僅網頁、與 `message:send` 共用頻率上限）：只接受伺服器已顯示、且為本帳號所發的訊息（talk 以帳號 mid；OpenChat 以本服務送出訊息時 LINE 回傳的成員 id），經 adapter 呼叫 `talk.unsendMessage`／`square.unsendMessage`；失敗回 generic `UNSEND_FAILED`。
 
+> v1.13（協定版本仍為 2：只新增影格與選用欄位，舊頁面忽略未知影格）：`Channel.lastMessage`（清單預覽；載入時取自 LINE 摘要——talk `getMessageBoxes` 的 `lastMessages`（`lastMessagesPerMessageBoxCount: 1`，E2EE 每則只解密一次）、社群 `getSquareChatStatus.lastMessage`——之後隨即時訊息、編輯、收回更新；預覽不登記媒體，不能藉此下載）；`lastMessageAt` 另採 `lastDeliveredMessageId.deliveredTime`。新增 Server → Client `channel`（`{ channel }`，單一頻道變動，只給網頁）、`chat:checked`（`{ chatId }`，此帳號在其他裝置讀過，網頁清除未讀；來源為 LINE `SEND_CHAT_CHECKED`，只採用 `param1` 且須為伺服器已知聊天室）、`pong`（回應 `ping`）。心跳：網頁每 30 秒 `ping`、10 秒無 `pong` 即重連，回到前景立即探測；伺服器以 WebSocket 協定層 Ping 每 30 秒檢查，連續兩輪未回應即關閉。群組／個人資料／聊天室成員變動的 operation 不解析參數，只觸發頻道清單重新整理（同一波 3 秒內合併，最多每 30 秒一次）。
+
 ### Server → Client
 
 | type | 負載 |
@@ -149,6 +151,9 @@
 | `channels` | `{ channels: Channel[] }`（snapshot，連線即送、變動重送） |
 | `messages` | `{ chatId, messages: Message[] }`（連線時快照，每個聊天室一個影格；舊訊息，不計未讀） |
 | `message` | `{ message: Message }`（即時新訊息） |
+| `channel` | `{ channel: Channel }`（單一頻道變動：預覽、活動時間、未讀數；只給網頁） |
+| `chat:checked` | `{ chatId }`（此帳號在其他裝置讀過該聊天室；只給網頁） |
+| `pong` | `{}`（回應 `ping`） |
 | `message:edit` | `{ message: Message }` |
 | `message:unsend` | `{ chatId, messageId }`（訊息已收回；快照與歷史中以 `Message.unsent: true` 佔位呈現） |
 | `history` | `{ requestId, chatId, messages: Message[], hasMore, cursor? }`（`cursor` 傳回 `before` 取更早一頁） |
@@ -190,7 +195,7 @@
 
 ```
 Channel { channelId, kind: "user"｜"group"｜"room"｜"square", name,
-          pictureId?, unreadCount?, memberCount?, lastMessageAt? }
+          pictureId?, unreadCount?, memberCount?, lastMessageAt?, lastMessage?: Message }
 Message { messageId, channelId, channelKind, senderId, senderName, senderPictureId?, senderRole?,
           text?, contentType, createdAt, editedAt?, mediaId?, replyTo?,
           mentions?: { start, end, userId? }[],   // 收到的 @ 提及；無 userId 為 @All
