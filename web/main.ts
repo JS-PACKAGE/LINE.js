@@ -1136,6 +1136,7 @@ async function recoverStalePage(): Promise<void> {
 const PING_INTERVAL_MS = 30_000;
 const PONG_TIMEOUT_MS = 10_000;
 let pongTimer: ReturnType<typeof setTimeout> | undefined;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 // Gives up on the current socket as if it had closed; set by connect().
 let abandon: (() => void) | undefined;
 
@@ -1143,27 +1144,38 @@ function connect(): void {
   const self = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   socket = self;
   let opened = false;
-  const closed = (): void => {
+  let openedAt = 0;
+  // Why the socket ended, for the console: the browser's close code/reason, or our own heartbeat giving up.
+  const closed = (cause: string): void => {
     // Already replaced (the heartbeat gave up on it): the late close event changes nothing.
     if (socket !== self) return;
     socket = undefined;
     abandon = undefined;
     clearTimeout(pongTimer);
+    console.info("LINE.js 連線中斷", {
+      at: new Date().toISOString(),
+      cause,
+      connectedForSeconds: opened ? Math.round((Date.now() - openedAt) / 1000) : 0,
+      visibility: document.visibilityState,
+      hiddenForSeconds: hiddenSince === undefined ? 0 : Math.round((Date.now() - hiddenSince) / 1000),
+      online: navigator.onLine,
+    });
     clearSecrets();
     composer.setConnected(false);
     offline.hidden = false;
     if (signedIn) listenState.textContent = "與本機服務斷線，重新連線中…";
     else showLogin("無法連線至本機服務，正在重新連線…", false);
     if (!opened && ++refusedConnects >= 3) void recoverStalePage();
-    setTimeout(connect, reconnectDelay);
+    reconnectTimer = setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 10_000);
   };
   abandon = () => {
-    closed();
+    closed(`no pong within ${PONG_TIMEOUT_MS / 1000}s`);
     self.close();
   };
   self.addEventListener("open", () => {
     opened = true;
+    openedAt = Date.now();
     refusedConnects = 0;
     reconnectDelay = 1000;
     composer.setConnected(true);
@@ -1176,7 +1188,7 @@ function connect(): void {
       status.textContent = "收到無法解析的伺服器資料。";
     }
   });
-  self.addEventListener("close", closed);
+  self.addEventListener("close", (event) => closed(`close code=${event.code}${event.reason ? ` reason=${event.reason.slice(0, 100)}` : ""} clean=${event.wasClean}`));
 }
 
 function heartbeat(): void {
@@ -1184,6 +1196,23 @@ function heartbeat(): void {
   clearTimeout(pongTimer);
   pongTimer = setTimeout(() => abandon?.(), PONG_TIMEOUT_MS);
 }
+
+// Background tabs get their timers throttled or frozen, so the regular ping may not have run for a
+// while: coming back, check the connection at once, and stop waiting out a reconnect backoff.
+let hiddenSince: number | undefined = document.visibilityState === "hidden" ? Date.now() : undefined;
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    hiddenSince = Date.now();
+    return;
+  }
+  hiddenSince = undefined;
+  if (socket) heartbeat();
+  else {
+    clearTimeout(reconnectTimer);
+    reconnectDelay = 1000;
+    connect();
+  }
+});
 
 start.addEventListener("click", () => {
   if (authState !== "idle" && authState !== "error") return;

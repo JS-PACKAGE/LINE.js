@@ -91,9 +91,11 @@ export function createHub(options: HubOptions): Hub {
   const ownSquareSenders = new Map<string, string>();
   // Sockets that answered the last ping (browsers and the ws client both reply to pings on their own).
   const alive = new WeakSet<WebSocket>();
+  const timedOut = new WeakSet<WebSocket>();
   const heartbeat = setInterval(() => {
     for (const socket of [...wss.clients, ...botWss.clients]) {
       if (!alive.has(socket)) {
+        timedOut.add(socket);
         socket.terminate();
         continue;
       }
@@ -102,12 +104,19 @@ export function createHub(options: HubOptions): Hub {
     }
   }, HEARTBEAT_MS);
 
-  function watch(socket: WebSocket): void {
+  function watch(socket: WebSocket, kind: "page" | "bot"): void {
     // ws emits 'error' for protocol violations (e.g. frame over maxPayload) and
     // closes the socket itself; an unhandled 'error' would take the process down.
     socket.on("error", () => {});
     alive.add(socket);
     socket.on("pong", () => alive.add(socket));
+    // When and why a connection ended (to tell a sleeping tab from a dropped network). Only the close
+    // code and a length-capped reason: no headers, cookies or tokens.
+    const openedAt = Date.now();
+    socket.on("close", (code, reason) => {
+      const why = timedOut.has(socket) ? "heartbeat-timeout" : `code=${code}${reason.length > 0 ? ` reason=${reason.toString("utf8").slice(0, 100).replace(/\s+/g, " ")}` : ""}`;
+      console.info(`WS_CLOSED ${kind} ${why} after=${Math.round((Date.now() - openedAt) / 1000)}s`);
+    });
   }
 
   function send(socket: WebSocket, frame: ServerFrame): void {
@@ -450,7 +459,7 @@ export function createHub(options: HubOptions): Hub {
   });
 
   botWss.on("connection", (socket) => {
-    watch(socket);
+    watch(socket, "bot");
     const sendLimiter = new SlidingWindowLimiter(config.limits.sendsPerSecond, 1000);
     const historyLimiter = new SlidingWindowLimiter(HISTORY_PER_SECOND, 1000);
     send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion });
@@ -484,7 +493,7 @@ export function createHub(options: HubOptions): Hub {
   });
 
   wss.on("connection", (socket) => {
-    watch(socket);
+    watch(socket, "page");
     // Per connection: a runaway script must not be able to hammer LINE through us.
     const sendLimiter = new SlidingWindowLimiter(config.limits.sendsPerSecond, 1000);
     const historyLimiter = new SlidingWindowLimiter(HISTORY_PER_SECOND, 1000);
