@@ -403,3 +403,192 @@ test("reactions: talk messages carry theirs, OpenChat status events update them,
     ["square.react", { request: { reqSeq: 70, squareChatMid: SQUARE, messageId: "920", reactionType: "UNDO" } }],
   ]);
 });
+
+const squareRaw = (id, chat = SQUARE, contentType = "NONE") => ({ message: { id: String(id), to: chat, from: "p-member", contentType, text: `訊息${id}`, createdTime: String(1_700_000_000_000 + Number(id)), contentMetadata: {} } });
+const squareEvent = (id, chat = SQUARE, contentType = "NONE") => ({ payload: { receiveMessage: { squareMessage: squareRaw(id, chat, contentType), senderDisplayName: "成員" } } });
+const squareStatus = (id, status, chat = SQUARE) => ({ type: 46, payload: { notifiedUpdateMessageStatus: { squareChatMid: chat, messageId: String(id), messageStatus: { contents: { messageReactionStatus: status } } } } });
+
+test("OpenChat concurrent history shares the walk and retains interleaved live deliveries, take-backs and reaction removals", async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let walks = 0;
+  const base = fakeBase({ square: {
+    async fetchSquareChatEvents() {
+      walks += 1;
+      await gate;
+      const first = squareEvent(10);
+      first.payload.receiveMessage.messageReactionStatus = { 1: 1, 2: { 2: 1 } };
+      return { events: [first, squareEvent(11, SQUARE, "IMAGE")] };
+    },
+    async getSquareMember() { return { squareMember: { displayName: "成員" } }; },
+  } });
+  const { provider, emit } = await activeProvider(base);
+  provider.events.onUnsend = () => {};
+  const channel = { channelId: SQUARE, kind: "square" };
+  const first = provider.fetchHistory(channel, 50);
+  const second = provider.fetchHistory(channel, 50);
+  emit("square:message", { raw: squareRaw(12) });
+  await settle();
+  emit("square:event", squareStatus(10, { 1: 0, 2: {} }));
+  emit("square:event", { type: 5, payload: { notifiedDestroyMessage: { squareChatMid: SQUARE, messageId: "11" } } });
+  release();
+  const pages = await Promise.all([first, second]);
+  assert.equal(walks, 1, "same-chat requests do not duplicate LINE history RPCs");
+  for (const page of pages) {
+    assert.deepEqual(page.messages.map((message) => message.messageId), ["10", "11", "12"]);
+    assert.equal(page.messages[0].reactions, undefined);
+    assert.equal(page.messages[1].unsent, true);
+    assert.equal(page.messages[1].mediaId, undefined);
+  }
+  assert.equal(await provider.fetchMessageMedia("11"), undefined);
+});
+
+test("OpenChat paging survives an earlier live delivery and cache refresh; chats stay isolated", async () => {
+  let walks = 0;
+  const other = "m" + "t".repeat(32);
+  const base = fakeBase({ square: {
+    async fetchSquareChatEvents({ squareChatMid }) {
+      walks += 1;
+      return { events: [1, 2, 3, 4].map((id) => squareEvent(id, squareChatMid)) };
+    },
+    async getSquareMember() { return { squareMember: { displayName: "成員" } }; },
+  } });
+  const { provider, emit } = await activeProvider(base);
+  const channel = { channelId: SQUARE, kind: "square" };
+  const newest = await provider.fetchHistory(channel, 2);
+  emit("square:message", { raw: squareRaw(0) });
+  await settle();
+  const older = await provider.fetchHistory(channel, 2, newest.cursor);
+  assert.deepEqual(older.messages.map((message) => message.messageId), ["1", "2"]);
+  provider.squareCache.get(SQUARE).at = 0;
+  assert.deepEqual((await provider.fetchHistory(channel, 2, newest.cursor)).messages.map((message) => message.messageId), ["1", "2"]);
+  assert.ok((await provider.fetchHistory({ channelId: other, kind: "square" }, 50)).messages.every((message) => message.channelId === other));
+  assert.equal(walks, 3);
+});
+
+test("OpenChat walks deduplicate events, consume retained mutations, and authorize media only on the displayed page", async () => {
+  const base = fakeBase({ square: {
+    async fetchSquareChatEvents() {
+      return { events: [
+        ...Array.from({ length: 600 }, (_, i) => squareEvent(i + 1, SQUARE, "IMAGE")),
+        squareEvent(600, SQUARE, "IMAGE"),
+        squareStatus(599, { 1: 1, 2: { 2: 1 } }),
+        squareStatus(599, { 1: 0, 2: {} }),
+        { type: 5, payload: { notifiedDestroyMessage: { squareChatMid: SQUARE, messageId: "598" } } },
+        squareEvent(999, "m" + "t".repeat(32)),
+      ] };
+    },
+    async getSquareMember() { return { squareMember: { displayName: "成員" } }; },
+  } });
+  const { provider } = await activeProvider(base);
+  const channel = { channelId: SQUARE, kind: "square" };
+  const latest = await provider.fetchHistory(channel, 3);
+  assert.deepEqual(latest.messages.map((message) => message.messageId), ["598", "599", "600"]);
+  assert.equal(latest.messages[0].unsent, true);
+  assert.equal(latest.messages[1].reactions, undefined);
+  assert.equal(provider.mediaOrigins.has("1"), false, "walked but unseen objects are not downloadable");
+  const older = await provider.fetchHistory(channel, 100, `${1_700_000_000_003}:3`);
+  assert.deepEqual(older.messages.map((message) => message.messageId), ["1", "2"]);
+  assert.equal(provider.mediaOrigins.has("1"), true, "displaying an older page authorizes its media");
+});
+
+test("OpenChat an invalidated in-flight walk cannot refill history or media after a listening gap", async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const base = fakeBase({ square: {
+    async fetchSquareChatEvents() { await gate; return { events: [squareEvent(1, SQUARE, "IMAGE")] }; },
+  } });
+  const { provider } = await activeProvider(base);
+  const pending = provider.fetchHistory({ channelId: SQUARE, kind: "square" }, 50);
+  provider.squareCache.clear();
+  release();
+  await assert.rejects(pending, /HISTORY_INVALIDATED/);
+  assert.equal(provider.squareCache.size, 0);
+  assert.equal(provider.mediaOrigins.size, 0);
+});
+
+test("OpenChat own reaction changes and take-backs remain correct on the next cached and refreshed history", async () => {
+  const base = fakeBase({ square: {
+    async fetchSquareChatEvents() { return { events: [squareEvent(1), squareEvent(2, SQUARE, "IMAGE")] }; },
+    async getSquareMember() { return { squareMember: { displayName: "成員" } }; },
+    async reactToMessage() {},
+    async unsendMessage() {},
+  } });
+  base.getReqseq = async () => 1;
+  const { provider } = await activeProvider(base);
+  const channel = { channelId: SQUARE, kind: "square" };
+  await provider.fetchHistory(channel, 50);
+  await provider.react(channel, "1", "LOVE");
+  assert.deepEqual((await provider.fetchHistory(channel, 50)).messages[0].reactions, { counts: { LOVE: 1 }, mine: "LOVE" });
+  await provider.react(channel, "1", undefined);
+  await provider.unsendMessage(channel, "2");
+  provider.squareCache.get(SQUARE).at = 0;
+  const page = await provider.fetchHistory(channel, 50);
+  assert.equal(page.messages[0].reactions, undefined);
+  assert.equal(page.messages[1].unsent, true);
+  assert.equal(await provider.fetchMessageMedia("2"), undefined);
+});
+
+test("OpenChat failed walks are retryable and continuation tokens reach the installed wrapper", async () => {
+  const calls = [];
+  let fail = true;
+  const base = fakeBase({ square: {
+    async fetchSquareChatEvents(request) {
+      calls.push(request);
+      if (fail) { fail = false; throw new Error("offline"); }
+      return request.continuationToken ? { events: [squareEvent(2)] } : { events: [squareEvent(1)], syncToken: "sync", continuationToken: "next" };
+    },
+    async getSquareMember() { return { squareMember: { displayName: "成員" } }; },
+  } });
+  const { provider } = await activeProvider(base);
+  const channel = { channelId: SQUARE, kind: "square" };
+  await assert.rejects(provider.fetchHistory(channel, 50), /offline/);
+  assert.deepEqual((await provider.fetchHistory(channel, 50)).messages.map((message) => message.messageId), ["1", "2"]);
+  assert.deepEqual(calls[2], { squareChatMid: SQUARE, limit: 100, syncToken: "sync", continuationToken: "next" });
+});
+
+test("OpenChat live history remains bounded without shifting message-anchored cursors", async () => {
+  const base = fakeBase({ square: {
+    async fetchSquareChatEvents() { return { events: [squareEvent(1), squareEvent(2)] }; },
+    async getSquareMember() { return { squareMember: { displayName: "成員" } }; },
+  } });
+  const { provider, emit } = await activeProvider(base);
+  const channel = { channelId: SQUARE, kind: "square" };
+  await provider.fetchHistory(channel, 50);
+  for (let id = 3; id <= 5010; id += 1) emit("square:message", { raw: squareRaw(id) });
+  await provider.deliveries.get(SQUARE);
+  assert.equal(provider.squareCache.get(SQUARE).messages.length, 5000);
+  const latest = await provider.fetchHistory(channel, 2);
+  assert.deepEqual(latest.messages.map((message) => message.messageId), ["5009", "5010"]);
+  assert.deepEqual((await provider.fetchHistory(channel, 2, latest.cursor)).messages.map((message) => message.messageId), ["5007", "5008"]);
+});
+
+test("OpenChat TTL refresh replaces old live reactions with current history while protecting events during the refresh", async () => {
+  let refreshed = false;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const base = fakeBase({ square: {
+    async fetchSquareChatEvents() {
+      if (refreshed) await gate;
+      const event = squareEvent(1);
+      event.payload.receiveMessage.messageReactionStatus = refreshed ? { 1: 3, 2: { 3: 3 } } : { 1: 1, 2: { 3: 1 } };
+      const second = squareEvent(2);
+      second.payload.receiveMessage.messageReactionStatus = { 1: 1, 2: { 3: 1 } };
+      return { events: [event, second] };
+    },
+    async getSquareMember() { return { squareMember: { displayName: "成員" } }; },
+  } });
+  const { provider, emit } = await activeProvider(base);
+  const channel = { channelId: SQUARE, kind: "square" };
+  await provider.fetchHistory(channel, 50);
+  emit("square:event", squareStatus(1, { 1: 2, 2: { 3: 2 } }));
+  emit("square:event", squareStatus(2, { 1: 1, 2: { 3: 1 } }));
+  provider.squareCache.get(SQUARE).at = 0;
+  refreshed = true;
+  const refreshing = provider.fetchHistory(channel, 50);
+  emit("square:event", squareStatus(2, { 1: 0, 2: {} }));
+  release();
+  const page = await refreshing;
+  assert.deepEqual(page.messages[0].reactions, { counts: { LOVE: 3 } }, "history replaces reactions from before this refresh");
+  assert.equal(page.messages[1].reactions, undefined, "live removal during refresh still overrides the walked snapshot");
+});

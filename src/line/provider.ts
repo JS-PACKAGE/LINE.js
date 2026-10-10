@@ -4,6 +4,7 @@ import { LINEStruct } from "@evex/linejs/thrift";
 import type { Message as LineMessage, SquareMessage as LineSquareMessage } from "@evex/linejs-types";
 import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
 import type { Channel, ChannelRef, HistoryPage, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
+import { withMyReaction } from "../model/store.js";
 import { memberRole, mentionMetadata, parseMentions, replyTarget } from "./members.js";
 import { parseCheckedOperation, parseReadOperation, parseReadRanges, parseUnsendOperation } from "./read.js";
 import { parseOwnedProducts, parsePackageMeta, type PackageMeta } from "./stickers.js";
@@ -89,6 +90,7 @@ const SQUARE_MAX_PAGES = 50;
 // can live longer than a page-through; any gap in listening drops it.
 const SQUARE_CACHE_MS = 10 * 60_000;
 const SQUARE_CACHE_ENTRIES = 5;
+const SQUARE_MAX_MESSAGES = SQUARE_PAGE_SIZE * SQUARE_MAX_PAGES;
 const CONTACT_BATCH = 100;
 const SQUARE_LOOKUP_CONCURRENCY = 5;
 const MAX_LOOKUPS_PER_CALL = 100;
@@ -128,6 +130,15 @@ const MAX_MEDIA_ORIGINS = 500;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 const DEFAULT_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 
+interface SquareHistory {
+  at: number;
+  messages: Message[];
+  origins: Map<string, LineMessage>;
+  updates: Map<string, { unsent?: boolean; reactions?: Reactions }>;
+  liveUpdates: Set<string>;
+  loading?: Promise<Message[]>;
+}
+
 export class EvexLineProvider implements LineProvider {
   private base?: BaseClient;
   private client?: Client;
@@ -144,7 +155,7 @@ export class EvexLineProvider implements LineProvider {
   private lookupMisses = new Map<string, number>();
   // Per chat, the tail of its delivery chain: one slow member lookup holds back only its own chat.
   private deliveries = new Map<string, Promise<void>>();
-  private squareCache = new Map<string, { at: number; messages: Message[] }>();
+  private squareCache = new Map<string, SquareHistory>();
   private stickerPackages?: { at: number; packages: StickerPackage[] };
   // Messages whose media the browser may ask for, newest last. Requests are only honoured for
   // messages seen here, so the browser cannot use this session to probe arbitrary LINE objects.
@@ -282,7 +293,10 @@ export class EvexLineProvider implements LineProvider {
         if (typeof update?.squareChatMid !== "string" || typeof update.messageId !== "string" || !/^\d{1,24}$/.test(update.messageId)) return;
         // Only a status that parses (or plainly says zero) changes what is shown; anything else is ignored.
         const reactions = squareReactions(status);
-        if (reactions || isEmptySquareStatus(status)) this.events.onReactions(update.squareChatMid, update.messageId, reactions);
+        if (reactions || isEmptySquareStatus(status)) {
+          this.updateSquareMessage(update.squareChatMid, update.messageId, { reactions });
+          this.events.onReactions(update.squareChatMid, update.messageId, reactions);
+        }
       }
     });
     this.listen();
@@ -291,6 +305,7 @@ export class EvexLineProvider implements LineProvider {
   /** The message's media is no longer fetchable through us, and the hub replaces what it shows. */
   private unsent(chatHint: string, messageId: string): void {
     this.mediaOrigins.delete(messageId);
+    this.updateSquareMessage(chatHint, messageId, { unsent: true });
     this.events.onUnsend(chatHint, messageId);
   }
 
@@ -658,10 +673,12 @@ export class EvexLineProvider implements LineProvider {
     } else {
       fetched = await talk.getRecentMessagesV2({ messageBoxId: channel.channelId, messagesCount: limit });
     }
+    if (this.client !== client) throw new Error("HISTORY_INVALIDATED");
     const raws = fetched.filter((raw) => raw.id !== anchorId);
     const readable: { raw: LineMessage; undecryptable: boolean }[] = [];
     for (const raw of raws) readable.push(await this.decryptTalk(client, raw));
     await this.resolveMembers(client, "talk", readable.flatMap((entry) => [entry.raw.from, ...chatEventMids(entry.raw.contentMetadata)]));
+    if (this.client !== client) throw new Error("HISTORY_INVALIDATED");
     const myMid = this.getProfile().userId;
     const messages = readable.map((entry) => this.talkToMessage(entry.raw, myMid, entry.undecryptable));
     messages.sort((a, b) => a.createdAt - b.createdAt);
@@ -674,53 +691,157 @@ export class EvexLineProvider implements LineProvider {
     };
   }
 
-  // LINE offers no "latest N" query for OpenChat: BACKWARD returns nothing without a position and
-  // FORWARD starts at the oldest retained event. So walk forward once (the retained window is a few
-  // hundred events) and page that list newest-first; the cursor is an index into it.
+  // Walk LINE's retained event window once. Cursors identify messages rather than array offsets:
+  // a refreshed window or an out-of-order live delivery must not shift the next page.
   private async fetchSquareHistory(client: Client, channel: ChannelRef, limit: number, before?: string): Promise<HistoryPage> {
     const all = await this.loadSquareMessages(client, channel.channelId);
-    const end = before === undefined ? all.length : Math.min(Number(before), all.length);
-    if (!Number.isSafeInteger(end) || end < 0) throw new Error("INVALID_CURSOR");
+    if (this.client !== client) throw new Error("HISTORY_INVALIDATED");
+    let end = all.length;
+    if (before !== undefined) {
+      const match = /^(\d+):(\d{1,24})$/.exec(before);
+      if (!match || !Number.isSafeInteger(Number(match[1]))) throw new Error("INVALID_CURSOR");
+      end = all.findIndex((message) => this.compareSquareMessages(message, { createdAt: Number(match[1]), messageId: match[2]! }) >= 0);
+      if (end < 0) end = all.length;
+    }
     const start = Math.max(0, end - limit);
-    return { messages: all.slice(start, end), hasMore: start > 0, ...(start > 0 ? { cursor: String(start) } : {}) };
+    const messages = all.slice(start, end);
+    const cached = this.squareCache.get(channel.channelId);
+    for (const message of messages) {
+      const raw = cached?.origins.get(message.messageId);
+      if (raw && !message.unsent) this.rememberMedia(raw, true);
+    }
+    const oldest = messages[0];
+    return { messages, hasMore: start > 0, ...(start > 0 && oldest ? { cursor: `${oldest.createdAt}:${oldest.messageId}` } : {}) };
   }
 
   private async loadSquareMessages(client: Client, squareChatMid: string): Promise<Message[]> {
     const cached = this.squareCache.get(squareChatMid);
+    if (cached?.loading) return cached.loading;
     if (cached && Date.now() - cached.at < SQUARE_CACHE_MS) return cached.messages;
-    const found: { raw: LineSquareMessage; name?: string; reactions?: unknown }[] = [];
+    const entry: SquareHistory = { at: 0, messages: [], origins: new Map(), updates: new Map(), liveUpdates: new Set() };
+    // Take-backs are permanent; reaction snapshots are not. Only events arriving during this
+    // walk override its history statuses, otherwise an expired live snapshot would win forever.
+    if (cached) for (const [id, update] of cached.updates) {
+      if (update.unsent) entry.updates.set(id, { unsent: true });
+    }
+    if (!cached && this.squareCache.size >= SQUARE_CACHE_ENTRIES) this.squareCache.delete(this.squareCache.keys().next().value!);
+    this.squareCache.set(squareChatMid, entry);
+    const loading = this.walkSquareMessages(client, squareChatMid, entry);
+    entry.loading = loading;
+    try {
+      return await loading;
+    } catch (error) {
+      if (this.squareCache.get(squareChatMid) === entry) this.squareCache.delete(squareChatMid);
+      throw error;
+    } finally {
+      entry.loading = undefined;
+    }
+  }
+
+  private async walkSquareMessages(client: Client, squareChatMid: string, entry: SquareHistory): Promise<Message[]> {
+    const found = new Map<string, { raw: LineSquareMessage; name?: string; reactions?: unknown }>();
     let token: { syncToken?: string; continuationToken?: string } = {};
     for (let page = 0; page < SQUARE_MAX_PAGES; page += 1) {
-      // `continuationToken` belongs to FetchSquareChatEventsRequest but linejs' wrapper does not declare it;
-      // the wrapper spreads its options into the request, so it reaches LINE unchanged.
+      // The installed 3.4.2 wrapper spreads options; thrift declares continuationToken.
       const response = await client.base.square.fetchSquareChatEvents({
         squareChatMid, limit: SQUARE_PAGE_SIZE, ...token,
       } as Parameters<Client["base"]["square"]["fetchSquareChatEvents"]>[0]);
+      if (this.client !== client || this.squareCache.get(squareChatMid) !== entry) throw new Error("HISTORY_INVALIDATED");
       for (const event of response.events) {
         const payload = event.payload.receiveMessage ?? event.payload.sendMessage;
-        if (payload?.squareMessage) found.push({ raw: payload.squareMessage, name: payload.senderDisplayName, reactions: payload.messageReactionStatus });
+        if (payload?.squareMessage?.message.to === squareChatMid) {
+          found.set(payload.squareMessage.message.id, { raw: payload.squareMessage, name: payload.senderDisplayName, reactions: payload.messageReactionStatus });
+        }
+        const destroyed = event.payload.notifiedDestroyMessage;
+        if (destroyed?.squareChatMid === squareChatMid) this.updateSquareMessage(squareChatMid, destroyed.messageId, { unsent: true }, false);
+        const update = event.payload.notifiedUpdateMessageStatus;
+        const status = update?.messageStatus?.contents?.messageReactionStatus;
+        if (update?.squareChatMid === squareChatMid) {
+          const reactions = squareReactions(status);
+          if (reactions || isEmptySquareStatus(status)) this.updateSquareMessage(squareChatMid, update.messageId, { reactions }, false);
+        }
       }
       if (response.events.length === 0 || !response.continuationToken) break;
       token = { syncToken: response.syncToken, continuationToken: response.continuationToken };
     }
-    for (const { raw, name } of found) if (name) this.rememberName(raw.message.from, name);
-    await this.resolveMembers(client, "square", found.map(({ raw }) => raw.message.from));
-    const messages = found.map(({ raw, reactions }) => this.squareToMessage(raw, undefined, false, reactions));
-    messages.sort((a, b) => a.createdAt - b.createdAt);
-    // Paging must see a stable list; a few entries are plenty, this is only a paging aid.
-    if (this.squareCache.size >= SQUARE_CACHE_ENTRIES) this.squareCache.delete(this.squareCache.keys().next().value!);
-    this.squareCache.set(squareChatMid, { at: Date.now(), messages });
-    return messages;
+    for (const { raw, name } of found.values()) if (name) this.rememberName(raw.message.from, name);
+    await this.resolveMembers(client, "square", [...found.values()].map(({ raw }) => raw.message.from));
+    if (this.client !== client || this.squareCache.get(squareChatMid) !== entry) throw new Error("HISTORY_INVALIDATED");
+    const merged = new Map<string, Message>();
+    for (const { raw, reactions } of found.values()) {
+      const message = this.squareToMessage(raw, undefined, true, reactions);
+      // Conversion is preview-only until a page is shown; preserve the media descriptor without
+      // registering all 5,000 walked objects in the 500-entry download allowlist.
+      const media = MEDIA_KIND[String(raw.message.contentType)];
+      if (media && /^\d{1,24}$/.test(message.messageId)) message.mediaId = `msg-${message.messageId}`;
+      if (message.card?.kind === "file" && /^\d{1,24}$/.test(message.messageId)) message.card = { ...message.card, fileId: `file-${message.messageId}` };
+      entry.origins.set(message.messageId, raw.message);
+      merged.set(message.messageId, message);
+    }
+    for (const message of entry.messages) merged.set(message.messageId, message);
+    entry.messages = [...merged.values()];
+    entry.messages.sort((a, b) => this.compareSquareMessages(a, b));
+    for (const [id, update] of entry.updates) this.applySquareUpdate(entry, id, update);
+    this.boundSquareHistory(entry);
+    entry.at = Date.now();
+    return entry.messages;
   }
 
-  /** Keeps a walked OpenChat history current with what arrives live or is sent from here. */
+  private compareSquareMessages(a: Pick<Message, "createdAt" | "messageId">, b: Pick<Message, "createdAt" | "messageId">): number {
+    return a.createdAt - b.createdAt || a.messageId.length - b.messageId.length || a.messageId.localeCompare(b.messageId);
+  }
+
+  private boundSquareHistory(entry: SquareHistory): void {
+    if (entry.messages.length > SQUARE_MAX_MESSAGES) {
+      for (const message of entry.messages.splice(0, entry.messages.length - SQUARE_MAX_MESSAGES)) {
+        entry.origins.delete(message.messageId);
+        entry.updates.delete(message.messageId);
+        entry.liveUpdates.delete(message.messageId);
+      }
+    }
+  }
+
+  private applySquareUpdate(entry: SquareHistory, id: string, update: { unsent?: boolean; reactions?: Reactions }): void {
+    const index = entry.messages.findIndex((message) => message.messageId === id);
+    if (index < 0) return;
+    const message = entry.messages[index]!;
+    if (update.unsent) {
+      entry.messages[index] = { messageId: message.messageId, channelId: message.channelId, channelKind: message.channelKind, senderId: message.senderId, senderName: message.senderName, createdAt: message.createdAt, contentType: message.contentType, unsent: true };
+      entry.origins.delete(id);
+    } else if (!message.unsent && "reactions" in update) {
+      const { reactions: _old, ...rest } = message;
+      entry.messages[index] = { ...rest, ...(update.reactions ? { reactions: update.reactions } : {}) };
+    }
+  }
+
+  private updateSquareMessage(chatId: string, id: string, update: { unsent?: boolean; reactions?: Reactions }, live = true): void {
+    const entry = this.squareCache.get(chatId);
+    if (!entry) return;
+    const known = entry.updates.get(id);
+    if (live) entry.liveUpdates.add(id);
+    entry.updates.set(id, !live && entry.liveUpdates.has(id) ? { ...update, ...known } : { ...known, ...update });
+    if (entry.updates.size > SQUARE_MAX_MESSAGES) {
+      const oldest = entry.updates.keys().next().value!;
+      entry.updates.delete(oldest);
+      entry.liveUpdates.delete(oldest);
+    }
+    this.applySquareUpdate(entry, id, entry.updates.get(id)!);
+  }
+
+  /** Merge live/own deliveries even while the initial walk is awaiting LINE or sender lookups. */
   private rememberSquareMessage(message: Message): void {
     const cached = this.squareCache.get(message.channelId);
     if (!cached) return;
     const index = cached.messages.findIndex((entry) => entry.messageId === message.messageId);
-    // Appending keeps the indexes that history cursors point at unchanged.
     if (index >= 0) cached.messages[index] = message;
     else cached.messages.push(message);
+    if (cached.messages.length > 1 && this.compareSquareMessages(cached.messages.at(-2)!, cached.messages.at(-1)!) > 0) cached.messages.sort((a, b) => this.compareSquareMessages(a, b));
+    const origin = this.mediaOrigins.get(message.messageId);
+    if (origin?.square) cached.origins.set(message.messageId, origin.raw);
+    const update = cached.updates.get(message.messageId);
+    if (update) this.applySquareUpdate(cached, message.messageId, update);
+    if (update?.unsent) this.mediaOrigins.delete(message.messageId);
+    this.boundSquareHistory(cached);
   }
 
   async sendText(channel: ChannelRef, text: string, options: SendTextOptions = {}): Promise<Message> {
@@ -734,12 +855,14 @@ export class EvexLineProvider implements LineProvider {
     });
     if (channel.kind === "square") {
       const { createdSquareMessage } = await client.base.square.sendMessage({ squareChatMid: channel.channelId, text, contentMetadata, ...reply });
+      if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
       const message = echo(this.squareToMessage(createdSquareMessage, me.displayName));
       this.rememberSquareMessage(message);
       return message;
     }
     // e2ee left undefined: linejs first tries plain and retries encrypted when LINE demands E2EE.
     const sent = await client.base.talk.sendMessage({ to: channel.channelId, text, contentMetadata, ...reply });
+    if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
     return echo(this.talkToMessage({ ...sent, to: channel.channelId, from: me.userId }, me.userId));
   }
 
@@ -749,11 +872,13 @@ export class EvexLineProvider implements LineProvider {
     const contentMetadata = { STKVER: "100", STKPKGID: String(packageId), STKID: String(stickerId) };
     if (channel.kind === "square") {
       const { createdSquareMessage } = await client.base.square.sendMessage({ squareChatMid: channel.channelId, contentType: "STICKER", contentMetadata });
+      if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
       const message = this.squareToMessage(createdSquareMessage, me.displayName);
       this.rememberSquareMessage(message);
       return message;
     }
     const sent = await client.base.talk.sendMessage({ to: channel.channelId, contentType: "STICKER", contentMetadata });
+    if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
     return this.talkToMessage({ ...sent, to: channel.channelId, from: me.userId, contentType: "STICKER", contentMetadata }, me.userId);
   }
 
@@ -771,15 +896,18 @@ export class EvexLineProvider implements LineProvider {
     const durationMs = isVideo ? mp4DurationMs(media.bytes) : undefined;
     try {
       const uploaded = await client.base.obs.uploadObjTalk(channel.channelId, isVideo ? "video" : "image", blob, undefined, filename, durationMs);
+      if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
       if (uploaded.objId) return this.outgoingMedia(channel, me, uploaded.objId, isVideo ? "VIDEO" : "IMAGE");
     } catch {
       // Fall through: end-to-end encrypted chats reject plain uploads.
     }
+    if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
     if (channel.kind === "square" || !(channel.channelId.startsWith("u") || channel.channelId.startsWith("c"))) {
       throw new Error("MEDIA_SEND_FAILED");
     }
     const oType = isVideo ? "video" : media.mime === "image/gif" ? "gif" : "image";
     const message = await client.base.obs.uploadMediaByE2EE({ data: blob, oType, to: channel.channelId, filename, ...(durationMs ? { durationMs } : {}) });
+    if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
     return this.talkToMessage({ ...message, to: channel.channelId, from: me.userId }, me.userId);
   }
 
@@ -788,7 +916,9 @@ export class EvexLineProvider implements LineProvider {
     // Same calls as linejs' TalkMessage.unsend()/SquareMessage.unsend(), without their extra ownership lookup (the hub checks).
     if (channel.kind === "square") await client.base.square.unsendMessage({ messageId, squareChatMid: channel.channelId });
     else await client.base.talk.unsendMessage({ messageId });
+    if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
     this.mediaOrigins.delete(messageId);
+    this.updateSquareMessage(channel.channelId, messageId, { unsent: true });
   }
 
   async react(channel: ChannelRef, messageId: string, kind: ReactionKind | undefined): Promise<void> {
@@ -798,6 +928,13 @@ export class EvexLineProvider implements LineProvider {
     if (channel.kind === "square") {
       // OpenChat has no cancel call: MessageReactionType UNDO takes the reaction back.
       await client.base.square.reactToMessage({ request: { reqSeq, squareChatMid: channel.channelId, messageId, reactionType: kind ?? "UNDO" } });
+      if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
+      const message = this.squareCache.get(channel.channelId)?.messages.find((entry) => entry.messageId === messageId);
+      if (message && !message.unsent) {
+        this.updateSquareMessage(channel.channelId, messageId, {
+          reactions: withMyReaction(message.reactions, kind),
+        });
+      }
     } else if (kind) {
       await client.base.talk.react({ id: BigInt(messageId), reaction: kind, reqSeq });
     } else {

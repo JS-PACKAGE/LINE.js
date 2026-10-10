@@ -89,6 +89,8 @@ export function createHub(options: HubOptions): Hub {
   const botSendLimiter = new SlidingWindowLimiter(config.api.sendsPerMinute, 60_000);
   let status: ListenState = "starting";
   let refreshing: Promise<void> | undefined;
+  // State can become ready again before an old LINE request settles; "ready" alone is not an account boundary.
+  let generation = 0;
   let update: UpdateInfo | undefined;
   let refreshTimer: NodeJS.Timeout | undefined;
   let listChangeTimer: NodeJS.Timeout | undefined;
@@ -222,19 +224,21 @@ export function createHub(options: HubOptions): Hub {
     const { requestId, chatId, limit, before } = parsed.value;
     const channel = store.channelOf(chatId);
     if (login.state !== "ready" || !channel || (scope && !scope.has(chatId))) return fail(socket, "UNKNOWN_CHAT", requestId);
+    const account = generation;
     try {
       const page = await provider.fetchHistory({ channelId: chatId, kind: channel.kind }, limit, before);
       // The account may have logged out while LINE was answering.
-      if (login.state !== "ready") return;
+      if (account !== generation || login.state !== "ready") return;
       // What the cache holds (a take-back placeholder where one applies), whether or not it kept the page.
       // A known message keeps its cached form, except that reactions LINE reports now replace older ones.
       const messages = page.messages.map((message) => store.upsert(message, false)
-        ?? (message.reactions ? updateReactions(message.channelId, message.messageId, message.reactions) : undefined)
+        ?? updateReactions(message.channelId, message.messageId, message.reactions)
         ?? store.get(message.messageId, message.channelId) ?? message);
       send(socket, { type: "history", requestId, chatId, messages, hasMore: page.hasMore, ...(page.cursor ? { cursor: page.cursor } : {}) });
       // Receipts are an extra: a failure here must not turn a good history page into an error. Bots get none.
       if (!before && !scope) void sendReadSnapshot(socket, chatId, channel.kind);
     } catch (error) {
+      if (account !== generation) return;
       logFailure("HISTORY_FAILED", error);
       fail(socket, "HISTORY_FAILED", requestId);
     }
@@ -249,6 +253,7 @@ export function createHub(options: HubOptions): Hub {
   }
 
   async function sendReadSnapshot(socket: WebSocket, chatId: string, kind: ChannelKind): Promise<void> {
+    const account = generation;
     // Opening a chat in several tabs, or reopening it, shares one LINE lookup for a short while:
     // live read events keep `seenReads` current in between.
     const recent = readFetches.get(chatId);
@@ -259,13 +264,14 @@ export function createHub(options: HubOptions): Hub {
         (positions) => { if (readFetches.get(chatId)?.done === fetching) for (const position of positions) rememberRead(chatId, position); },
         (error: unknown) => {
           // A failure is not remembered: the next open asks LINE again.
-          readFetches.delete(chatId);
+          if (readFetches.get(chatId)?.done === fetching) readFetches.delete(chatId);
           logFailure("READ_RANGE_FAILED", error);
         },
       );
       readFetches.set(chatId, { at: Date.now(), done: fetching });
     }
     await fetching;
+    if (account !== generation) return;
     const positions = [...(seenReads.get(chatId) ?? [])].map(([readerId, id]) => ({ readerId, messageId: String(id) }));
     if (positions.length > 0 && login.state === "ready") send(socket, { type: "read", chatId, positions });
   }
@@ -276,14 +282,17 @@ export function createHub(options: HubOptions): Hub {
     const request = parsed.value;
     const channel = store.channelOf(request.chatId);
     if (login.state !== "ready" || !channel || (scope && !scope.has(request.chatId))) return fail(socket, "UNKNOWN_CHAT", request.requestId);
+    const account = generation;
     // Bots send text only: media goes through the browser upload, and stickers are outside their scope.
     if (scope && request.kind !== "text") return fail(socket, "INVALID_REQUEST", request.requestId);
     const target = { channelId: request.chatId, kind: channel.kind };
     if (request.kind === "text") {
       // Only people who have spoken in this chat can be tagged, and 1:1 chats have nobody to tag.
-      const speakers = new Set(store.messagesOf(request.chatId).map((message) => message.senderId));
-      if (request.mentions.length > 0 && (channel.kind === "user" || !request.mentions.every((mention) => speakers.has(mention.userId)))) {
-        return fail(socket, "INVALID_REQUEST", request.requestId);
+      if (request.mentions.length > 0) {
+        const speakers = new Set(store.messagesOf(request.chatId).map((message) => message.senderId));
+        if (channel.kind === "user" || !request.mentions.every((mention) => speakers.has(mention.userId))) {
+          return fail(socket, "INVALID_REQUEST", request.requestId);
+        }
       }
       // A reply must point at a message this server has shown in the same chat.
       if (request.replyTo && !store.get(request.replyTo, request.chatId)) return fail(socket, "INVALID_REQUEST", request.requestId);
@@ -300,12 +309,14 @@ export function createHub(options: HubOptions): Hub {
       } else {
         message = await provider.sendSticker(target, request.packageId, request.stickerId);
       }
+      if (account !== generation || login.state !== "ready") return;
       // LINE sends no live event for our own messages: show it now (a later duplicate is harmless).
       ingest(message, "new");
       // In OpenChat this account speaks under a member id of its own; remember it so its messages can be taken back.
       if (channel.kind === "square") ownSquareSenders.set(request.chatId, message.senderId);
       send(socket, { type: "sent", requestId: request.requestId, messageId: message.messageId });
     } catch (error) {
+      if (account !== generation) return;
       logFailure("SEND_FAILED", error);
       fail(socket, "SEND_FAILED", request.requestId);
     }
@@ -321,11 +332,14 @@ export function createHub(options: HubOptions): Hub {
     const message = store.get(messageId, chatId);
     const mine = message !== undefined && (message.senderId === provider.getProfile().userId || message.senderId === ownSquareSenders.get(chatId));
     if (!message || message.unsent || !mine) return fail(socket, "INVALID_REQUEST", requestId);
+    const account = generation;
     try {
       await provider.unsendMessage({ channelId: chatId, kind: channel.kind }, messageId);
+      if (account !== generation || login.state !== "ready") return;
       // LINE may or may not echo the take-back to this device: show it now (a later echo changes nothing).
       takeBack(chatId, messageId);
     } catch (error) {
+      if (account !== generation) return;
       logFailure("UNSEND_FAILED", error);
       fail(socket, "UNSEND_FAILED", requestId);
     }
@@ -341,12 +355,14 @@ export function createHub(options: HubOptions): Hub {
     const message = store.get(messageId, chatId);
     if (!message || message.unsent || message.contentType === "CHATEVENT") return fail(socket, "INVALID_REQUEST", requestId);
     if (message.reactions?.mine === reaction) return;
+    const account = generation;
     try {
       await provider.react({ channelId: chatId, kind: channel.kind }, messageId, reaction);
-      if (login.state !== "ready") return;
+      if (account !== generation || login.state !== "ready") return;
       // LINE echoes nothing to this device for talk chats: show the change now.
       updateReactions(chatId, messageId, withMyReaction(store.get(messageId, chatId)?.reactions, reaction));
     } catch (error) {
+      if (account !== generation) return;
       logFailure("REACT_FAILED", error);
       fail(socket, "REACT_FAILED", requestId);
     }
@@ -409,13 +425,16 @@ export function createHub(options: HubOptions): Hub {
     const id = BigInt(messageId);
     const known = markedRead.get(chatId);
     if (known !== undefined && id <= known) return;
+    const account = generation;
     markedRead.set(chatId, id);
     try {
       await provider.markRead({ channelId: chatId, kind: channel.kind }, messageId);
+      if (account !== generation || login.state !== "ready") return;
       // Anyone opening the page later (or another tab now) must not see the badge of a chat that was just read.
       store.clearUnread(chatId);
       broadcastChannel(chatId, channel);
     } catch (error) {
+      if (account !== generation || markedRead.get(chatId) !== id) return;
       if (known === undefined) markedRead.delete(chatId);
       else markedRead.set(chatId, known);
       logFailure("READ_MARK_FAILED", error);
@@ -425,10 +444,12 @@ export function createHub(options: HubOptions): Hub {
   async function handleStickers(socket: WebSocket, frame: Record<string, unknown>): Promise<void> {
     const requestId = requestIdOf(frame);
     if (!requestId || login.state !== "ready") return fail(socket, "INVALID_REQUEST", requestId);
+    const account = generation;
     try {
       const packages = await provider.fetchStickerPackages();
-      if (login.state === "ready") send(socket, { type: "stickers", requestId, packages });
+      if (account === generation && login.state === "ready") send(socket, { type: "stickers", requestId, packages });
     } catch (error) {
+      if (account !== generation) return;
       logFailure("STICKERS_FAILED", error);
       fail(socket, "STICKERS_FAILED", requestId);
     }
@@ -439,19 +460,21 @@ export function createHub(options: HubOptions): Hub {
   }
 
   function refreshChannels(): Promise<void> {
+    const account = generation;
     // One in-flight refresh serves every requester; LINE is rate sensitive.
     refreshing ??= (async () => {
       try {
         const channels = await provider.fetchChannels();
         // A logout while LINE was answering must not repopulate the cleared cache.
-        if (login.state !== "ready") return;
+        if (account !== generation || login.state !== "ready") return;
         store.setChannels(channels);
         broadcastChannels();
       } catch (error) {
+        if (account !== generation) return;
         logFailure("CHANNELS_FAILED", error);
         broadcast({ type: "error", code: "CHANNELS_FAILED", message: GENERIC.CHANNELS_FAILED });
       } finally {
-        refreshing = undefined;
+        if (account === generation) refreshing = undefined;
       }
     })();
     return refreshing;
@@ -468,6 +491,9 @@ export function createHub(options: HubOptions): Hub {
   login.subscribe((state) => {
     if (state !== "ready") {
       // Logged out or failed: nothing from the previous account may stay in memory or on screen.
+      generation += 1;
+      refreshing = undefined;
+      lastListChange = 0;
       clearTimeout(refreshTimer);
       clearTimeout(listChangeTimer);
       store.clear();

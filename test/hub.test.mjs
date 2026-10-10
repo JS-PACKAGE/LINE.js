@@ -389,6 +389,91 @@ test("history is fetched with the default or requested limit, paged by cursor, a
   await late.until((frame) => frame.type === "messages" && frame.messages.some((message) => message.messageId === "h2"));
 });
 
+test("history refresh removes cancelled reactions from the cache and every page", async (t) => {
+  const env = await signedIn(t);
+  const message = older("701", 10);
+  env.hub.handleMessage({ ...message, reactions: { counts: { LOVE: 1 }, mine: "LOVE" } }, "new");
+  env.provider.history = { messages: [message], hasMore: false };
+  env.request({ type: "history:fetch", requestId: "cancelled", chatId: CHAT });
+  const page = await env.client.until((frame) => frame.requestId === "cancelled");
+  assert.equal(page.messages[0].reactions, undefined);
+  assert.equal(env.store.get("701", CHAT).reactions, undefined);
+  assert.deepEqual(await env.client.until((frame) => frame.type === "message:reactions"), { type: "message:reactions", chatId: CHAT, messageId: "701" });
+});
+
+test("requests from a signed-out account cannot populate a later login", async (t) => {
+  for (const operation of ["history", "send", "stickers", "channels"]) {
+    await t.test(operation, async (t) => {
+      const env = await signedIn(t);
+      let started;
+      const beginning = new Promise((resolve) => { started = resolve; });
+      let finish;
+      const pending = new Promise((resolve) => { finish = resolve; });
+      const message = older("701", 10);
+      const frame = operation === "history" ? { type: "history:fetch", requestId: "old-history", chatId: CHAT }
+        : operation === "send" ? { type: "message:send", requestId: "old-send", chatId: CHAT, text: "old" }
+        : operation === "stickers" ? { type: "stickers:list", requestId: "old-stickers" }
+        : { type: "channels:refresh" };
+      const method = operation === "history" ? "fetchHistory" : operation === "send" ? "sendText" : operation === "stickers" ? "fetchStickerPackages" : "fetchChannels";
+      const original = env.provider[method].bind(env.provider);
+      env.provider[method] = () => { started(); return pending; };
+      env.request(frame);
+      await beginning;
+      await env.login.logout();
+      env.provider[method] = original;
+      env.provider.channels = [{ channelId: CHAT, kind: "group", name: "新帳號群組" }];
+      await env.login.restore();
+      await settle();
+      finish(operation === "history" ? { messages: [message], hasMore: false }
+        : operation === "send" ? message : operation === "stickers" ? [{ packageId: 1, title: "舊帳號貼圖", stickerIds: [1] }]
+        : [{ channelId: CHAT, kind: "group", name: "舊帳號群組" }]);
+      await settle();
+      assert.equal(env.store.get("701", CHAT), undefined);
+      assert.equal(env.store.channelOf(CHAT).name, "新帳號群組");
+      assert.equal(env.client.frames.some((frame) => frame.requestId?.startsWith("old-")), false);
+    });
+  }
+});
+
+test("late account mutations and receipts cannot change the next login", async (t) => {
+  for (const operation of ["unsend", "react", "read", "read-range"]) {
+    await t.test(operation, async (t) => {
+      const env = await signedIn(t);
+      const message = { ...older("701", 10), senderId: "u-me" };
+      env.hub.handleMessage(message, "new");
+      let started;
+      const beginning = new Promise((resolve) => { started = resolve; });
+      let finish;
+      const pending = new Promise((resolve) => { finish = resolve; });
+      const method = operation === "unsend" ? "unsendMessage" : operation === "react" ? "react" : operation === "read" ? "markRead" : "fetchReadPositions";
+      const original = env.provider[method].bind(env.provider);
+      env.provider[method] = () => { started(); return pending; };
+      env.request(operation === "unsend" ? { type: "message:unsend", requestId: "old-unsend", chatId: CHAT, messageId: "701" }
+        : operation === "react" ? { type: "message:react", requestId: "old-react", chatId: CHAT, messageId: "701", reaction: "LOVE" }
+        : operation === "read" ? { type: "chat:read", chatId: CHAT, messageId: "701" }
+        : { type: "history:fetch", requestId: "old-history", chatId: CHAT });
+      await beginning;
+      await env.login.logout();
+      env.provider[method] = original;
+      env.provider.channels = [{ channelId: CHAT, kind: "group", name: "新帳號群組", unreadCount: 3 }];
+      await env.login.restore();
+      await settle();
+      env.hub.handleMessage(message, "new");
+      if (operation === "read-range") {
+        env.hub.handleRead(CHAT, { readerId: "u-new", messageId: "701" });
+        await settle();
+      }
+      const at = env.client.frames.length;
+      finish(operation === "read-range" ? [{ readerId: "u-old", messageId: "701" }] : undefined);
+      await settle();
+      assert.equal(env.store.get("701", CHAT).unsent, undefined);
+      assert.equal(env.store.get("701", CHAT).reactions, undefined);
+      assert.equal(env.store.channelOf(CHAT).unreadCount, 3);
+      assert.equal(env.client.frames.slice(at).some((frame) => ["read", "message:reactions", "message:unsend"].includes(frame.type)), false);
+    });
+  }
+});
+
 test("malformed history requests are refused before LINE is contacted; failures never leak internals", async (t) => {
   const env = await signedIn(t);
   const bad = [
