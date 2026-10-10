@@ -136,6 +136,33 @@ function applyAuthState(state: AuthState): void {
   if (state === "ready") return;
   if (signedIn) {
     // Session lost after login: fall back to the login view instead of a dead chat.
+    clearTimeout(searchTimer);
+    clearTimeout(readTimer);
+    searching = false;
+    searchQuery = "";
+    messageSearch.value = "";
+    searchCount.textContent = "";
+    searchBar.hidden = true;
+    searchToggle.ariaPressed = "false";
+    myUserId = undefined;
+    notifier.clearAll();
+    const viewer = $<HTMLDialogElement>("#viewer");
+    viewer.close();
+    const image = viewer.querySelector<HTMLImageElement>("img")!;
+    image.onerror = null;
+    image.removeAttribute("src");
+    $<HTMLDialogElement>("#confirm").close("cancel");
+    $<HTMLElement>("#confirm-title").textContent = "";
+    $<HTMLElement>("#confirm-message").textContent = "";
+    showMenu(0, 0, []);
+    meName.textContent = "";
+    meAvatar.replaceChildren();
+    listenState.textContent = "";
+    channelRows.clear();
+    rendered.clear();
+    dayDividers.clear();
+    unseenBelow = 0;
+    pinnedToBottom = true;
     channels = [];
     messages = {};
     unread = {};
@@ -151,6 +178,8 @@ function applyAuthState(state: AuthState): void {
     mySquareSenders = {};
     unreadFrom = undefined;
     composer.reset();
+    renderChannels();
+    renderMessages();
   }
   clearSecrets();
   if (state === "restoring") showLogin("正在復用 session…", false);
@@ -487,15 +516,16 @@ function searchHits(): SearchHit[] {
   const query = searchQuery.trim().toLocaleLowerCase();
   if (query === "") return [];
   const hits: SearchHit[] = [];
+  const byChannel = new Map(channels.map((channel) => [channel.channelId, channel]));
   for (const [channelId, list] of Object.entries(messages)) {
-    const channel = channels.find((entry) => entry.channelId === channelId);
+    const channel = byChannel.get(channelId);
     for (const message of list) {
       const sender = message.senderName.toLocaleLowerCase();
       const body = (message.text ?? (message.card ? cardTitle(message.card) : "")).toLocaleLowerCase();
       if (sender.includes(query) || body.includes(query)) hits.push({ message, channel });
     }
   }
-  return hits.reverse();
+  return hits.sort((a, b) => b.message.createdAt - a.message.createdAt);
 }
 
 function jumpToMessage(message: Message): void {
@@ -512,6 +542,7 @@ function jumpToMessage(message: Message): void {
 
 function renderSearch(): void {
   const query = searchQuery.trim();
+  jump.hidden = true;
   const hits = searchHits();
   searchCount.textContent = query === "" ? "" : hits.length + " 則";
   const rows: Node[] = [];
@@ -781,6 +812,7 @@ let dayDividers = new Map<string, HTMLElement>();
 /** The message drawn at (or around) an event target in the open chat. */
 function messageAt(target: EventTarget | null): Message | undefined {
   const id = (target as Element | null)?.closest<HTMLElement>(".message")?.dataset.messageId;
+  if (searching) return undefined;
   return id ? rendered.get(id)?.message : undefined;
 }
 
@@ -826,6 +858,10 @@ function renderMessages(anchor: "bottom" | "keep" | "prepend" = "bottom"): void 
     channelAvatar.replaceChildren(...(channel ? [createAvatar(channel.pictureId, channel.name, { zoomable: true })] : []));
   }
   channelMeta.textContent = channel ? KIND_LABEL[channel.kind] : "";
+  if (searching) {
+    renderSearch();
+    return;
+  }
   const list = selected ? (messages[selected] ?? []) : [];
   const state = selected ? historyOf[selected] : undefined;
   if (renderedChannel !== selected) {
@@ -842,6 +878,12 @@ function renderMessages(anchor: "bottom" | "keep" | "prepend" = "bottom"): void 
     if (!channel) empty.textContent = "從左側選擇聊天室；新的訊息會即時出現在這裡。";
     else if (state?.loading || !state?.loaded) empty.textContent = state?.failed ? "無法載入歷史訊息。" : "載入訊息中…";
     else empty.textContent = "這個聊天室還沒有訊息。";
+    if (channel && state?.failed) {
+      messageList.replaceChildren(empty, historyRetry);
+      rendered.clear();
+      updateJump();
+      return;
+    }
     messageList.replaceChildren(empty);
     rendered = new Map();
     updateJump();
@@ -940,17 +982,23 @@ function applyHistory(frame: Extract<ServerFrame, { type: "history" }>): void {
   state.cursor = frame.cursor;
   state.hasMore = frame.hasMore && frame.cursor !== undefined;
   renderChannels();
-  if (channelId !== selected) return;
+  if (channelId !== selected) {
+    if (searching) renderSearch();
+    return;
+  }
   renderMessages(firstPage ? "bottom" : "prepend");
   // A short conversation never scrolls, so the scroll trigger would never fire: keep filling the view.
-  if (state.hasMore && frame.messages.length > 0 && messageList.scrollHeight <= messageList.clientHeight + 40) requestHistory(channelId);
+  if (!searching && state.hasMore && frame.messages.length > 0 && messageList.scrollHeight <= messageList.clientHeight + 40) requestHistory(channelId);
   reportRead();
 }
 
 function upsertMessage(message: Message, fresh: boolean): void {
   const nearBottom = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 80;
   mergeMessages(message.channelId, [message]);
-  if (message.channelId !== selected) return;
+  if (message.channelId !== selected || searching) {
+    if (searching) renderSearch();
+    return;
+  }
   // Your own message always jumps into view, even when you were reading older history.
   const mine = isMine(message);
   renderMessages(nearBottom || mine ? "bottom" : "keep");
@@ -966,7 +1014,7 @@ function upsertMessage(message: Message, fresh: boolean): void {
 function reportRead(): void {
   clearTimeout(readTimer);
   readTimer = setTimeout(() => {
-    if (!selected || document.visibilityState !== "visible") return;
+    if (!signedIn || searching || !selected || document.visibilityState !== "visible") return;
     const newest = [...(messages[selected] ?? [])].reverse().find((message) => /^\d{1,24}$/.test(message.messageId));
     if (!newest) return;
     const id = BigInt(newest.messageId);
@@ -1072,7 +1120,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       // Keep who sent it and when; the content is gone.
       const { text: _text, mediaId: _media, replyTo: _reply, mentions: _mentions, card: _card, editedAt: _edited, decryptFailed: _unreadable, reactions: _reactions, ...kept } = list[index]!;
       list[index] = { ...kept, unsent: true };
-      if (frame.chatId === selected) renderMessages("keep");
+      if (frame.chatId === selected || searching) renderMessages("keep");
       return;
     }
     case "message:reactions": {
@@ -1080,15 +1128,21 @@ async function handle(frame: ServerFrame): Promise<void> {
       const index = list.findIndex((entry) => entry.messageId === frame.messageId);
       if (index < 0 || list[index]!.unsent) return;
       const { reactions: _old, ...rest } = list[index]!;
-      // A new object: the drawn node is rebuilt because its message changed.
+      // Reaction changes only touch the chips: do not interrupt a playing media body.
       list[index] = frame.reactions ? { ...rest, reactions: frame.reactions } : rest;
-      if (frame.chatId === selected) renderMessages("keep");
+      const entry = frame.chatId === selected ? rendered.get(frame.messageId) : undefined;
+      if (entry && !searching) {
+        entry.node.querySelector(".reactions")?.remove();
+        entry.message = list[index]!;
+        if (frame.reactions) entry.node.querySelector(".message-main")?.append(reactionsNode(entry.message, frame.reactions));
+      }
+      if (frame.chatId === selected || searching) renderMessages("keep");
       return;
     }
     case "messages":
       // Connect-time snapshot: old news, so it never counts as unread.
       mergeMessages(frame.chatId, frame.messages);
-      if (frame.chatId === selected) renderMessages("keep");
+      if (frame.chatId === selected || searching) renderMessages("keep");
       scheduleChannels();
       return;
     case "history":
@@ -1281,6 +1335,8 @@ logoutButton.addEventListener("click", async () => {
 });
 
 function openChat(id: string): void {
+  if (!signedIn) return;
+  if (searching) closeSearch();
   if (id !== selected) {
     const list = messages[id] ?? [];
     const count = unread[id] ?? 0;
@@ -1339,7 +1395,7 @@ messageList.addEventListener("scroll", () => {
   updateJump();
   const state = selected ? historyOf[selected] : undefined;
   // Near the top: load the next older page, unless the last attempt failed (then the user retries explicitly).
-  if (selected && state?.loaded && state.hasMore && !state.loading && !state.failed && messageList.scrollTop < 80) requestHistory(selected);
+  if (!searching && selected && state?.loaded && state.hasMore && !state.loading && !state.failed && messageList.scrollTop < 80) requestHistory(selected);
 });
 
 document.addEventListener("visibilitychange", () => {

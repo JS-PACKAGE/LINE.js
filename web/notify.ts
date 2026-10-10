@@ -7,6 +7,8 @@ export interface Notifier {
   notify(message: Message, chatName: string, preview: string): void;
   /** Drops what is shown for a chat once it has been read here. */
   clear(chatId: string): void;
+  /** Drops all account notifications when its session ends. */
+  clearAll(): void;
 }
 
 /**
@@ -19,7 +21,7 @@ export function createNotifier(button: HTMLButtonElement, open: (chatId: string)
   // The API needs a secure context (localhost counts); over plain http elsewhere it does not exist.
   if (typeof Notification === "undefined") {
     button.hidden = true;
-    return { notify() {}, clear() {} };
+    return { notify() {}, clear() {}, clearAll() {} };
   }
   const enabled = (): boolean => Notification.permission === "granted" && localStorage.getItem(ENABLED_KEY) === "on";
   const refresh = (): void => {
@@ -51,6 +53,10 @@ export function createNotifier(button: HTMLButtonElement, open: (chatId: string)
     clear(chatId) {
       shown.get(chatId)?.close();
       shown.delete(chatId);
+    },
+    clearAll() {
+      for (const notification of shown.values()) notification.close();
+      shown.clear();
     },
   };
 }
