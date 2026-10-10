@@ -142,6 +142,8 @@
 
 > v1.14（續，小語裁示：回應）：`Message.reactions`（talk 取自 `Message.reactions`，社群取自歷史事件的 `messageReactionStatus` 與即時 `NOTIFIED_UPDATE_MESSAGE_STATUS`；後者在 linejs 為未具型別結構，依 thrift 欄位編號解析，不符即忽略）。新增 `message:react`／`message:reactions`：經 adapter 呼叫 `talk.react`／`talk.cancelReaction`／`square.reactToMessage`（取消用 `UNDO`）；伺服器只接受已顯示、未收回的訊息，成功後於本機更新人數並廣播。talk 的即時回應通知（op 139／140）參數格式未經實測，暫不解析。
 
+> 實作補完（協定版本仍為 2）：登出／換帳號以 session generation 作廢歷史、發送、回應、收回、已讀與頻道查詢的舊結果；歷史重新載入也同步清除已取消的回應。OpenChat 歷史採同聊天室 single-flight、時間＋訊息 id 錨點，快取最多 5 個聊天室各 5000 則、10 分鐘，合併即時訊息與狀態，過期時重新取得回應，僅已提供頁面的訊息授權媒體。網頁搜尋維持即時更新並跨聊天室依時間排序；初次歷史失敗可重試，回應更新不重建媒體 DOM，登出清除搜尋、私人畫面與通知。隔離測試與無頭靜音瀏覽器已驗證；尚未對本次變動重新進行真實 LINE Gate 驗收。
+
 ### Server → Client
 
 | type | 負載 |
