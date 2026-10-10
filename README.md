@@ -53,6 +53,7 @@ npm start
 - **連結**：訊息文字中的 `http://`、`https://` 網址會變成可點的連結，在新分頁開啟（帶 `rel="noopener noreferrer"`，對方網站拿不到本頁，也不會收到 Referer）；句尾標點與多餘的右括號不算進網址，其他協定（如 `ftp://`）不轉連結。伺服器不會去抓取任何網址，也沒有連結預覽卡片（刻意不做：瀏覽器端受 CSP 與 CORS 限制讀不到，伺服器代抓則有 SSRF 與洩露 IP 的風險）。
 - **系統訊息**：LINE 的成員異動事件（`CHATEVENT`，目前支援 `C_MI`）顯示為置中的灰色小膠囊，例如「XX 新增 OO 至群組」；其他未確認含義的事件類型一律顯示「［系統訊息］」佔位，不猜測內容。
 - **收回**：對方（或你在其他裝置上）收回訊息時，該訊息改為「XX 已收回訊息」（自己的顯示「你已收回訊息」），引用它的回覆顯示「［已收回的訊息］」，圖片／影片／語音／檔案也不再提供下載；收回通知比訊息本身先到時同樣只顯示佔位。只處理本服務已收過的訊息 id，不依通知內容猜測是哪一則。自己的訊息可在右鍵選單按「收回」（會先確認；LINE 只允許收回一段時間內送出的訊息，被拒時顯示一般錯誤）；社群裡要先從此頁送過訊息，服務才認得你在該社群的成員 id。
+- **回應（reaction）**：訊息下方顯示 LINE 六種預設回應（👍 讚、❤️ 愛心、😆 好笑、😲 驚訝、😢 難過、😱 天啊）的人數，你按過的會標亮；右鍵選單「回應…」或點小膠囊即可送出，點自己已選的回應則取消（對方會看到，與送出訊息共用頻率上限）。一般聊天室的回應隨訊息與歷史載入，LINE 的即時回應通知格式尚未驗證，因此他人的新回應要重新載入歷史才會出現；社群另有即時狀態事件（`NOTIFIED_UPDATE_MESSAGE_STATUS`）會即時更新。LINE 新版的自訂回應不顯示。
 - **@ 提及**：收到的訊息裡被 @ 的人名以強調色顯示，@ 你或 @All 另加黃色底色；範圍以 LINE 附帶的提及資料為準，資料不合（超出文字、重疊）的部分不標示。社群裡你的成員 id 與帳號不同，因此社群中 @ 你的訊息只有一般強調色。
 - **桌面通知**：左上「通知」按一下會向瀏覽器要求通知權限並開啟（按鈕轉為強調色；設定存在瀏覽器的 localStorage，再按一次關閉）。只在頁面不在前景時通知他人傳來的新訊息；每個聊天室最多一則通知，新訊息會取代舊的；點通知回到頁面並開啟該聊天室，讀過後通知自動收起。通知內容（寄件者與訊息摘要）會出現在作業系統的通知中心。需要安全環境（`127.0.0.1`／`localhost` 或 HTTPS），其他 http 位址不顯示此按鈕。
 - **斷線覆蓋與心跳**：與本機服務的 WebSocket 中斷時，整個畫面會被「與伺服器斷線」覆蓋；恢復後自動移除並重新同步訊息（沿用連線時的完整 snapshot，每個聊天室一個影格，頁面合併後一次重繪）。網頁每 30 秒送一次 `ping`，10 秒內沒收到 `pong` 就放棄這條連線並重連；頁面回到前景時立即探測一次，並跳過重連的退避等待（背景分頁的計時器會被瀏覽器節流）。伺服器另以 WebSocket 協定層 Ping 每 30 秒檢查，連續兩輪未回應的連線直接關閉。斷線原因會記錄：瀏覽器主控台印出 `LINE.js 連線中斷`（時間、close code／reason 或「no pong」、已連線秒數、前景／背景、是否在線），服務日誌印出 `WS_CLOSED page|bot code=… after=…s`（心跳逾時為 `heartbeat-timeout`），不含標頭、cookie 或 Token。
@@ -103,6 +104,7 @@ npm start
 | Server → Client | `messages` | 連線時的訊息 snapshot：`{ chatId, messages }`，每個聊天室一個影格（舊訊息，不計未讀） |
 | Server → Client | `message` / `message:edit` | 即時訊息與覆寫既有訊息 |
 | Server → Client | `message:unsend` | `{ chatId, messageId }`：該訊息已被收回，改顯示佔位（`Message.unsent: true`，不含內容） |
+| Server → Client | `message:reactions` | `{ chatId, messageId, reactions? }`：該訊息的回應改變（`{ counts, mine? }`；省略表示沒有人回應）。只給網頁 |
 | Server → Client | `status` / `error` | LINE 監聽狀態與 generic 錯誤 |
 | Server → Client | `history` / `sent` | 歷史一頁（含 `cursor`）／發送確認 |
 | Server → Client | `read` | 他人已讀位置（開啟聊天的快照與即時增量） |
@@ -110,6 +112,7 @@ npm start
 | Client → Server | `history:fetch` / `message:send` | 載入歷史一頁／發送文字、圖片（先 `POST /media/upload`）或貼圖 |
 | Client → Server | `stickers:list` → `stickers` | 取得此帳號已擁有的貼圖包與貼圖 id |
 | Client → Server | `message:unsend` | `{ requestId, chatId, messageId }`：收回自己的訊息（僅網頁；伺服器只接受本帳號的訊息，與 `message:send` 共用頻率上限）；成功時廣播 `message:unsend` |
+| Client → Server | `message:react` | `{ requestId, chatId, messageId, reaction }`：`NICE`／`LOVE`／`FUN`／`AMAZING`／`SAD`／`OMG`，`null` 取消（僅網頁；只接受伺服器已顯示、未收回的訊息，與 `message:send` 共用頻率上限）；成功時廣播 `message:reactions` |
 | Client → Server | `chat:read` | 回報已讀到某則訊息（無回應；僅限伺服器已顯示過的訊息，每個位置只送一次） |
 | Client → Server | `message:send`（`mentions`／`replyTo`） | 發送文字時可附 @ 提及與回覆目標（右鍵訊息選單：回覆、@ 提及、複製文字；圖片另有複製圖片、下載圖片，影片可下載影片） |
 | Client → Server | `channels:refresh` / `ping` → `pong` | 重新載入頻道／連線保活（伺服器回 `pong`，網頁以此判斷連線仍通） |
@@ -151,7 +154,7 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 | 服務 → 機器人 | `message`、`message:edit`、`message:unsend` | 只有 `api.chats` 內聊天室的**即時**訊息、編輯與收回；包含你自己發的 |
 | 服務 → 機器人 | `sent`、`history`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`…） |
 
-其餘一律回 `UNKNOWN_TYPE`：沒有登入／登出、`chat:read`（已讀回報）、`message:unsend`（收回）、`channels:refresh`、貼圖清單、Token 管理。**不重播舊訊息**（機器人從「現在」開始，不會重複回應歷史；要歷史請用 `history:fetch`）；不給 `read`、`update:available`、`api:state`；圖片／影片等媒體位元組也無法取得（機器人只看到訊息的 `contentType`）。
+其餘一律回 `UNKNOWN_TYPE`：沒有登入／登出、`chat:read`（已讀回報）、`message:unsend`（收回）、`message:react`（回應）、`channels:refresh`、貼圖清單、Token 管理。**不重播舊訊息**（機器人從「現在」開始，不會重複回應歷史；要歷史請用 `history:fetch`）；不給 `read`、`update:available`、`api:state`；圖片／影片等媒體位元組也無法取得（機器人只看到訊息的 `contentType`）。
 
 **頻率與風險**
 - 每個連線受 `limits.sendsPerSecond`（≤5）限制，且所有機器人合計每分鐘不超過 `api.sendsPerMinute`；超過回 `RATE_LIMITED`。

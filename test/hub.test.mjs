@@ -103,6 +103,11 @@ class FakeProvider {
     this.calls.push(["unsend", channel, messageId]);
     if (this.unsendError) throw this.unsendError;
   }
+  reactError = undefined;
+  async react(channel, messageId, kind) {
+    this.calls.push(["react", channel, messageId, kind]);
+    if (this.reactError) throw this.reactError;
+  }
 }
 
 async function freePort() {
@@ -636,6 +641,53 @@ test("the page can take back the account's own message only; LINE failures stay 
   assert.equal((await env.client.until((frame) => frame.requestId === "x6")).code, "INVALID_REQUEST", "already taken back");
 });
 
+test("reactions: only shown, real messages; a change (or taking it back) reaches every page; LINE failures stay generic", async (t) => {
+  const env = await signedIn(t);
+  const theirs = { messageId: "701", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "好消息", contentType: "NONE", createdAt: 1, reactions: { counts: { LOVE: 2 } } };
+  env.hub.handleMessage(theirs, "new");
+  env.hub.handleMessage({ ...theirs, messageId: "702", contentType: "CHATEVENT", text: "小明 加入群組", reactions: undefined }, "new");
+  env.request({ type: "message:react", requestId: "r1", chatId: CHAT, messageId: "999", reaction: "NICE" });
+  env.request({ type: "message:react", requestId: "r2", chatId: CHAT, messageId: "702", reaction: "NICE" });
+  env.request({ type: "message:react", requestId: "r3", chatId: CHAT, messageId: "701", reaction: "ANGRY" });
+  env.request({ type: "message:react", requestId: "r4", chatId: CHAT, messageId: "701" });
+  for (const requestId of ["r1", "r2", "r3", "r4"]) assert.equal((await env.client.until((frame) => frame.requestId === requestId)).code, "INVALID_REQUEST", requestId);
+  assert.equal(env.provider.calls.some(([kind]) => kind === "react"), false);
+
+  env.provider.reactError = new Error("LINE said no: token=secret");
+  env.request({ type: "message:react", requestId: "r5", chatId: CHAT, messageId: "701", reaction: "LOVE" });
+  const failure = await env.client.until((frame) => frame.requestId === "r5");
+  assert.equal(failure.code, "REACT_FAILED");
+  assert.ok(!JSON.stringify(failure).includes("secret"));
+  assert.deepEqual(env.store.get("701", CHAT).reactions, { counts: { LOVE: 2 } }, "a refused reaction changes nothing");
+
+  env.provider.reactError = undefined;
+  // Reactions share the per-connection send budget (5 per second), and five were just spent.
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const other = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => other.socket.close());
+  await other.until((frame) => frame.type === "messages");
+  env.request({ type: "message:react", requestId: "r6", chatId: CHAT, messageId: "701", reaction: "LOVE" });
+  const expected = { type: "message:reactions", chatId: CHAT, messageId: "701", reactions: { counts: { LOVE: 3 }, mine: "LOVE" } };
+  assert.deepEqual(await env.client.until((frame) => frame.type === "message:reactions"), expected);
+  assert.deepEqual(await other.until((frame) => frame.type === "message:reactions"), expected);
+  env.request({ type: "message:react", requestId: "r7", chatId: CHAT, messageId: "701", reaction: "NICE" });
+  assert.deepEqual((await env.client.until((frame) => frame.type === "message:reactions" && frame.reactions?.mine === "NICE")).reactions, { counts: { NICE: 1, LOVE: 2 }, mine: "NICE" }, "switching moves this account's count");
+  env.request({ type: "message:react", requestId: "r8", chatId: CHAT, messageId: "701", reaction: null });
+  assert.deepEqual((await env.client.until((frame) => frame.type === "message:reactions" && !frame.reactions?.mine)).reactions, { counts: { LOVE: 2 } });
+  assert.deepEqual(env.provider.calls.filter(([kind]) => kind === "react").map((call) => call[3]), ["LOVE", "LOVE", "NICE", undefined]);
+  assert.equal(env.store.get("701", CHAT).editedAt, undefined, "a reaction is not an edit");
+
+  // LINE reports (OpenChat status events) replace the counts; unknown or taken-back messages stay silent.
+  env.hub.handleReactions(CHAT, "701", undefined);
+  assert.deepEqual(await env.client.until((frame) => frame.type === "message:reactions" && frame.reactions === undefined), { type: "message:reactions", chatId: CHAT, messageId: "701" });
+  env.hub.handleUnsend(CHAT, "701");
+  env.hub.handleReactions(CHAT, "701", { counts: { FUN: 1 } });
+  env.hub.handleReactions(CHAT, "888", { counts: { FUN: 1 } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(env.client.frames.filter((frame) => frame.type === "message:reactions").length, 4);
+  assert.equal(env.store.get("701", CHAT).reactions, undefined);
+});
+
 test("in OpenChat the account's own member id is learned from its sends before anything there can be taken back", async (t) => {
   const env = await start(t);
   const SQUARE = `m${"s".repeat(32)}`;
@@ -1105,13 +1157,14 @@ test("everything outside send, history and ping is unknown to a bot", async (t) 
     { type: "auth:start" }, { type: "auth:logout" }, { type: "chat:read", chatId: CHAT, messageId: "11" },
     { type: "stickers:list", requestId: "s1" }, { type: "channels:refresh" }, { type: "api:token:create" }, { type: "api:token:revoke" },
     { type: "message:unsend", requestId: "u1", chatId: CHAT, messageId: "11" },
+    { type: "message:react", requestId: "r1", chatId: CHAT, messageId: "11", reaction: "NICE" },
   ];
   for (const frame of frames) bot.socket.send(JSON.stringify(frame));
   await bot.until(() => bot.frames.filter((frame) => frame.type === "error").length === frames.length);
   assert.deepEqual([...new Set(bot.frames.filter((frame) => frame.type === "error").map((frame) => frame.code))], ["UNKNOWN_TYPE"]);
   assert.equal(env.login.state, "ready");
   assert.equal(env.apiTokens.verify(env.token), true);
-  assert.equal(env.provider.calls.some((call) => call[0] === "read" || call[0] === "stickers" || call[0] === "unsend"), false);
+  assert.equal(env.provider.calls.some((call) => call[0] === "read" || call[0] === "stickers" || call[0] === "unsend" || call[0] === "react"), false);
   bot.socket.send(JSON.stringify({ type: "ping" }));
 });
 

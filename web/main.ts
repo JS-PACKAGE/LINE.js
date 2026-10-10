@@ -1,6 +1,6 @@
 import QRCode from "qrcode";
 import "./style.css";
-import type { AuthState, Channel, Message, MessageCard, Profile, TextMention } from "../src/model/dto.js";
+import { REACTION_KINDS, type AuthState, type Channel, type Message, type MessageCard, type Profile, type ReactionKind, type Reactions, type TextMention } from "../src/model/dto.js";
 import type { ClientFrame, ListenState, ServerFrame } from "../src/ws/protocol.js";
 import { createComposer } from "./composer.js";
 import { confirmDialog } from "./dialog.js";
@@ -668,8 +668,50 @@ function openMessageMenu(message: Message, x: number, y: number): void {
     }
     items.push({ label: isImage ? "下載圖片" : "下載影片", action: () => { void downloadMedia(mediaId).catch(() => {}); } });
   }
+  if (reactable(message)) items.push({ label: "回應…", action: () => openReactionMenu(message, x, y) });
   if (isMine(message) && !message.unsent && /^\d{1,24}$/.test(message.messageId)) items.push({ label: "收回", action: () => { void takeBack(message); } });
   showMenu(x, y, items);
+}
+
+const REACTION_FACES: Record<ReactionKind, { face: string; name: string }> = {
+  NICE: { face: "👍", name: "讚" }, LOVE: { face: "❤️", name: "愛心" }, FUN: { face: "😆", name: "好笑" },
+  AMAZING: { face: "😲", name: "驚訝" }, SAD: { face: "😢", name: "難過" }, OMG: { face: "😱", name: "天啊" },
+};
+
+/** LINE accepts reactions on real (numeric id) messages that are still there. */
+function reactable(message: Message): boolean {
+  return !message.unsent && message.contentType !== "CHATEVENT" && /^\d{1,24}$/.test(message.messageId);
+}
+
+/** Picking the reaction already chosen takes it back, as in LINE. */
+function react(message: Message, kind: ReactionKind): void {
+  send({ type: "message:react", requestId: crypto.randomUUID(), chatId: message.channelId, messageId: message.messageId, reaction: message.reactions?.mine === kind ? null : kind });
+}
+
+function openReactionMenu(message: Message, x: number, y: number): void {
+  showMenu(x, y, REACTION_KINDS.map((kind) => ({
+    label: `${REACTION_FACES[kind].face} ${REACTION_FACES[kind].name}${message.reactions?.mine === kind ? "（取消）" : ""}`,
+    action: () => react(message, kind),
+  })));
+}
+
+/** Counts under the message; each chip toggles that reaction. */
+function reactionsNode(message: Message, reactions: Reactions): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "reactions";
+  for (const kind of REACTION_KINDS) {
+    const count = reactions.counts[kind];
+    if (!count) continue;
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = reactions.mine === kind ? "reaction reaction-mine" : "reaction";
+    chip.textContent = `${REACTION_FACES[kind].face} ${count}`;
+    chip.title = reactions.mine === kind ? `${REACTION_FACES[kind].name}（你已回應，按一下取消）` : REACTION_FACES[kind].name;
+    chip.disabled = !reactable(message);
+    chip.addEventListener("click", () => react(message, kind));
+    box.append(chip);
+  }
+  return box;
 }
 
 function quoteNode(message: Message, original: Message | undefined): HTMLElement {
@@ -740,6 +782,7 @@ function messageNode(message: Message, continued: boolean, quoted: Message | und
   meta.append(read, time);
   row.append(messageBody(message), meta);
   main.append(row);
+  if (message.reactions && !message.unsent) main.append(reactionsNode(message, message.reactions));
   item.append(main);
   return { node: item, message, continued, quoted, read };
 }
@@ -1075,8 +1118,18 @@ async function handle(frame: ServerFrame): Promise<void> {
       const index = list.findIndex((entry) => entry.messageId === frame.messageId);
       if (index < 0) return;
       // Keep who sent it and when; the content is gone.
-      const { text: _text, mediaId: _media, replyTo: _reply, mentions: _mentions, card: _card, editedAt: _edited, decryptFailed: _unreadable, ...kept } = list[index]!;
+      const { text: _text, mediaId: _media, replyTo: _reply, mentions: _mentions, card: _card, editedAt: _edited, decryptFailed: _unreadable, reactions: _reactions, ...kept } = list[index]!;
       list[index] = { ...kept, unsent: true };
+      if (frame.chatId === selected) renderMessages("keep");
+      return;
+    }
+    case "message:reactions": {
+      const list = messages[frame.chatId] ?? [];
+      const index = list.findIndex((entry) => entry.messageId === frame.messageId);
+      if (index < 0 || list[index]!.unsent) return;
+      const { reactions: _old, ...rest } = list[index]!;
+      // A new object: the drawn node is rebuilt because its message changed.
+      list[index] = frame.reactions ? { ...rest, reactions: frame.reactions } : rest;
       if (frame.chatId === selected) renderMessages("keep");
       return;
     }

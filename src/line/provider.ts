@@ -3,12 +3,13 @@ import { BaseClient, type Device, type FetchLike } from "@evex/linejs/base";
 import { LINEStruct } from "@evex/linejs/thrift";
 import type { Message as LineMessage, SquareMessage as LineSquareMessage } from "@evex/linejs-types";
 import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
-import type { Channel, ChannelRef, HistoryPage, MemberRole, Mention, Message, Profile, ReadPosition, StickerPackage } from "../model/dto.js";
+import type { Channel, ChannelRef, HistoryPage, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
 import { memberRole, mentionMetadata, parseMentions, replyTarget } from "./members.js";
 import { parseCheckedOperation, parseReadOperation, parseReadRanges, parseUnsendOperation } from "./read.js";
 import { parseOwnedProducts, parsePackageMeta, type PackageMeta } from "./stickers.js";
 import { chatEventMids, chatEventText, isChatEvent } from "./chatEvent.js";
 import { contentTypeName, messageCard } from "./cards.js";
+import { isEmptySquareStatus, squareReactions, talkReactions } from "./reactions.js";
 import { SessionStorage } from "./session.js";
 
 export interface QRCallbacks {
@@ -25,6 +26,11 @@ export interface ProviderEvents {
   onChecked: (chatId: string) => void;
   /** A chat, group or profile changed name, picture or membership: the list should be fetched again. */
   onChatsChanged: () => void;
+  /**
+   * A message's reactions changed (OpenChat NOTIFIED_UPDATE_MESSAGE_STATUS); undefined means nobody reacts now.
+   * Talk chats have no parsed live event: their reactions come with the message and with history.
+   */
+  onReactions: (chatId: string, messageId: string, reactions: Reactions | undefined) => void;
   onStatus: (state: "listening" | "reconnecting") => void;
   onError: (code: "SESSION_WRITE_FAILED" | "LINE_LISTEN_FAILED" | "MESSAGE_PARSE_FAILED") => void;
 }
@@ -66,6 +72,8 @@ export interface LineProvider {
   sendMedia(channel: ChannelRef, media: MediaBytes): Promise<Message>;
   /** Takes back one of this account's messages for everyone (LINE decides whether it still may). */
   unsendMessage(channel: ChannelRef, messageId: string): Promise<void>;
+  /** Sets (or, with undefined, removes) this account's reaction to a message. */
+  react(channel: ChannelRef, messageId: string, kind: ReactionKind | undefined): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -261,10 +269,20 @@ export class EvexLineProvider implements LineProvider {
       }
     });
     client.on("square:event", (event) => {
-      if (this.client !== client || !["NOTIFIED_DESTROY_MESSAGE", "5"].includes(String(event.type))) return;
-      const destroyed = event.payload?.notifiedDestroyMessage;
-      if (typeof destroyed?.squareChatMid === "string" && typeof destroyed.messageId === "string" && /^\d{1,24}$/.test(destroyed.messageId)) {
-        this.unsent(destroyed.squareChatMid, destroyed.messageId);
+      if (this.client !== client) return;
+      const type = String(event.type);
+      if (type === "NOTIFIED_DESTROY_MESSAGE" || type === "5") {
+        const destroyed = event.payload?.notifiedDestroyMessage;
+        if (typeof destroyed?.squareChatMid === "string" && typeof destroyed.messageId === "string" && /^\d{1,24}$/.test(destroyed.messageId)) {
+          this.unsent(destroyed.squareChatMid, destroyed.messageId);
+        }
+      } else if (type === "NOTIFIED_UPDATE_MESSAGE_STATUS" || type === "46") {
+        const update = event.payload?.notifiedUpdateMessageStatus;
+        const status = update?.messageStatus?.contents?.messageReactionStatus;
+        if (typeof update?.squareChatMid !== "string" || typeof update.messageId !== "string" || !/^\d{1,24}$/.test(update.messageId)) return;
+        // Only a status that parses (or plainly says zero) changes what is shown; anything else is ignored.
+        const reactions = squareReactions(status);
+        if (reactions || isEmptySquareStatus(status)) this.events.onReactions(update.squareChatMid, update.messageId, reactions);
       }
     });
     this.listen();
@@ -296,10 +314,12 @@ export class EvexLineProvider implements LineProvider {
       id: raw.id, channelId, channelKind, senderId: raw.from, text: raw.text, contentType,
       createdTime: raw.createdTime, encrypted: undecryptable || (raw.chunks?.length ?? 0) > 0, metadata: raw.contentMetadata,
       mediaId: preview ? undefined : this.rememberMedia(raw, false), replyTo: replyTarget(raw.messageRelationType, raw.relatedMessageId), eventText, location: raw.location,
+      reactions: talkReactions(raw.reactions, myMid),
     });
   }
 
-  private squareToMessage(raw: LineSquareMessage, senderName?: string, preview = false): Message {
+  /** `reactionStatus` comes with history events (SquareEventReceiveMessage.messageReactionStatus). */
+  private squareToMessage(raw: LineSquareMessage, senderName?: string, preview = false, reactionStatus?: unknown): Message {
     const message = raw.message;
     // History events carry the sender's display name; live events only carry a member mid.
     if (senderName) this.rememberName(message.from, senderName);
@@ -307,6 +327,7 @@ export class EvexLineProvider implements LineProvider {
       id: message.id, channelId: message.to, channelKind: "square", senderId: message.from, text: message.text, contentType: String(message.contentType),
       createdTime: message.createdTime, encrypted: (message.chunks?.length ?? 0) > 0, metadata: message.contentMetadata,
       mediaId: preview ? undefined : this.rememberMedia(message, true), replyTo: replyTarget(message.messageRelationType, message.relatedMessageId), location: message.location,
+      reactions: squareReactions(reactionStatus),
     });
   }
 
@@ -333,6 +354,7 @@ export class EvexLineProvider implements LineProvider {
     id: unknown; channelId: string; channelKind: Message["channelKind"]; senderId: string;
     text: string | undefined; contentType: string; createdTime: unknown; encrypted: boolean;
     metadata: Record<string, string> | undefined; mediaId?: string | undefined; replyTo?: string | undefined; eventText?: string | undefined; location?: unknown;
+    reactions?: Reactions | undefined;
   }): Message {
     const { text } = fields;
     // Numeric content types are normalised so the browser only ever sees one spelling.
@@ -361,6 +383,7 @@ export class EvexLineProvider implements LineProvider {
       ...(fields.replyTo ? { replyTo: fields.replyTo } : {}),
       ...(mentions.length > 0 ? { mentions } : {}),
       ...(card ? { card } : {}),
+      ...(fields.reactions ? { reactions: fields.reactions } : {}),
       // Fail closed: an E2EE payload without readable text is a placeholder, never a guess.
       ...(isText && !text && fields.encrypted ? { decryptFailed: true } : {}),
     };
@@ -665,7 +688,7 @@ export class EvexLineProvider implements LineProvider {
   private async loadSquareMessages(client: Client, squareChatMid: string): Promise<Message[]> {
     const cached = this.squareCache.get(squareChatMid);
     if (cached && Date.now() - cached.at < SQUARE_CACHE_MS) return cached.messages;
-    const found: { raw: LineSquareMessage; name?: string }[] = [];
+    const found: { raw: LineSquareMessage; name?: string; reactions?: unknown }[] = [];
     let token: { syncToken?: string; continuationToken?: string } = {};
     for (let page = 0; page < SQUARE_MAX_PAGES; page += 1) {
       // `continuationToken` belongs to FetchSquareChatEventsRequest but linejs' wrapper does not declare it;
@@ -675,14 +698,14 @@ export class EvexLineProvider implements LineProvider {
       } as Parameters<Client["base"]["square"]["fetchSquareChatEvents"]>[0]);
       for (const event of response.events) {
         const payload = event.payload.receiveMessage ?? event.payload.sendMessage;
-        if (payload?.squareMessage) found.push({ raw: payload.squareMessage, name: payload.senderDisplayName });
+        if (payload?.squareMessage) found.push({ raw: payload.squareMessage, name: payload.senderDisplayName, reactions: payload.messageReactionStatus });
       }
       if (response.events.length === 0 || !response.continuationToken) break;
       token = { syncToken: response.syncToken, continuationToken: response.continuationToken };
     }
     for (const { raw, name } of found) if (name) this.rememberName(raw.message.from, name);
     await this.resolveMembers(client, "square", found.map(({ raw }) => raw.message.from));
-    const messages = found.map(({ raw }) => this.squareToMessage(raw));
+    const messages = found.map(({ raw, reactions }) => this.squareToMessage(raw, undefined, false, reactions));
     messages.sort((a, b) => a.createdAt - b.createdAt);
     // Paging must see a stable list; a few entries are plenty, this is only a paging aid.
     if (this.squareCache.size >= SQUARE_CACHE_ENTRIES) this.squareCache.delete(this.squareCache.keys().next().value!);
@@ -766,6 +789,20 @@ export class EvexLineProvider implements LineProvider {
     if (channel.kind === "square") await client.base.square.unsendMessage({ messageId, squareChatMid: channel.channelId });
     else await client.base.talk.unsendMessage({ messageId });
     this.mediaOrigins.delete(messageId);
+  }
+
+  async react(channel: ChannelRef, messageId: string, kind: ReactionKind | undefined): Promise<void> {
+    const client = this.requireClient();
+    // OpenChat requests count on their own sequence ("sq"), as linejs' square sends do.
+    const reqSeq = await client.base.getReqseq(channel.kind === "square" ? "sq" : "talk");
+    if (channel.kind === "square") {
+      // OpenChat has no cancel call: MessageReactionType UNDO takes the reaction back.
+      await client.base.square.reactToMessage({ request: { reqSeq, squareChatMid: channel.channelId, messageId, reactionType: kind ?? "UNDO" } });
+    } else if (kind) {
+      await client.base.talk.react({ id: BigInt(messageId), reaction: kind, reqSeq });
+    } else {
+      await client.base.talk.cancelReaction({ cancelReactionRequest: { reqSeq, messageId: BigInt(messageId) } });
+    }
   }
 
   /** A plain upload's object id is the id of the message LINE created for it. */

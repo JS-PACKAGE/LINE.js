@@ -1,4 +1,4 @@
-import type { AuthState, Channel, Mention, Message, Profile, ReadPosition, StickerPackage } from "../model/dto.js";
+import type { AuthState, Channel, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
 
 export type ListenState = "starting" | "listening" | "reconnecting";
 
@@ -24,6 +24,8 @@ export type ServerFrame =
   | { type: "message:edit"; message: Message }
   /** The sender took a message back: show a placeholder instead of its content. */
   | { type: "message:unsend"; chatId: string; messageId: string }
+  /** A message's reactions changed (absent: nobody reacts now). Pages only. */
+  | { type: "message:reactions"; chatId: string; messageId: string; reactions?: Reactions }
   | { type: "status"; state: ListenState }
   | { type: "history"; requestId: string; chatId: string; messages: Message[]; hasMore: boolean; cursor?: string }
   | { type: "sent"; requestId: string; messageId: string }
@@ -45,6 +47,8 @@ export type ClientFrame =
   | { type: "chat:read"; chatId: string; messageId: string }
   /** Take back one of this account's own messages (pages only; bots cannot). */
   | { type: "message:unsend"; requestId: string; chatId: string; messageId: string }
+  /** Set this account's reaction (`null` takes it back). Pages only. */
+  | { type: "message:react"; requestId: string; chatId: string; messageId: string; reaction: ReactionKind | null }
   | { type: "stickers:list"; requestId: string }
   | { type: "api:token:create"; requestId?: string }
   | { type: "api:token:revoke"; requestId?: string }

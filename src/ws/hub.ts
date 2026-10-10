@@ -7,11 +7,11 @@ import type { LineProvider } from "../line/provider.js";
 import type { ApiTokenStore } from "../http/apiToken.js";
 import { SlidingWindowLimiter } from "../limit.js";
 import type { MediaService } from "../media/service.js";
-import type { Channel, ChannelKind, Message, ReadPosition } from "../model/dto.js";
+import type { Channel, ChannelKind, Message, Reactions, ReadPosition } from "../model/dto.js";
 import type { UpdateInfo } from "../update/checker.js";
-import type { ChatStore } from "../model/store.js";
+import { withMyReaction, type ChatStore } from "../model/store.js";
 import { PROTOCOL_VERSION, type ClientFrame, type ListenState, type ServerFrame } from "./protocol.js";
-import { parseChatRead, parseHistory, parseSend, parseUnsend, requestIdOf } from "./requests.js";
+import { parseChatRead, parseHistory, parseReact, parseSend, parseUnsend, requestIdOf } from "./requests.js";
 
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const HISTORY_PER_SECOND = 10;
@@ -48,6 +48,8 @@ export interface Hub {
   handleUnsend(chatHint: string | undefined, messageId: string): void;
   /** This account read the chat on another device: its badge goes, here and on every page. */
   handleChecked(chatId: string): void;
+  /** A message's reactions changed on LINE (undefined: nobody reacts now). */
+  handleReactions(chatId: string, messageId: string, reactions: Reactions | undefined): void;
   /** Names, pictures or members changed somewhere: the list is fetched again (settled and rate limited). */
   handleChatsChanged(): void;
   /** Announces (or clears) the newest known release to everyone connected and to later connections. */
@@ -72,6 +74,7 @@ const GENERIC = {
   API_UNAVAILABLE: "機器人 API 未啟用。",
   API_FAILED: "無法更新 API Token，請稍後重試。",
   UNSEND_FAILED: "無法收回這則訊息，請稍後重試。",
+  REACT_FAILED: "無法送出回應，請稍後重試。",
 } as const;
 
 function updateFrame(info: UpdateInfo): ServerFrame {
@@ -224,7 +227,10 @@ export function createHub(options: HubOptions): Hub {
       // The account may have logged out while LINE was answering.
       if (login.state !== "ready") return;
       // What the cache holds (a take-back placeholder where one applies), whether or not it kept the page.
-      const messages = page.messages.map((message) => store.upsert(message, false) ?? store.get(message.messageId, message.channelId) ?? message);
+      // A known message keeps its cached form, except that reactions LINE reports now replace older ones.
+      const messages = page.messages.map((message) => store.upsert(message, false)
+        ?? (message.reactions ? updateReactions(message.channelId, message.messageId, message.reactions) : undefined)
+        ?? store.get(message.messageId, message.channelId) ?? message);
       send(socket, { type: "history", requestId, chatId, messages, hasMore: page.hasMore, ...(page.cursor ? { cursor: page.cursor } : {}) });
       // Receipts are an extra: a failure here must not turn a good history page into an error. Bots get none.
       if (!before && !scope) void sendReadSnapshot(socket, chatId, channel.kind);
@@ -323,6 +329,37 @@ export function createHub(options: HubOptions): Hub {
       logFailure("UNSEND_FAILED", error);
       fail(socket, "UNSEND_FAILED", requestId);
     }
+  }
+
+  /** Pages only, like unsend: the account's reaction to a message the server has shown. */
+  async function handleReactRequest(socket: WebSocket, frame: Record<string, unknown>): Promise<void> {
+    const parsed = parseReact(frame);
+    if (!parsed.ok) return fail(socket, "INVALID_REQUEST", parsed.requestId);
+    const { requestId, chatId, messageId, reaction } = parsed.value;
+    const channel = store.channelOf(chatId);
+    if (login.state !== "ready" || !channel) return fail(socket, "UNKNOWN_CHAT", requestId);
+    const message = store.get(messageId, chatId);
+    if (!message || message.unsent || message.contentType === "CHATEVENT") return fail(socket, "INVALID_REQUEST", requestId);
+    if (message.reactions?.mine === reaction) return;
+    try {
+      await provider.react({ channelId: chatId, kind: channel.kind }, messageId, reaction);
+      if (login.state !== "ready") return;
+      // LINE echoes nothing to this device for talk chats: show the change now.
+      updateReactions(chatId, messageId, withMyReaction(store.get(messageId, chatId)?.reactions, reaction));
+    } catch (error) {
+      logFailure("REACT_FAILED", error);
+      fail(socket, "REACT_FAILED", requestId);
+    }
+  }
+
+  /** Stores and announces new reactions; returns the message as now cached, or undefined if nothing changed. */
+  function updateReactions(chatId: string, messageId: string, reactions: Reactions | undefined): Message | undefined {
+    const before = store.channelOf(chatId);
+    const stored = store.setReactions(messageId, chatId, reactions);
+    if (!stored) return undefined;
+    broadcast({ type: "message:reactions", chatId, messageId, ...(stored.reactions ? { reactions: stored.reactions } : {}) });
+    broadcastChannel(chatId, before);
+    return stored;
   }
 
   /** Tells pages one chat's list entry changed (the store replaces the object only when it did). */
@@ -538,6 +575,11 @@ export function createHub(options: HubOptions): Hub {
           if (!sendLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
           else void handleUnsendRequest(socket, frame as Record<string, unknown>);
           return;
+        case "message:react":
+          // Visible to the other side like a send, so it shares the send budget.
+          if (!sendLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else void handleReactRequest(socket, frame as Record<string, unknown>);
+          return;
         case "chat:read":
           // Silent on purpose (see handleChatRead); the shared limiter keeps a script from hammering LINE.
           if (historyLimiter.allow()) void handleChatRead(frame as Record<string, unknown>);
@@ -588,6 +630,9 @@ export function createHub(options: HubOptions): Hub {
     },
     handleMessage: ingest,
     handleUnsend: takeBack,
+    handleReactions(chatId, messageId, reactions) {
+      if (login.state === "ready") updateReactions(chatId, messageId, reactions);
+    },
     handleChecked(chatId) {
       const before = store.channelOf(chatId);
       if (!before || login.state !== "ready") return;

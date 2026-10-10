@@ -29,6 +29,7 @@ async function main(): Promise<void> {
     },
     onChecked: (chatId) => hub.handleChecked(chatId),
     onChatsChanged: () => hub.handleChatsChanged(),
+    onReactions: (chatId, messageId, reactions) => hub.handleReactions(chatId, messageId, reactions),
     onStatus: (state) => {
       console.info(`LINE 狀態：${state}`);
       hub.setStatus(state);

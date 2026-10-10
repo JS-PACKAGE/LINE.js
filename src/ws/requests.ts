@@ -1,5 +1,5 @@
 import { isUploadId } from "../media/service.js";
-import type { Mention } from "../model/dto.js";
+import { REACTION_KINDS, type Mention, type ReactionKind } from "../model/dto.js";
 
 export const MAX_HISTORY_LIMIT = 100;
 
@@ -121,4 +121,22 @@ export function parseUnsend(frame: Record<string, unknown>): Parsed<UnsendReques
   if (!base) return { ok: false, ...(requestIdOf(frame) ? { requestId: requestIdOf(frame)! } : {}) };
   if (typeof frame.messageId !== "string" || !MESSAGE_ID.test(frame.messageId)) return { ok: false, requestId: base.requestId };
   return { ok: true, value: { ...base, messageId: frame.messageId } };
+}
+
+export interface ReactRequest {
+  requestId: string;
+  chatId: string;
+  messageId: string;
+  /** Undefined removes this account's reaction. */
+  reaction: ReactionKind | undefined;
+}
+
+/** "React to this message" with one of LINE's six reactions, or `null` to take it back. */
+export function parseReact(frame: Record<string, unknown>): Parsed<ReactRequest> {
+  const base = header(frame);
+  if (!base) return { ok: false, ...(requestIdOf(frame) ? { requestId: requestIdOf(frame)! } : {}) };
+  const { messageId, reaction } = frame;
+  if (typeof messageId !== "string" || !MESSAGE_ID.test(messageId)) return { ok: false, requestId: base.requestId };
+  if (reaction !== null && !(REACTION_KINDS as readonly unknown[]).includes(reaction)) return { ok: false, requestId: base.requestId };
+  return { ok: true, value: { ...base, messageId, reaction: (reaction ?? undefined) as ReactionKind | undefined } };
 }

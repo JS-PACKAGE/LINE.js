@@ -140,6 +140,8 @@
 
 > v1.14（小語裁示：檔案可下載）：收到的檔案訊息由 adapter 登記為 `file-<id>`（與 `msg-<id>` 同為「已顯示才可取得」、同受 `limits.downloadMaxBytes` 限制，E2EE 社群檔案不支援），放在 `Message.card.fileId`；`/media/file-<id>` 一律回 `application/octet-stream`＋`Content-Disposition: attachment`（檔名 RFC 5987 編碼、去除控制字元與路徑分隔）、`no-store`，不嗅探、不內嵌；收回後一併自快取移除。
 
+> v1.14（續，小語裁示：回應）：`Message.reactions`（talk 取自 `Message.reactions`，社群取自歷史事件的 `messageReactionStatus` 與即時 `NOTIFIED_UPDATE_MESSAGE_STATUS`；後者在 linejs 為未具型別結構，依 thrift 欄位編號解析，不符即忽略）。新增 `message:react`／`message:reactions`：經 adapter 呼叫 `talk.react`／`talk.cancelReaction`／`square.reactToMessage`（取消用 `UNDO`）；伺服器只接受已顯示、未收回的訊息，成功後於本機更新人數並廣播。talk 的即時回應通知（op 139／140）參數格式未經實測，暫不解析。
+
 ### Server → Client
 
 | type | 負載 |
@@ -158,6 +160,7 @@
 | `pong` | `{}`（回應 `ping`） |
 | `message:edit` | `{ message: Message }` |
 | `message:unsend` | `{ chatId, messageId }`（訊息已收回；快照與歷史中以 `Message.unsent: true` 佔位呈現） |
+| `message:reactions` | `{ chatId, messageId, reactions? }`（回應改變；只給網頁） |
 | `history` | `{ requestId, chatId, messages: Message[], hasMore, cursor? }`（`cursor` 傳回 `before` 取更早一頁） |
 | `read` | `{ chatId, positions: { readerId, messageId }[] }`（他人已讀到哪則；開啟聊天時送快照，之後即時增量；社群無已讀） |
 | `sent` | `{ requestId, messageId }` |
@@ -173,6 +176,7 @@
 | `auth:start` | `{}`（開始 QR 登入；僅 `idle`／`error` 有效） |
 | `history:fetch` | `{ requestId, chatId, limit?, before? }` |
 | `message:send` | `{ requestId, chatId, text?, mediaId?, sticker?: { packageId, stickerId } }` |
+| `message:react` | `{ requestId, chatId, messageId, reaction: "NICE"｜"LOVE"｜"FUN"｜"AMAZING"｜"SAD"｜"OMG"｜null }`（僅網頁，與 `message:send` 共用頻率上限） |
 | `channels:refresh` | `{}` |
 | `api:token:create` / `api:token:revoke` | `{}`（產生或撤銷機器人 Token，並中斷所有機器人連線） |
 | `ping` | `{}` |
@@ -202,6 +206,7 @@ Message { messageId, channelId, channelKind, senderId, senderName, senderPicture
           text?, contentType, createdAt, editedAt?, mediaId?, replyTo?,
           mentions?: { start, end, userId? }[],   // 收到的 @ 提及；無 userId 為 @All
           card?: 位置｜聯絡人｜檔案（名稱、大小、fileId?）｜卡片訊息替代文字,
+          reactions?: { counts, mine? },          // LINE 六種預設回應的人數；mine 為本帳號的回應
           decryptFailed?, unsent? }               // unsent：已收回，只留寄件者與時間
 Media   { mediaId, mime, size, kind: "image"｜"sticker"｜"video"｜"audio" }
 ```

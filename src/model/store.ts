@@ -1,4 +1,4 @@
-import type { Channel, Message } from "./dto.js";
+import { REACTION_KINDS, type Channel, type Message, type ReactionKind, type Reactions } from "./dto.js";
 
 // Ids of messages taken back, remembered so a copy that arrives later (a live event still waiting on a
 // member lookup, a history page) is stored as the placeholder. Message ids are unique across chats.
@@ -11,6 +11,16 @@ function unsentPlaceholder(message: Message): Message {
     messageId, channelId, channelKind, senderId, senderName, contentType, createdAt, unsent: true,
     ...(senderPictureId ? { senderPictureId } : {}), ...(senderRole ? { senderRole } : {}),
   };
+}
+
+/** `current` with this account's reaction changed to `mine` (undefined: removed), counts kept in order. */
+export function withMyReaction(current: Reactions | undefined, mine: ReactionKind | undefined): Reactions | undefined {
+  const counts: Partial<Record<ReactionKind, number>> = {};
+  for (const kind of REACTION_KINDS) {
+    const count = (current?.counts[kind] ?? 0) - (current?.mine === kind ? 1 : 0) + (mine === kind ? 1 : 0);
+    if (count > 0) counts[kind] = count;
+  }
+  return Object.keys(counts).length > 0 ? { counts, ...(mine ? { mine } : {}) } : undefined;
 }
 
 /** In-memory only: messages are never persisted (plan §5). */
@@ -146,6 +156,23 @@ export class ChatStore {
     const channel = this.channels[channelId];
     if (channel?.lastMessage?.messageId === messageId) this.channels[channelId] = { ...channel, lastMessage: placeholder };
     return placeholder;
+  }
+
+  /**
+   * Replaces one cached message's reactions (not an edit: `editedAt` stays). Returns the new form, or
+   * undefined when the message is unknown, taken back, or already shows exactly these reactions.
+   */
+  setReactions(messageId: string, channelId: string, reactions: Reactions | undefined): Message | undefined {
+    const known = this.byId[channelId]?.get(messageId);
+    if (!known || known.unsent || JSON.stringify(known.reactions) === JSON.stringify(reactions)) return undefined;
+    const { reactions: _old, ...rest } = known;
+    const stored: Message = reactions ? { ...rest, reactions } : rest;
+    const list = this.messages[channelId]!;
+    list[list.findIndex((entry) => entry.messageId === messageId)] = stored;
+    this.byId[channelId]!.set(messageId, stored);
+    const channel = this.channels[channelId];
+    if (channel?.lastMessage?.messageId === messageId) this.channels[channelId] = { ...channel, lastMessage: stored };
+    return stored;
   }
 
   snapshotChannels(): Channel[] {

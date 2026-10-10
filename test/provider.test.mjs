@@ -31,17 +31,19 @@ function fakeBase(overrides = {}) {
 async function activeProvider(base, client = {}) {
   const received = [];
   const errors = [];
+  const reactions = [];
   const storage = { async flush() {}, async get() {}, async set() {} };
   const provider = new EvexLineProvider(storage, "DESKTOPWIN", {
     onMessage: (message, kind) => received.push({ message, kind }),
     onRead() {}, onStatus() {}, onError: (code) => errors.push(code),
+    onReactions: (...args) => reactions.push(args),
   });
   // Listening would start real polling; the tests emit events themselves.
   provider.listen = () => {};
   provider.base = base;
   await provider.activate(base);
   Object.assign(provider.client, client);
-  return { provider, received, errors, emit: (...args) => provider.client.emit(...args) };
+  return { provider, received, errors, reactions, emit: (...args) => provider.client.emit(...args) };
 }
 
 const talk = (id, to, from, text, extra = {}) => ({ raw: { id, to, from, toType: "GROUP", contentType: "NONE", text, createdTime: String(1_700_000_000_000 + Number(id)), contentMetadata: {}, ...extra } });
@@ -366,4 +368,38 @@ test("a received file becomes a download with a safe name; it is never served as
   await settle();
   assert.equal(await provider.fetchMessageFile("801"), undefined, "only file messages are files");
   assert.deepEqual(downloads, ["800"]);
+});
+
+test("reactions: talk messages carry theirs, OpenChat status events update them, and setting one uses the matching LINE call", async () => {
+  const calls = [];
+  const base = fakeBase({
+    talk: {
+      async react(options) { calls.push(["talk.react", options]); },
+      async cancelReaction(options) { calls.push(["talk.cancel", options]); },
+    },
+    square: { async reactToMessage(options) { calls.push(["square.react", options]); } },
+  });
+  base.getReqseq = async (bucket = "talk") => (bucket === "sq" ? 70 : 7);
+  const { provider, received, reactions, emit } = await activeProvider(base);
+  emit("message", talk("910", GROUP_A, mid(1), "嗨", { reactions: [{ fromUserMid: ME, reactionType: { predefinedReactionType: "FUN" } }] }));
+  await settle();
+  assert.deepEqual(received.at(-1).message.reactions, { counts: { FUN: 1 }, mine: "FUN" });
+
+  const status = (messageId, contents) => ({ type: "NOTIFIED_UPDATE_MESSAGE_STATUS", payload: { notifiedUpdateMessageStatus: { squareChatMid: SQUARE, messageId, messageStatus: { contents } } } });
+  emit("square:event", status("920", { messageReactionStatus: { 1: 2, 2: { 3: 2 }, 3: { 1: 3 } } }));
+  emit("square:event", status("921", { messageReactionStatus: { 1: 0, 2: {} } }));
+  emit("square:event", status("922", { messageReactionStatus: "?" }));
+  emit("square:event", status("../9", { messageReactionStatus: { 1: 1, 2: { 2: 1 } } }));
+  assert.deepEqual(reactions, [[SQUARE, "920", { counts: { LOVE: 2 }, mine: "LOVE" }], [SQUARE, "921", undefined]]);
+
+  await provider.react({ channelId: GROUP_A, kind: "group" }, "910", "SAD");
+  await provider.react({ channelId: GROUP_A, kind: "group" }, "910", undefined);
+  await provider.react({ channelId: SQUARE, kind: "square" }, "920", "NICE");
+  await provider.react({ channelId: SQUARE, kind: "square" }, "920", undefined);
+  assert.deepEqual(calls, [
+    ["talk.react", { id: 910n, reaction: "SAD", reqSeq: 7 }],
+    ["talk.cancel", { cancelReactionRequest: { reqSeq: 7, messageId: 910n } }],
+    ["square.react", { request: { reqSeq: 70, squareChatMid: SQUARE, messageId: "920", reactionType: "NICE" } }],
+    ["square.react", { request: { reqSeq: 70, squareChatMid: SQUARE, messageId: "920", reactionType: "UNDO" } }],
+  ]);
 });

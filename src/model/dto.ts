@@ -56,6 +56,16 @@ export type MessageCard =
   /** LINE's own text stand-in for a rich card. */
   | { kind: "flex"; altText: string };
 
+/** LINE's six predefined reactions; newer custom reactions are not shown. */
+export const REACTION_KINDS = ["NICE", "LOVE", "FUN", "AMAZING", "SAD", "OMG"] as const;
+export type ReactionKind = (typeof REACTION_KINDS)[number];
+
+/** Who reacted how, as counts; `mine` is this account's own reaction. */
+export interface Reactions {
+  counts: Partial<Record<ReactionKind, number>>;
+  mine?: ReactionKind;
+}
+
 /** A sticker package the account owns, with the stickers that can be sent from it. */
 export interface StickerPackage {
   packageId: number;
@@ -83,6 +93,8 @@ export interface Message {
   /** People tagged in `text`, sorted and non-overlapping. */
   mentions?: TextMention[];
   card?: MessageCard;
+  /** Absent when nobody reacted (or LINE did not say). */
+  reactions?: Reactions;
   decryptFailed?: boolean;
   /** The sender took the message back: its content is gone and only a placeholder remains. */
   unsent?: boolean;
