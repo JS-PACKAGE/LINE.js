@@ -59,11 +59,14 @@ export class MediaService {
     }
     let pending = this.inflight.get(id);
     if (!pending) {
-      pending = this.load(id).then((media) => {
-        if (media) this.remember(id, media);
+      const load = this.load(id).then((media) => {
+        // Forgotten (the message was taken back) while downloading: hand the bytes to whoever was
+        // already waiting, but never keep them. A later request starts from the adapter, which refuses.
+        if (media && this.inflight.get(id) === load) this.remember(id, media);
         return media;
-      }).finally(() => { this.inflight.delete(id); });
-      this.inflight.set(id, pending);
+      }).finally(() => { if (this.inflight.get(id) === load) this.inflight.delete(id); });
+      pending = load;
+      this.inflight.set(id, load);
     }
     return pending;
   }
@@ -119,8 +122,9 @@ export class MediaService {
     for (const [id, entry] of this.uploads) if (entry.expires <= now) this.uploads.delete(id);
   }
 
-  /** Drops one cached item (a message taken back must not stay downloadable). */
+  /** Drops one cached item, finished or still downloading (a message taken back must not stay downloadable). */
   forget(id: string): void {
+    this.inflight.delete(id);
     const entry = this.cache.get(id);
     if (!entry) return;
     this.cache.delete(id);
@@ -129,6 +133,7 @@ export class MediaService {
 
   clear(): void {
     this.cache.clear();
+    this.inflight.clear();
     this.uploads.clear();
     this.size = 0;
   }

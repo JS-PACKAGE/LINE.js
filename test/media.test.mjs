@@ -101,6 +101,25 @@ test("concurrent requests share one upstream fetch", async () => {
   assert.ok(results.every((result) => result === results[0]));
 });
 
+test("media forgotten while it is still downloading is not cached when the download finishes", async () => {
+  // The message is taken back while its picture is on the way: the adapter refuses later requests,
+  // so a cached copy would be the only way for it to stay downloadable.
+  let release;
+  let calls = 0;
+  const media = new MediaService(1000, {
+    fetchMessageMedia() {
+      calls += 1;
+      return calls === 1 ? new Promise((resolve) => { release = () => resolve(png(10)); }) : Promise.resolve(undefined);
+    },
+  });
+  const first = media.get("msg-42");
+  media.forget("msg-42");
+  release();
+  assert.equal((await first).bytes.length, 10, "whoever was already waiting still gets the bytes");
+  assert.equal(await media.get("msg-42"), undefined, "a later request goes back to the adapter, not the cache");
+  assert.equal(calls, 2);
+});
+
 test("least recently used entries are evicted within the byte budget", async () => {
   const upstream = source({ 1: 40, 2: 40, 3: 40 });
   const media = new MediaService(100, upstream);
