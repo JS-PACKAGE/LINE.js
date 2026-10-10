@@ -3,6 +3,8 @@ import { randomBytes } from "node:crypto";
 export interface MediaBytes {
   mime: string;
   bytes: Buffer;
+  /** Set for files: the response is a download under this name, never shown inline. */
+  filename?: string;
 }
 
 export type AvatarHost = "profile" | "obs";
@@ -16,6 +18,8 @@ export interface MediaSource {
   fetchStickerPack(packageId: string): Promise<MediaBytes | undefined>;
   /** Image, video or audio attached to a message the adapter has seen; undefined when unknown or too large. */
   fetchMessageMedia(messageId: string): Promise<MediaBytes | undefined>;
+  /** A file attached to a message the adapter has seen, served only as a download. */
+  fetchMessageFile(messageId: string): Promise<MediaBytes | undefined>;
 }
 
 const STICKER_ID = /^sticker-(\d{1,12})(-a)?$/;
@@ -23,6 +27,7 @@ const STICKER_PACK_ID = /^stickerpack-(\d{1,12})$/;
 // "avatarfull-" is the same picture at original size (for the enlarged view).
 const AVATAR_ID = /^avatar(full)?-([po])-([A-Za-z0-9_-]{8,200})$/;
 const MESSAGE_ID = /^msg-(\d{1,24})$/;
+const FILE_ID = /^file-(\d{1,24})$/;
 
 /** Maps the hash LINE reports for a picture to the id the browser may request. */
 export function avatarMediaId(host: AvatarHost, hash: string | undefined): string | undefined {
@@ -33,7 +38,7 @@ export function avatarMediaId(host: AvatarHost, hash: string | undefined): strin
 
 /** Media ids that the server is willing to resolve; anything else is rejected before any lookup. */
 export function isMediaId(id: string): boolean {
-  return STICKER_ID.test(id) || STICKER_PACK_ID.test(id) || AVATAR_ID.test(id) || MESSAGE_ID.test(id);
+  return STICKER_ID.test(id) || STICKER_PACK_ID.test(id) || AVATAR_ID.test(id) || MESSAGE_ID.test(id) || FILE_ID.test(id);
 }
 
 /**
@@ -78,6 +83,8 @@ export class MediaService {
     if (pack) return this.source.fetchStickerPack(pack[1]!);
     const avatar = AVATAR_ID.exec(id);
     if (avatar) return this.source.fetchAvatar(avatar[2] === "p" ? "profile" : "obs", avatar[3]!, avatar[1] !== undefined);
+    const file = FILE_ID.exec(id);
+    if (file) return this.source.fetchMessageFile(file[1]!);
     return this.source.fetchMessageMedia(MESSAGE_ID.exec(id)![1]!);
   }
 

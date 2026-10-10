@@ -51,8 +51,8 @@ export interface TextMention {
 export type MessageCard =
   | { kind: "location"; title?: string; address?: string; latitude: number; longitude: number }
   | { kind: "contact"; name: string }
-  /** Name and size only: files are not downloaded (out of scope). */
-  | { kind: "file"; name: string; size?: number }
+  /** `fileId` (served by `/media/:id` as a download only) is set when the server can fetch it. */
+  | { kind: "file"; name: string; size?: number; fileId?: string }
   /** LINE's own text stand-in for a rich card. */
   | { kind: "flex"; altText: string };
 

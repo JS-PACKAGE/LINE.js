@@ -48,6 +48,8 @@ export interface LineProvider {
   fetchSticker(stickerId: string, animated: boolean): Promise<MediaBytes | undefined>;
   fetchAvatar(host: AvatarHost, hash: string, full: boolean): Promise<MediaBytes | undefined>;
   fetchMessageMedia(messageId: string): Promise<MediaBytes | undefined>;
+  /** A file someone sent, as raw bytes with its name; never sniffed or shown inline. */
+  fetchMessageFile(messageId: string): Promise<MediaBytes | undefined>;
   /** Tab icon of an owned sticker package. */
   fetchStickerPack(packageId: string): Promise<MediaBytes | undefined>;
   /** Sticker packages the account owns, each with its sendable sticker ids. */
@@ -112,6 +114,8 @@ interface MemberProfile {
 
 /** The LINE message kinds shown inline (numeric forms appear in some payloads). */
 const MEDIA_KIND: Record<string, "IMAGE" | "VIDEO" | "AUDIO"> = { IMAGE: "IMAGE", 1: "IMAGE", VIDEO: "VIDEO", 2: "VIDEO", AUDIO: "AUDIO", 3: "AUDIO" };
+const isFileType = (contentType: unknown): boolean => String(contentType) === "FILE" || String(contentType) === "14";
+const MAX_FILE_NAME = 255;
 const MAX_MEDIA_ORIGINS = 500;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 const DEFAULT_DOWNLOAD_BYTES = 50 * 1024 * 1024;
@@ -317,11 +321,12 @@ export class EvexLineProvider implements LineProvider {
   }
 
   private rememberMedia(raw: LineMessage, square: boolean): string | undefined {
-    if (!MEDIA_KIND[String(raw.contentType)] || !/^\d{1,24}$/.test(raw.id)) return undefined;
+    const file = isFileType(raw.contentType);
+    if ((!MEDIA_KIND[String(raw.contentType)] && !file) || !/^\d{1,24}$/.test(raw.id)) return undefined;
     this.mediaOrigins.delete(raw.id);
     this.mediaOrigins.set(raw.id, { raw, square });
     if (this.mediaOrigins.size > MAX_MEDIA_ORIGINS) this.mediaOrigins.delete(this.mediaOrigins.keys().next().value!);
-    return `msg-${raw.id}`;
+    return `${file ? "file" : "msg"}-${raw.id}`;
   }
 
   private toMessage(fields: {
@@ -335,10 +340,12 @@ export class EvexLineProvider implements LineProvider {
     const isText = contentType === "NONE";
     const created = Number(fields.createdTime);
     const stickerId = contentType === "STICKER" ? fields.metadata?.STKID : undefined;
+    const fileId = fields.mediaId?.startsWith("file-") ? fields.mediaId : undefined;
     // Only a numeric id may become a sticker media id: it is later spliced into a CDN URL path.
-    const mediaId = fields.mediaId ?? (stickerId && /^\d{1,12}$/.test(stickerId) ? `sticker-${stickerId}${fields.metadata?.STKOPT === "A" ? "-a" : ""}` : undefined);
+    const mediaId = fileId ? undefined : fields.mediaId ?? (stickerId && /^\d{1,12}$/.test(stickerId) ? `sticker-${stickerId}${fields.metadata?.STKOPT === "A" ? "-a" : ""}` : undefined);
     const mentions = isText && text ? parseMentions(fields.metadata, text) : [];
-    const card = isText ? undefined : messageCard(contentType, fields.metadata, fields.location);
+    const parsed = isText ? undefined : messageCard(contentType, fields.metadata, fields.location);
+    const card = parsed?.kind === "file" && fileId ? { ...parsed, fileId } : parsed;
     return {
       messageId: String(fields.id),
       channelId: fields.channelId,
@@ -469,10 +476,25 @@ export class EvexLineProvider implements LineProvider {
    * downloaded with the session's credentials, capped by size, and its type is decided by sniffing.
    */
   async fetchMessageMedia(messageId: string): Promise<MediaBytes | undefined> {
-    const client = this.requireClient();
     const origin = this.mediaOrigins.get(messageId);
-    if (!origin) return undefined;
-    const { raw, square } = origin;
+    if (!origin || !MEDIA_KIND[String(origin.raw.contentType)]) return undefined;
+    const bytes = await this.messageBytes(messageId, origin);
+    const mime = bytes && sniffMedia(bytes);
+    return bytes && mime ? { mime, bytes } : undefined;
+  }
+
+  /** Served only as a download (`Content-Disposition: attachment`), so the bytes are never interpreted. */
+  async fetchMessageFile(messageId: string): Promise<MediaBytes | undefined> {
+    const origin = this.mediaOrigins.get(messageId);
+    if (!origin || !isFileType(origin.raw.contentType)) return undefined;
+    const bytes = await this.messageBytes(messageId, origin);
+    if (!bytes) return undefined;
+    const name = String(origin.raw.contentMetadata?.FILE_NAME ?? "").replace(/[\u0000-\u001f\u007f/\\]/g, "_").slice(0, MAX_FILE_NAME);
+    return { mime: "application/octet-stream", bytes, filename: name || "file" };
+  }
+
+  private async messageBytes(messageId: string, { raw, square }: { raw: LineMessage; square: boolean }): Promise<Buffer | undefined> {
+    const client = this.requireClient();
     // FILE_SIZE is advisory (and the encrypted size for E2EE); the real limit is enforced on the bytes below.
     if (Number(raw.contentMetadata?.FILE_SIZE) > this.downloadMaxBytes) return undefined;
     let bytes: Buffer | undefined;
@@ -483,9 +505,7 @@ export class EvexLineProvider implements LineProvider {
     } else {
       bytes = await this.downloadPlainMedia(client, messageId, square);
     }
-    if (!bytes || bytes.length === 0 || bytes.length > this.downloadMaxBytes) return undefined;
-    const mime = sniffMedia(bytes);
-    return mime ? { mime, bytes } : undefined;
+    return bytes && bytes.length > 0 && bytes.length <= this.downloadMaxBytes ? bytes : undefined;
   }
 
   private async downloadPlainMedia(client: Client, messageId: string, square: boolean): Promise<Buffer | undefined> {

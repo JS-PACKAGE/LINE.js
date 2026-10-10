@@ -154,12 +154,16 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
           json(response, 404, { code: "NOT_FOUND" });
           return;
         }
-        // Sticker and avatar bytes are immutable per id; received message media is private content
-        // and must not linger in the browser cache (the server-side LRU already avoids refetching).
-        const cacheControl = id.startsWith("msg-") ? "private, no-store" : "private, max-age=86400";
+        // Sticker and avatar bytes are immutable per id; received message media and files are private
+        // content and must not linger in the browser cache (the server-side LRU already avoids refetching).
+        const cacheControl = id.startsWith("msg-") || id.startsWith("file-") ? "private, no-store" : "private, max-age=86400";
         const length = found.bytes.length;
         const range = byteRange(request.headers.range, length);
-        const headers = { "Content-Type": found.mime, "Accept-Ranges": "bytes", "Cache-Control": cacheControl };
+        // Files are whatever the sender chose (HTML, SVG, scripts): always a download, never rendered here.
+        const disposition = found.filename !== undefined
+          ? { "Content-Disposition": `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(found.filename).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)}` }
+          : {};
+        const headers = { "Content-Type": found.mime, "Accept-Ranges": "bytes", "Cache-Control": cacheControl, ...disposition };
         if (range === "unsatisfiable") {
           response.writeHead(416, { ...headers, "Content-Range": `bytes */${length}` });
           response.end();

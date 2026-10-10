@@ -448,12 +448,12 @@ function cardTitle(card: MessageCard): string {
   }
 }
 
-/** A location, contact, file or rich card shown by what it says, never by fetching anything. */
+/** A location, contact, file or rich card shown by what it says; nothing is fetched until the reader clicks. */
 function cardNode(card: MessageCard): HTMLElement {
   const box = document.createElement("div");
   box.className = "card";
   const label = document.createElement("small");
-  label.textContent = { location: "位置", contact: "聯絡人", file: "檔案（無法在此下載）", flex: "卡片訊息" }[card.kind];
+  label.textContent = { location: "位置", contact: "聯絡人", file: card.kind === "file" && card.fileId ? "檔案" : "檔案（無法在此下載）", flex: "卡片訊息" }[card.kind];
   const title = document.createElement("strong");
   title.textContent = cardTitle(card);
   box.append(label, title);
@@ -471,6 +471,14 @@ function cardNode(card: MessageCard): HTMLElement {
     map.rel = "noopener noreferrer";
     map.textContent = "在地圖上開啟";
     box.append(map);
+  }
+  if (card.kind === "file" && card.fileId) {
+    // The server answers with Content-Disposition: attachment, so the file is saved, never opened here.
+    const download = document.createElement("a");
+    download.href = `/media/${encodeURIComponent(card.fileId)}`;
+    download.download = card.name;
+    download.textContent = "下載";
+    box.append(download);
   }
   return box;
 }

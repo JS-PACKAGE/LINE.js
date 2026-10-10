@@ -333,8 +333,9 @@ export function createHub(options: HubOptions): Hub {
 
   /** A message was taken back (see Hub.handleUnsend). */
   function takeBack(chatHint: string | undefined, messageId: string): void {
-    // Its picture, video or voice must not stay downloadable either.
+    // Its picture, video, voice or file must not stay downloadable either.
     media.forget(`msg-${messageId}`);
+    media.forget(`file-${messageId}`);
     const before = chatHint !== undefined ? store.channelOf(chatHint) : undefined;
     const placeholder = store.unsend(messageId, chatHint);
     if (!placeholder) return;

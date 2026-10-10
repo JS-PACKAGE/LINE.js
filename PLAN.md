@@ -1,4 +1,4 @@
-# LINE.js 本機 LINE 網頁客戶端 企劃書 v1.13
+# LINE.js 本機 LINE 網頁客戶端 企劃書 v1.14
 
 一句話：以 **WebSocket** 為即時通道、以 **@evex/linejs v3.4.2** 為 LINE 連線核心的本機 TypeScript 網頁客戶端（**LINE.js**）——Node 後端以 QR 掃碼登入 LINE，將訊息與頻道清單經 ws 推送到監聽 `127.0.0.1:3789` 的網頁前端。
 
@@ -33,7 +33,7 @@
 - 公開部署、對外網址、HTTPS／網域（預設僅監聽 127.0.0.1；host 可由 `config.yaml` 改，但不提供也不負責對外部署）。
 - 套件發布（npm／JSR）：裁示為**只開源倉庫供 clone，不發套件**。
 - 多帳號、多使用者、帳號系統與權限。
-- 檔案（FILE）的下載與播放（僅顯示類型佔位與基本資訊）。
+- 檔案（FILE）的預覽與播放（v1.14 裁示：可下載，見下）。
 - 網頁端發送檔案、發送影片／語音；訊息編輯送出（linejs 僅支援接收 `message:edit`）、收回他人訊息。
 - 通話（linejs 具 call 能力但不在範圍）、社群管理操作（邀請／踢人／公告）、Timeline／Moa 相簿、貼圖商店、自動回覆／AI Agent 整合。
 
@@ -47,7 +47,7 @@
 | R4 | 以 **ws（WebSocket）** 將 LINE 訊息與頻道清單推送到網頁客戶端；同埠 HTTP 提供靜態前端與 `GET /media/:mediaId` 媒體位元組 |
 | R5 | 登入＝**QR 掃碼**（免帳密）；session（cert／refreshToken／authToken）持久化於 `session.json`，重啟優先復用、失效才重掃；QR URL 與 PIN 僅一次性顯示、不入日誌 |
 | R6 | 第一版功能：①頻道清單（好友／群組／聊天室／社群）②即時訊息串流（含 `square:message`、`message:edit`）③歷史載入（預設最近 50 則）④網頁端發送文字、圖片、貼圖（機制見「四、通訊協定」）⑤圖片／貼圖顯示 |
-| R7 | 媒體：收到的圖片／GIF／影片／語音經 adapter 取得（E2EE 於後端解密）後由 HTTP 內嵌供網頁顯示與播放，貼圖與大頭照由 LINE CDN 經後端代取；檔案僅佔位（v1.6 裁示：影片、語音、GIF 納入顯示） |
+| R7 | 媒體：收到的圖片／GIF／影片／語音經 adapter 取得（E2EE 於後端解密）後由 HTTP 內嵌供網頁顯示與播放，貼圖與大頭照由 LINE CDN 經後端代取；檔案只以附件下載（v1.6 裁示：影片、語音、GIF 納入顯示；v1.14 裁示：檔案可下載） |
 | R8 | 安全：預設鎖定 127.0.0.1（可由設定改，非迴路時警告）；`session.json` 權限 600 且不入版本控制；憑證／QR／PIN 不入日誌；網頁 WS 須 Origin 等於 Host 並帶瀏覽器 cookie；機器人 API 以 Bearer Token；每連線頻率、frame 與上傳大小上限 |
 | R9 | 必要文件四件：`README.md`／`AGENTS.md`／`CLAUDE.md`／`PLAN.md` |
 | R10 | 實作順序：Gate 0（倉庫根檔＋必要文件）達成後才寫程式 |
@@ -138,6 +138,8 @@
 
 > v1.13（協定版本仍為 2：只新增影格與選用欄位，舊頁面忽略未知影格）：`Channel.lastMessage`（清單預覽；載入時取自 LINE 摘要——talk `getMessageBoxes` 的 `lastMessages`（`lastMessagesPerMessageBoxCount: 1`，E2EE 每則只解密一次）、社群 `getSquareChatStatus.lastMessage`——之後隨即時訊息、編輯、收回更新；預覽不登記媒體，不能藉此下載）；`lastMessageAt` 另採 `lastDeliveredMessageId.deliveredTime`。新增 Server → Client `channel`（`{ channel }`，單一頻道變動，只給網頁）、`chat:checked`（`{ chatId }`，此帳號在其他裝置讀過，網頁清除未讀；來源為 LINE `SEND_CHAT_CHECKED`，只採用 `param1` 且須為伺服器已知聊天室）、`pong`（回應 `ping`）。心跳：網頁每 30 秒 `ping`、10 秒無 `pong` 即重連，回到前景立即探測；伺服器以 WebSocket 協定層 Ping 每 30 秒檢查，連續兩輪未回應即關閉。群組／個人資料／聊天室成員變動的 operation 不解析參數，只觸發頻道清單重新整理（同一波 3 秒內合併，最多每 30 秒一次）。
 
+> v1.14（小語裁示：檔案可下載）：收到的檔案訊息由 adapter 登記為 `file-<id>`（與 `msg-<id>` 同為「已顯示才可取得」、同受 `limits.downloadMaxBytes` 限制，E2EE 社群檔案不支援），放在 `Message.card.fileId`；`/media/file-<id>` 一律回 `application/octet-stream`＋`Content-Disposition: attachment`（檔名 RFC 5987 編碼、去除控制字元與路徑分隔）、`no-store`，不嗅探、不內嵌；收回後一併自快取移除。
+
 ### Server → Client
 
 | type | 負載 |
@@ -199,7 +201,7 @@ Channel { channelId, kind: "user"｜"group"｜"room"｜"square", name,
 Message { messageId, channelId, channelKind, senderId, senderName, senderPictureId?, senderRole?,
           text?, contentType, createdAt, editedAt?, mediaId?, replyTo?,
           mentions?: { start, end, userId? }[],   // 收到的 @ 提及；無 userId 為 @All
-          card?: 位置｜聯絡人｜檔案（名稱、大小）｜卡片訊息替代文字,
+          card?: 位置｜聯絡人｜檔案（名稱、大小、fileId?）｜卡片訊息替代文字,
           decryptFailed?, unsent? }               // unsent：已收回，只留寄件者與時間
 Media   { mediaId, mime, size, kind: "image"｜"sticker"｜"video"｜"audio" }
 ```

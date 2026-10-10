@@ -346,3 +346,24 @@ test("received stickers become sticker media ids only for numeric ids; animated 
     ["STICKER", undefined],
   ]);
 });
+
+test("a received file becomes a download with a safe name; it is never served as inline media and a preview or taken-back file is not fetchable", async () => {
+  const downloads = [];
+  const base = fakeBase();
+  base.obs = { async downloadMediaByE2EE(raw) { downloads.push(raw.id); return new Blob([Buffer.from("<html>not shown</html>")]); } };
+  const { provider, received, emit } = await activeProvider(base);
+  const file = (id, name) => talk(id, GROUP_A, mid(1), undefined, { contentType: "FILE", chunks: ["c"], contentMetadata: { e2eeVersion: "2", FILE_NAME: name, FILE_SIZE: "22" } });
+  emit("message", file("800", "報告/../a\u0000.html"));
+  await settle();
+  const message = received.at(-1).message;
+  assert.deepEqual(message.card, { kind: "file", name: "報告/../a\u0000.html", size: 22, fileId: "file-800" });
+  assert.equal(message.mediaId, undefined);
+  assert.equal(await provider.fetchMessageMedia("800"), undefined, "a file is never sniffed into inline media");
+  const fetched = await provider.fetchMessageFile("800");
+  assert.deepEqual([fetched.mime, fetched.filename, fetched.bytes.toString()], ["application/octet-stream", "報告_.._a_.html", "<html>not shown</html>"]);
+  assert.equal(await provider.fetchMessageFile("999"), undefined, "an unseen message is not fetchable");
+  emit("message", talk("801", GROUP_A, mid(1), "文字"));
+  await settle();
+  assert.equal(await provider.fetchMessageFile("801"), undefined, "only file messages are files");
+  assert.deepEqual(downloads, ["800"]);
+});

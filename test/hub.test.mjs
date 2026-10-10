@@ -43,6 +43,11 @@ class FakeProvider {
     if (id === "404") return undefined;
     return { mime: "video/mp4", bytes: Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypisom"), Buffer.from(`-${id}-0123456789`)]) };
   }
+  fileFetches = 0;
+  async fetchMessageFile(id) {
+    this.fileFetches += 1;
+    return { mime: "application/octet-stream", bytes: Buffer.from("<script>alert(1)</script>"), filename: `報告 (${id})'s.html` };
+  }
   stickerPackages = [];
   stickersError = undefined;
   async fetchStickerPackages() {
@@ -587,6 +592,23 @@ test("a message taken back is replaced for every page, its media stops being ser
   t.after(() => late.socket.close());
   const snapshot = await late.until((frame) => frame.type === "messages");
   assert.deepEqual(snapshot.messages[0], { messageId: "501", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", contentType: "VIDEO", createdAt: 1, unsent: true });
+});
+
+test("a received file is only ever a no-store download under its own name, and stops being served once taken back", async (t) => {
+  const env = await signedIn(t);
+  env.hub.handleMessage({ messageId: "601", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", contentType: "FILE", card: { kind: "file", name: "a.html", fileId: "file-601" }, createdAt: 1 }, "new");
+  const response = await fetch(`http://127.0.0.1:${env.port}/media/file-601`, { headers: { Cookie: env.cookie } });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "application/octet-stream");
+  assert.equal(response.headers.get("content-disposition"), "attachment; filename=\"download\"; filename*=UTF-8''%E5%A0%B1%E5%91%8A%20%28601%29%27s.html");
+  assert.equal(response.headers.get("cache-control"), "private, no-store");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  await response.arrayBuffer();
+  assert.equal((await fetch(`http://127.0.0.1:${env.port}/media/file-601`)).status, 404, "no cookie, no file");
+  env.hub.handleUnsend(CHAT, "601");
+  await env.client.until((frame) => frame.type === "message:unsend");
+  await (await fetch(`http://127.0.0.1:${env.port}/media/file-601`, { headers: { Cookie: env.cookie } })).arrayBuffer();
+  assert.equal(env.provider.fileFetches, 2, "the cached file was dropped, so the adapter decides again");
 });
 
 test("the page can take back the account's own message only; LINE failures stay generic", async (t) => {
