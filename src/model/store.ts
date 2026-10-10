@@ -62,17 +62,22 @@ export class ChatStore {
     this.channels[channelId] = rest;
   }
 
-  /** Returns false when the message is an identical duplicate. */
-  upsert(incoming: Message, edited: boolean): boolean {
+  /**
+   * Stores a message and returns it as the cache holds it (the placeholder, where it was taken back),
+   * or undefined when it is an identical duplicate. A full cache keeps its newest messages: an older
+   * one (a history page) is returned in that form but not inserted, since it would be dropped at once.
+   */
+  upsert(incoming: Message, edited: boolean): Message | undefined {
     const message = this.unsentIds.has(incoming.messageId) ? unsentPlaceholder(incoming) : incoming;
     const list = this.messages[message.channelId] ?? [];
     const ids = this.byId[message.channelId] ?? new Map<string, Message>();
+    let stored = message;
     if (ids.has(message.messageId)) {
       // A late edit must not bring back what the sender took back.
-      if (!edited || ids.get(message.messageId)!.unsent) return false;
-      const updated = { ...message, editedAt: message.editedAt ?? Date.now() };
-      list[list.findIndex((entry) => entry.messageId === message.messageId)] = updated;
-      ids.set(message.messageId, updated);
+      if (!edited || ids.get(message.messageId)!.unsent) return undefined;
+      stored = { ...message, editedAt: message.editedAt ?? Date.now() };
+      list[list.findIndex((entry) => entry.messageId === message.messageId)] = stored;
+      ids.set(message.messageId, stored);
     } else {
       // Oldest first. Live messages land at the end; history and late arrivals are slotted in
       // after any message with the same timestamp (the order a stable sort would give).
@@ -85,6 +90,7 @@ export class ChatStore {
           else at = middle;
         }
       }
+      if (at === 0 && list.length >= this.perChannelLimit) return message;
       list.splice(at, 0, message);
       ids.set(message.messageId, message);
       if (list.length > this.perChannelLimit) {
@@ -104,7 +110,7 @@ export class ChatStore {
         lastMessageAt: message.createdAt,
       };
     }
-    return true;
+    return stored;
   }
 
   get(messageId: string, channelId: string): Message | undefined {

@@ -8,10 +8,10 @@ const message = (id, createdAt, overrides = {}) => ({
 
 test("duplicate ids are dropped, edits overwrite in place, order follows creation time", () => {
   const store = new ChatStore(500);
-  assert.equal(store.upsert(message("m2", 20), false), true);
-  assert.equal(store.upsert(message("m1", 10), false), true);
-  assert.equal(store.upsert(message("m1", 10, { text: "changed" }), false), false);
-  assert.equal(store.upsert(message("m1", 10, { text: "edited" }), true), true);
+  assert.equal(store.upsert(message("m2", 20), false).messageId, "m2");
+  assert.equal(store.upsert(message("m1", 10), false).messageId, "m1");
+  assert.equal(store.upsert(message("m1", 10, { text: "changed" }), false), undefined);
+  assert.equal(store.upsert(message("m1", 10, { text: "edited" }), true).text, "edited");
   const stored = store.messagesOf("c1");
   assert.deepEqual(stored.map((entry) => entry.messageId), ["m1", "m2"]);
   assert.equal(stored[0].text, "edited");
@@ -28,8 +28,23 @@ test("each channel keeps only its newest messages", () => {
   // What was trimmed is gone from the lookup too, and trimming keeps working as new messages arrive.
   assert.equal(store.get("m1", "c1"), undefined);
   assert.equal(store.get("m5", "c1").text, "text-m5");
-  assert.equal(store.upsert(message("m6", 6), false), true);
+  assert.equal(store.upsert(message("m6", 6), false).messageId, "m6");
   assert.deepEqual(store.messagesOf("c1").map((entry) => entry.messageId), ["m4", "m5", "m6"]);
+});
+
+test("a full cache ignores older history pages but still answers with the take-back placeholder", () => {
+  const store = new ChatStore(2);
+  store.upsert(message("m8", 80), false);
+  store.upsert(message("m9", 90), false);
+  // The take-back notice arrived before the message itself (it is older than everything cached).
+  store.unsend("m3", "c1");
+  const page = [message("m3", 30, { mediaId: "msg-m3", contentType: "IMAGE" }), message("m4", 40)];
+  const answered = page.map((entry) => store.upsert(entry, false));
+  assert.deepEqual(store.messagesOf("c1").map((entry) => entry.messageId), ["m8", "m9"], "nothing older is kept");
+  assert.equal(store.get("m3", "c1"), undefined);
+  assert.equal(answered[0].unsent, true, "the page shows the placeholder, never the content");
+  assert.equal(answered[0].mediaId, undefined);
+  assert.equal(answered[1].text, "text-m4");
 });
 
 test("late and same-time messages are slotted in creation order, after equal timestamps", () => {
@@ -45,14 +60,14 @@ test("a message taken back keeps only who sent it and when, wherever LINE says i
   assert.deepEqual(placeholder, { messageId: "m1", channelId: "c1", channelKind: "group", senderId: "u1", senderName: "小明", contentType: "IMAGE", createdAt: 10, unsent: true, senderPictureId: "avatar-p-abcdefgh" });
   assert.deepEqual(store.messagesOf("c1"), [placeholder]);
   assert.equal(store.unsend("m1", "c1"), undefined, "a second notice changes nothing");
-  assert.equal(store.upsert(message("m1", 10, { text: "改過的" }), true), false, "an edit cannot bring it back");
+  assert.equal(store.upsert(message("m1", 10, { text: "改過的" }), true), undefined, "an edit cannot bring it back");
   assert.equal(store.get("m1", "c1").text, undefined);
 });
 
 test("a message taken back before it arrived is stored as the placeholder", () => {
   const store = new ChatStore(500);
   assert.equal(store.unsend("late", "c1"), undefined);
-  assert.equal(store.upsert(message("late", 5), false), true);
+  assert.equal(store.upsert(message("late", 5), false).unsent, true);
   assert.equal(store.get("late", "c1").unsent, true);
   assert.equal(store.get("late", "c1").text, undefined);
   store.clear();

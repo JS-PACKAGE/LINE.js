@@ -204,8 +204,8 @@ export function createHub(options: HubOptions): Hub {
       const page = await provider.fetchHistory({ channelId: chatId, kind: channel.kind }, limit, before);
       // The account may have logged out while LINE was answering.
       if (login.state !== "ready") return;
-      for (const message of page.messages) store.upsert(message, false);
-      const messages = page.messages.map((message) => store.get(message.messageId, message.channelId) ?? message);
+      // What the cache holds (a take-back placeholder where one applies), whether or not it kept the page.
+      const messages = page.messages.map((message) => store.upsert(message, false) ?? store.get(message.messageId, message.channelId) ?? message);
       send(socket, { type: "history", requestId, chatId, messages, hasMore: page.hasMore, ...(page.cursor ? { cursor: page.cursor } : {}) });
       // Receipts are an extra: a failure here must not turn a good history page into an error. Bots get none.
       if (!before && !scope) void sendReadSnapshot(socket, chatId, channel.kind);
@@ -319,8 +319,8 @@ export function createHub(options: HubOptions): Hub {
 
   function ingest(message: Message, kind: "new" | "edit"): void {
     const known = store.hasChannel(message.channelId);
-    if (!store.upsert(message, kind === "edit")) return;
-    const stored = store.get(message.messageId, message.channelId) ?? message;
+    const stored = store.upsert(message, kind === "edit");
+    if (!stored) return;
     if (!known) {
       // The channel list is fetched lazily; show the chat now, name it after a refresh.
       broadcastChannels();
