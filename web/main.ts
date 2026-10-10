@@ -13,6 +13,7 @@ import { registerServiceWorker } from "./pwa.js";
 import { createUpdateNotice } from "./update.js";
 import { copyImage, downloadMedia } from "./save.js";
 import { createNotifier } from "./notify.js";
+import { CONTENT_LABEL, cardTitle, dayLabel, formatBytes, formatTime, listTime, previewOf } from "./format.js";
 
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const login = $<HTMLElement>("#login");
@@ -67,9 +68,6 @@ document.addEventListener("keydown", (event) => {
 
 const KIND_LABEL: Record<Channel["kind"], string> = { user: "好友", group: "群組", room: "聊天室", square: "社群" };
 const LISTEN_LABEL: Record<ListenState, string> = { starting: "啟動中", listening: "即時接收中", reconnecting: "LINE 重新連線中" };
-const CONTENT_LABEL: Record<string, string> = {
-  IMAGE: "圖片", VIDEO: "影片", AUDIO: "語音", FILE: "檔案", STICKER: "貼圖", LOCATION: "位置", CONTACT: "聯絡人", FLEX: "卡片訊息", CHATEVENT: "系統訊息", CALL: "通話",
-};
 
 let socket: WebSocket | undefined;
 let reconnectDelay = 1000;
@@ -172,22 +170,6 @@ function enterChat(profile: Profile): void {
   logoutButton.disabled = false;
   renderChannels();
   renderMessages();
-}
-
-/** Time of day only: the day itself is on the divider above each day's messages. */
-function formatTime(timestamp: number): string {
-  // hourCycle h23 (not hour12:false) so midnight reads 00:xx rather than 24:xx.
-  return new Date(timestamp).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-}
-
-/** List time: the clock today, "昨天", or the date; the row is narrow. */
-function listTime(at: number): string {
-  const date = new Date(at);
-  const today = new Date();
-  if (date.toDateString() === today.toDateString()) return formatTime(at);
-  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
-  if (date.toDateString() === yesterday.toDateString()) return "昨天";
-  return date.toLocaleDateString("zh-TW", { ...(date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }), month: "numeric", day: "numeric" });
 }
 
 // A friend belongs to the 聊天 tab only once there is a conversation with them;
@@ -432,22 +414,6 @@ function messageBody(message: Message): HTMLElement {
   return body;
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-/** The one line that names what a card carries (also used to quote it). */
-function cardTitle(card: MessageCard): string {
-  switch (card.kind) {
-    case "location": return card.title ?? card.address ?? `${card.latitude.toFixed(5)}, ${card.longitude.toFixed(5)}`;
-    case "contact": return card.name;
-    case "file": return card.name;
-    case "flex": return card.altText;
-  }
-}
-
 /** A location, contact, file or rich card shown by what it says; nothing is fetched until the reader clicks. */
 function cardNode(card: MessageCard): HTMLElement {
   const box = document.createElement("div");
@@ -622,14 +588,6 @@ messageSearch.addEventListener("input", () => {
 messageSearch.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeSearch();
 });
-
-/** One-line text for quoting a message: its text, or the label of what it carries. */
-function previewOf(message: Message): string {
-  if (message.unsent) return "［已收回的訊息］";
-  const text = message.text?.replace(/\s+/g, " ").trim();
-  if (!text && message.card) return `［${CONTENT_LABEL[message.contentType] ?? "訊息"}］${cardTitle(message.card).slice(0, 60)}`;
-  return text ? (text.length > 60 ? `${text.slice(0, 60)}…` : text) : `［${CONTENT_LABEL[message.contentType] ?? "訊息"}］`;
-}
 
 /** This account's own message: its own mid, or (in OpenChat) the member id its sends came back with. */
 function isMine(message: Message): boolean {
@@ -815,16 +773,6 @@ const unreadDivider = document.createElement("div");
 unreadDivider.className = "unread-divider";
 // One divider per calendar day shown, reused across renders like the messages.
 let dayDividers = new Map<string, HTMLElement>();
-
-function dayLabel(at: number): string {
-  const date = new Date(at);
-  const today = new Date();
-  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
-  if (date.toDateString() === today.toDateString()) return "今天";
-  if (date.toDateString() === yesterday.toDateString()) return "昨天";
-  const sameYear = date.getFullYear() === today.getFullYear();
-  return date.toLocaleDateString("zh-TW", { ...(sameYear ? {} : { year: "numeric" }), month: "long", day: "numeric", weekday: "short" });
-}
 
 /** The message drawn at (or around) an event target in the open chat. */
 function messageAt(target: EventTarget | null): Message | undefined {
