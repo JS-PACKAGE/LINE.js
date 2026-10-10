@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseReadOperation, parseReadRanges } from "../dist/line/read.js";
+import { parseCheckedOperation, parseReadOperation, parseReadRanges } from "../dist/line/read.js";
 
 const ME = `u${"1".repeat(32)}`;
 const FRIEND = `u${"2".repeat(32)}`;
@@ -28,6 +28,14 @@ test("my own reads and anything malformed are dropped instead of guessed", () =>
     { param1: 5, param2: 6, param3: 7 },
   ]) {
     assert.equal(parseReadOperation(operation, ME), undefined, JSON.stringify(operation));
+  }
+});
+
+test("a read on another device names only the chat; anything that is not a chat id is dropped", () => {
+  assert.equal(parseCheckedOperation({ param1: GROUP, param2: "590123456789012345" }), GROUP);
+  assert.equal(parseCheckedOperation({ param1: FRIEND }), FRIEND);
+  for (const operation of [{}, { param1: "../x" }, { param1: 5 }, { param1: "" }, { param2: GROUP }]) {
+    assert.equal(parseCheckedOperation(operation), undefined, JSON.stringify(operation));
   }
 });
 

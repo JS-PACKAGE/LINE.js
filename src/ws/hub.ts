@@ -21,6 +21,10 @@ const READ_RANGE_FRESH_MS = 10_000;
 // A connection that has not answered a ping by the next round is gone (a sleeping laptop, a dropped
 // network): it is closed so broadcasts stop piling up behind it and the page can reconnect.
 const HEARTBEAT_MS = 30_000;
+// Group and profile changes can come in bursts (someone renames a group, several join): wait for the
+// burst to settle, and never refresh the whole list from LINE more often than this.
+const LIST_CHANGE_SETTLE_MS = 3000;
+const LIST_CHANGE_MIN_GAP_MS = 30_000;
 
 export interface HubOptions {
   server: Server;
@@ -42,6 +46,10 @@ export interface Hub {
   handleRead(chatId: string, position: ReadPosition): void;
   /** A message was taken back (by its sender or by this account); `chatHint` is where LINE placed it. */
   handleUnsend(chatHint: string | undefined, messageId: string): void;
+  /** This account read the chat on another device: its badge goes, here and on every page. */
+  handleChecked(chatId: string): void;
+  /** Names, pictures or members changed somewhere: the list is fetched again (settled and rate limited). */
+  handleChatsChanged(): void;
   /** Announces (or clears) the newest known release to everyone connected and to later connections. */
   setUpdate(info: UpdateInfo | undefined): void;
   close(): void;
@@ -80,6 +88,8 @@ export function createHub(options: HubOptions): Hub {
   let refreshing: Promise<void> | undefined;
   let update: UpdateInfo | undefined;
   let refreshTimer: NodeJS.Timeout | undefined;
+  let listChangeTimer: NodeJS.Timeout | undefined;
+  let lastListChange = 0;
   // Newest message id per chat already reported as read, so each position is sent to LINE once.
   const markedRead = new Map<string, bigint>();
   // Latest read position per chat and reader, from LINE snapshots and live events. LINE has no
@@ -421,6 +431,7 @@ export function createHub(options: HubOptions): Hub {
     if (state !== "ready") {
       // Logged out or failed: nothing from the previous account may stay in memory or on screen.
       clearTimeout(refreshTimer);
+      clearTimeout(listChangeTimer);
       store.clear();
       media.clear();
       markedRead.clear();
@@ -576,6 +587,22 @@ export function createHub(options: HubOptions): Hub {
     },
     handleMessage: ingest,
     handleUnsend: takeBack,
+    handleChecked(chatId) {
+      const before = store.channelOf(chatId);
+      if (!before || login.state !== "ready") return;
+      store.clearUnread(chatId);
+      broadcast({ type: "chat:checked", chatId });
+      broadcastChannel(chatId, before);
+    },
+    handleChatsChanged() {
+      if (login.state !== "ready") return;
+      clearTimeout(listChangeTimer);
+      const wait = Math.max(LIST_CHANGE_SETTLE_MS, lastListChange + LIST_CHANGE_MIN_GAP_MS - Date.now());
+      listChangeTimer = setTimeout(() => {
+        lastListChange = Date.now();
+        void refreshChannels();
+      }, wait);
+    },
     handleRead(chatId, position) {
       if (!store.hasChannel(chatId)) return;
       rememberRead(chatId, position);
@@ -588,6 +615,7 @@ export function createHub(options: HubOptions): Hub {
     close() {
       clearInterval(heartbeat);
       clearTimeout(refreshTimer);
+      clearTimeout(listChangeTimer);
       for (const socket of [...wss.clients, ...botWss.clients]) socket.close(1001);
       botWss.close();
       wss.close();

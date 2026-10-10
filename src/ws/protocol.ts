@@ -16,6 +16,8 @@ export type ServerFrame =
   | { type: "channels"; channels: Channel[] }
   /** One chat changed (new activity, its preview, its badge): pages only, bots keep the plain message stream. */
   | { type: "channel"; channel: Channel }
+  /** This account read the chat elsewhere (the phone): pages drop its badge, however they counted it. */
+  | { type: "chat:checked"; chatId: string }
   | { type: "message"; message: Message }
   /** Connect-time snapshot of one chat's cached messages, oldest first. Old news: never counted as unread. */
   | { type: "messages"; chatId: string; messages: readonly Message[] }

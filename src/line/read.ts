@@ -42,6 +42,15 @@ export function parseUnsendOperation(operation: { param1?: unknown; param2?: unk
 }
 
 /**
+ * SEND_CHAT_CHECKED: this account read a chat on another device (the phone). Only the chat mid in
+ * param1 is used, and only as a claim the caller checks against chats it already has; linejs does
+ * not document the layout, so anything else is dropped.
+ */
+export function parseCheckedOperation(operation: { param1?: unknown }): string | undefined {
+  return mid(operation.param1);
+}
+
+/**
  * getMessageReadRange answers with untyped thrift: ranges[reader] is a list of
  * { 1: startMessageId, 2: endMessageId, 3: startTime, 4: endTime }. Only the highest end id matters.
  */

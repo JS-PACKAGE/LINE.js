@@ -222,6 +222,30 @@ test("talk and OpenChat take-backs reach the hub; malformed ones are dropped, an
   assert.equal(await provider.fetchMessageMedia("700"), undefined, "a taken-back picture is not downloaded");
 });
 
+test("reads on another device and list-changing operations reach the hub; malformed or unrelated ones do not", async () => {
+  const base = fakeBase();
+  const checked = [];
+  let changes = 0;
+  const storage = { async flush() {}, async get() {}, async set() {} };
+  const provider = new EvexLineProvider(storage, "DESKTOPWIN", {
+    onMessage() {}, onRead() {}, onStatus() {}, onError() {}, onUnsend() {},
+    onChecked: (chatId) => checked.push(chatId),
+    onChatsChanged: () => { changes += 1; },
+  });
+  provider.listen = () => {};
+  provider.base = base;
+  await provider.activate(base);
+  provider.client.emit("event", { type: "SEND_CHAT_CHECKED", param1: GROUP_A, param2: "9001" });
+  provider.client.emit("event", { type: 40, param1: mid(5) });
+  provider.client.emit("event", { type: 40, param1: "../x" });
+  provider.client.emit("event", { type: 40 });
+  for (const type of ["NOTIFIED_UPDATE_GROUP", 11, 2, "NOTIFIED_UPDATE_CHAT", 122, 133, 61]) provider.client.emit("event", { type, param1: "anything" });
+  // Unrelated operations change nothing.
+  for (const type of ["NOTIFIED_SEND_REACTION", 140, 25, "SEND_MESSAGE"]) provider.client.emit("event", { type, param1: GROUP_A });
+  assert.deepEqual(checked, [GROUP_A, mid(5)]);
+  assert.equal(changes, 7);
+});
+
 test("tags in a received text keep their ranges; @All has no person; ranges that do not fit are dropped", async () => {
   const { received, emit } = await activeProvider(fakeBase());
   const text = "@小明 @All 你好";

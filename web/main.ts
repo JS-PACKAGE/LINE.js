@@ -1036,6 +1036,13 @@ async function handle(frame: ServerFrame): Promise<void> {
       scheduleChannels();
       return;
     }
+    case "chat:checked":
+      // Read on the phone: whatever this page counted for that chat is read now.
+      delete unread[frame.chatId];
+      liveCounted.delete(frame.chatId);
+      notifier.clear(frame.chatId);
+      scheduleChannels();
+      return;
     case "message":
     case "message:edit": {
       const { message } = frame;

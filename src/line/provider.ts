@@ -5,7 +5,7 @@ import type { Message as LineMessage, SquareMessage as LineSquareMessage } from 
 import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
 import type { Channel, ChannelRef, HistoryPage, MemberRole, Mention, Message, Profile, ReadPosition, StickerPackage } from "../model/dto.js";
 import { memberRole, mentionMetadata, parseMentions, replyTarget } from "./members.js";
-import { parseReadOperation, parseReadRanges, parseUnsendOperation } from "./read.js";
+import { parseCheckedOperation, parseReadOperation, parseReadRanges, parseUnsendOperation } from "./read.js";
 import { parseOwnedProducts, parsePackageMeta, type PackageMeta } from "./stickers.js";
 import { chatEventMids, chatEventText, isChatEvent } from "./chatEvent.js";
 import { contentTypeName, messageCard } from "./cards.js";
@@ -21,6 +21,10 @@ export interface ProviderEvents {
   onRead: (chatId: string, position: ReadPosition) => void;
   /** A message was taken back. `chatHint` is where LINE placed it (see parseUnsendOperation). */
   onUnsend: (chatHint: string, messageId: string) => void;
+  /** This account read the chat on another device (SEND_CHAT_CHECKED). The id is a claim: check it. */
+  onChecked: (chatId: string) => void;
+  /** A chat, group or profile changed name, picture or membership: the list should be fetched again. */
+  onChatsChanged: () => void;
   onStatus: (state: "listening" | "reconnecting") => void;
   onError: (code: "SESSION_WRITE_FAILED" | "LINE_LISTEN_FAILED" | "MESSAGE_PARSE_FAILED") => void;
 }
@@ -89,6 +93,14 @@ const UNREAD_MAX_PAGES = 20;
 const MAX_UNREAD_SHOWN = 9999;
 // Decrypted "last message" of each chat, kept across list refreshes so E2EE previews are decrypted once.
 const MAX_PREVIEW_DECRYPTS = 1000;
+/** Operations after which the chat list (names, pictures, members, chats joined or left) is stale. */
+const LIST_CHANGES: ReadonlySet<string> = new Set([
+  "NOTIFIED_UPDATE_PROFILE", "2", "NOTIFIED_UPDATE_PROFILE_CONTENT", "141",
+  "NOTIFIED_UPDATE_GROUP", "11", "NOTIFIED_LEAVE_GROUP", "15", "NOTIFIED_ACCEPT_GROUP_INVITATION", "17", "NOTIFIED_KICKOUT_FROM_GROUP", "19",
+  "NOTIFIED_JOIN_CHAT", "60", "NOTIFIED_LEAVE_CHAT", "61", "UPDATE_CHAT", "121", "NOTIFIED_UPDATE_CHAT", "122",
+  "DELETE_SELF_FROM_CHAT", "127", "NOTIFIED_DELETE_SELF_FROM_CHAT", "128", "ACCEPT_CHAT_INVITATION", "129",
+  "NOTIFIED_ACCEPT_CHAT_INVITATION", "130", "NOTIFIED_DELETE_OTHER_FROM_CHAT", "133",
+]);
 
 /** What the UI shows for a person. `settled` means LINE answered a profile lookup (or the friend list did). */
 interface MemberProfile {
@@ -236,6 +248,12 @@ export class EvexLineProvider implements LineProvider {
       } else if (type === "NOTIFIED_DESTROY_MESSAGE" || type === "65" || type === "DESTROY_MESSAGE" || type === "64") {
         const unsent = parseUnsendOperation(operation);
         if (unsent) this.unsent(unsent.chatId, unsent.messageId);
+      } else if (type === "SEND_CHAT_CHECKED" || type === "40") {
+        const chatId = parseCheckedOperation(operation);
+        if (chatId) this.events.onChecked(chatId);
+      } else if (LIST_CHANGES.has(type)) {
+        // Names, pictures and members are read back from LINE by a list refresh; no parameter is parsed here.
+        this.events.onChatsChanged();
       }
     });
     client.on("square:event", (event) => {

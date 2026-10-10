@@ -884,6 +884,49 @@ test("each live message, edit, take-back and read updates that chat's list entry
   assert.equal(bot.frames.filter((frame) => frame.type === "message").length, 2);
 });
 
+test("a chat read on the phone loses its badge on every page; unknown chats are ignored", async (t) => {
+  const { port, cookie, login, hub, provider, store } = await start(t);
+  provider.channels = [{ channelId: CHAT, kind: "group", name: "測試群組", unreadCount: 4 }];
+  await login.restore();
+  const client = connect(port, { Origin: `http://127.0.0.1:${port}`, Cookie: cookie });
+  t.after(() => client.socket.close());
+  await client.opened;
+  await client.until((frame) => frame.type === "channels" && frame.channels.some((channel) => channel.channelId === CHAT));
+  hub.handleChecked(`c${"f".repeat(32)}`);
+  hub.handleChecked(CHAT);
+  const checked = await client.until((frame) => frame.type === "chat:checked");
+  assert.equal(checked.chatId, CHAT);
+  assert.equal((await client.until((frame) => frame.type === "channel")).channel.unreadCount, undefined);
+  assert.equal(store.channelOf(CHAT).unreadCount, undefined);
+  assert.equal(client.frames.filter((frame) => frame.type === "chat:checked").length, 1);
+});
+
+test("group and profile changes refresh the list once per burst, and at most once per half minute", async (t) => {
+  const { login, hub, provider } = await start(t);
+  let fetches = 0;
+  const fetchChannels = provider.fetchChannels.bind(provider);
+  provider.fetchChannels = async () => { fetches += 1; return fetchChannels(); };
+  await login.restore();
+  const settle = async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); };
+  await settle();
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
+  const atLogin = fetches;
+  for (let i = 0; i < 5; i += 1) hub.handleChatsChanged();
+  t.mock.timers.tick(2999);
+  await settle();
+  assert.equal(fetches, atLogin, "the burst is still settling");
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(fetches, atLogin + 1, "one refresh for the whole burst");
+  hub.handleChatsChanged();
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(fetches, atLogin + 1, "not again so soon");
+  t.mock.timers.tick(20_000);
+  await settle();
+  assert.equal(fetches, atLogin + 2, "the next change is picked up once the gap has passed");
+});
+
 test("a newer release is announced to every client, including ones that connect later and are not signed in", async (t) => {
   const { port, cookie, hub } = await start(t, { restore: false });
   const headers = { Origin: `http://127.0.0.1:${port}`, Cookie: cookie };
