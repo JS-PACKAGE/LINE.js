@@ -165,8 +165,12 @@ async function fixture(t, { npmExit = 0 } = {}) {
   const bin = join(base, "bin");
   await mkdir(bin);
   const log = join(base, "npm.log");
-  await writeFile(join(bin, "npm"), `#!/bin/sh\necho "$@" >> '${log}'\nexit ${npmExit}\n`);
-  await chmod(join(bin, "npm"), 0o755);
+  if (process.platform === "win32") {
+    await writeFile(join(bin, "npm.cmd"), `@echo off\r\necho %*>>"${log}"\r\nexit /b ${npmExit}\r\n`);
+  } else {
+    await writeFile(join(bin, "npm"), `#!/bin/sh\necho "$@" >> '${log}'\nexit ${npmExit}\n`);
+    await chmod(join(bin, "npm"), 0o755);
+  }
   const update = async (...args) => {
     try {
       const { stdout, stderr } = await run(process.execPath, [SCRIPT, ...args], { cwd: work, env: { ...process.env, ...GIT_ENV, PATH: `${bin}${delimiter}${process.env.PATH}` } });
@@ -176,7 +180,7 @@ async function fixture(t, { npmExit = 0 } = {}) {
     }
   };
   const version = async () => JSON.parse(await readFile(join(work, "package.json"), "utf8")).version;
-  const npmCalls = async () => (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean);
+  const npmCalls = async () => (await readFile(log, "utf8").catch(() => "")).split("\n").map((line) => line.trimEnd()).filter(Boolean);
   return { base, origin, work, update, version, npmCalls };
 }
 
