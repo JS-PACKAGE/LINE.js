@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createNotifier } from "../web/notify.ts";
+import { loadWeb } from "./load-web.mjs";
+
+const { createNotifier } = await loadWeb("notify");
 
 // Session cleanup must close OS notifications as well as the hidden chat view.
 test("ending a session closes every chat notification without changing the notification preference", () => {

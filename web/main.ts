@@ -13,6 +13,7 @@ import { registerServiceWorker } from "./pwa.js";
 import { createUpdateNotice } from "./update.js";
 import { copyImage, downloadMedia } from "./save.js";
 import { createNotifier } from "./notify.js";
+import { setupSummary } from "./summary.js";
 import { CONTENT_LABEL, cardTitle, dayLabel, formatBytes, formatTime, listTime, previewOf } from "./format.js";
 
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
@@ -44,6 +45,7 @@ const tabFriends = $<HTMLButtonElement>("#tab-friends");
 const chatsUnread = $<HTMLSpanElement>("#chats-unread");
 const notice = createUpdateNotice($<HTMLElement>("#notice"));
 const offline = $<HTMLElement>("#offline");
+setupSummary();
 const menuButton = $<HTMLButtonElement>("#menu");
 const drawerBackdrop = $<HTMLElement>("#drawer-backdrop");
 

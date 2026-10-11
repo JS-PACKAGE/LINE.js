@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-// Browser code without DOM or page state: imported from source (Node ≥ 22 strips types).
-import { dayLabel, formatBytes, listTime, previewOf } from "../web/format.ts";
+import { loadWeb } from "./load-web.mjs";
+// Browser code without DOM or page state, transpiled from source for all Node 22 builds.
+const { dayLabel, formatBytes, listTime, previewOf } = await loadWeb("format");
 
 const at = (y, m, d, h = 12, min = 0) => new Date(y, m - 1, d, h, min).getTime();
 const NOW = at(2026, 10, 10, 9);
