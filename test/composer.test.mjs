@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { loadWeb } from "./load-web.mjs";
 
 // The composer is browser code: it reaches for DOM nodes and XHR at call time. These shims stand in
 // for them so the send queue can be driven headlessly. The web build bundles the module away, so the
-// test imports the TypeScript source directly (Node ≥ 22 strips types).
+// test transpiles the TypeScript source for Node 22 builds without native type stripping.
 function makeElement(id) {
   const listeners = new Map();
   return {
@@ -90,7 +91,7 @@ const file = (name) => ({ name, size: 1024, type: "image/png" });
 
 test("a selection of several files is sent one at a time, then the draft text follows", async () => {
   await withShims(async (nodes) => {
-    const { createComposer } = await import("../web/composer.ts");
+    const { createComposer } = await loadWeb("composer");
     const sent = [];
     const composer = createComposer((frame) => {
       sent.push(frame);
@@ -134,7 +135,7 @@ test("a selection of several files is sent one at a time, then the draft text fo
 
 test("the draft text is sent only after the selection, and only when it has one", async () => {
   await withShims(async (nodes) => {
-    const { createComposer } = await import("../web/composer.ts");
+    const { createComposer } = await loadWeb("composer");
     const sent = [];
     const composer = createComposer((frame) => {
       sent.push(frame);
