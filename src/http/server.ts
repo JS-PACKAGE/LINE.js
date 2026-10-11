@@ -6,6 +6,7 @@ import type { Config } from "../config.js";
 import { SlidingWindowLimiter } from "../limit.js";
 import { isMediaId, sniffUpload, type MediaService } from "../media/service.js";
 import type { ApiTokenStore } from "./apiToken.js";
+import { digestAvailable, digestSelection, digestStatus, runDigestNow, saveDigestSelection } from "./digest.js";
 
 export interface WebServer {
   server: Server;
@@ -121,6 +122,39 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
     json(response, 200, { mediaId: media.putUpload({ mime: detected, bytes }) });
   }
 
+  async function handleDigest(request: IncomingMessage, response: ServerResponse, path: string): Promise<void> {
+    if (!hasBrowserCookie(request) || (request.method === "POST" ? !sameOrigin(request) : request.headers.origin !== undefined && !sameOrigin(request))) {
+      json(response, 403, { code: "FORBIDDEN" });
+      return;
+    }
+    try {
+      if (request.method === "GET" && path === "/summary/availability") json(response, 200, { enabled: await digestAvailable() });
+      else if (request.method === "GET" && path === "/summary/selection") json(response, 200, await digestSelection());
+      else if (request.method === "GET" && path === "/summary/status") json(response, 200, digestStatus());
+      else if (request.method === "POST" && path === "/summary/run") json(response, 202, await runDigestNow());
+      else if (request.method === "POST" && path === "/summary/selection") {
+        if (request.headers["content-type"]?.split(";")[0] !== "application/json") {
+          json(response, 415, { code: "UNSUPPORTED_MEDIA_TYPE" });
+          return;
+        }
+        let body = "";
+        for await (const chunk of request) {
+          body += chunk.toString("utf8");
+          if (body.length > 64_000) {
+            json(response, 413, { code: "TOO_LARGE" });
+            return;
+          }
+        }
+        await saveDigestSelection(JSON.parse(body));
+        json(response, 200, { saved: true });
+      } else json(response, 405, { code: "METHOD_NOT_ALLOWED" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "摘要工具發生錯誤";
+      const safe = ["每日摘要工具尚未安裝", "選取資料無效", "手動摘要目前只支援 Windows", "摘要正在執行，請等候完成"].includes(message);
+      json(response, 400, { code: "DIGEST_ERROR", message: safe ? message : "摘要工具無法完成操作，請查看本機記錄。" });
+    }
+  }
+
   let webRootPath: Promise<string> | undefined;
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -134,6 +168,10 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
       return;
     }
     const url = new URL(request.url ?? "/", `http://${host}`);
+    if (url.pathname.startsWith("/summary/")) {
+      await handleDigest(request, response, url.pathname);
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/media/upload") {
       await handleUpload(request, response);
       return;

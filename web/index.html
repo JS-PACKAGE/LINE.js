@@ -63,6 +63,7 @@
           <span id="channel-avatar" class="avatar-slot"></span>
           <h2 id="channel-title">選擇一個聊天室</h2>
           <span id="channel-meta"></span>
+          <button id="summary-toggle" type="button" class="ghost" title="選擇聊天室並執行每日摘要" hidden>每日摘要</button>
           <button id="search-toggle" type="button" class="ghost" aria-pressed="false" aria-controls="search-bar" aria-keyshortcuts="Control+K Meta+K" title="搜尋已載入的訊息（Ctrl／⌘＋K）">搜尋</button>
         </header>
         <div id="search-bar" class="search-bar" hidden>
@@ -124,6 +125,17 @@
           <button id="confirm-ok" type="button">確定</button>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="summary-dialog" aria-labelledby="summary-title">
+      <header class="summary-head"><div><h2 id="summary-title">每日摘要</h2><p>只摘要勾選的聊天室；排程與儲存位置由摘要工具管理。</p></div><button id="summary-close" type="button" class="ghost" aria-label="關閉">✕</button></header>
+      <p id="summary-account"></p>
+      <label class="summary-search">搜尋聊天室 <input id="summary-search" type="search" autocomplete="off" placeholder="輸入聊天室名稱" /></label>
+      <div id="summary-list" class="summary-list" role="group" aria-label="可選聊天室"></div>
+      <p id="summary-count"></p>
+      <p id="summary-status" role="status" aria-live="polite"></p>
+      <footer class="summary-actions"><button id="summary-save" type="button">儲存選擇</button><button id="summary-run" type="button">立即摘要今天</button></footer>
+      <p class="summary-hint">立即摘要會先儲存勾選，再整理今天 00:00 至執行當下的訊息；日期時區與結果保存方式由摘要工具決定。</p>
     </dialog>
 
     <dialog id="viewer" aria-label="圖片檢視">
