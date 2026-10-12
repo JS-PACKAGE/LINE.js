@@ -267,6 +267,29 @@ test("tags in a received text keep their ranges; @All has no person; ranges that
   assert.equal(received[1].message.text, "壞的");
 });
 
+test("LINE emoji in a received text keep their ranges and picture ids; odd ids, ranges or metadata leave the text as is", async () => {
+  const { received, emit } = await activeProvider(fakeBase());
+  const product = "5ac1bfd5040ab15980c9b435";
+  const replace = (resources) => ({ REPLACE: JSON.stringify({ sticon: { resources } }), STICON_OWNERSHIP: JSON.stringify([product]) });
+  emit("message", talk("811", GROUP_A, mid(2), "早(emoji)安(emoji)", { contentMetadata: replace([
+    { S: 9, E: 16, productId: product, sticonId: "002", version: 1, resourceType: "STATIC" },
+    { S: 1, E: 8, productId: product, sticonId: "001", version: 1, resourceType: "ANIMATION" },
+    { S: 3, E: 10, productId: product, sticonId: "003" },
+    { S: 9, E: 40, productId: product, sticonId: "004" },
+    { S: 1, E: 8, productId: "../../x", sticonId: "001" },
+    { S: 1, E: 8, productId: product, sticonId: "1/2" },
+  ]) }));
+  emit("message", talk("812", GROUP_A, mid(2), "(emoji)", { contentMetadata: { REPLACE: "{not json" } }));
+  await settle();
+  assert.deepEqual(received[0].message.emojis, [
+    { start: 1, end: 8, emojiId: `emoji-${product}-001` },
+    { start: 9, end: 16, emojiId: `emoji-${product}-002` },
+  ]);
+  assert.equal(received[0].message.text, "早(emoji)安(emoji)");
+  assert.equal(received[1].message.emojis, undefined);
+  assert.equal(received[1].message.text, "(emoji)");
+});
+
 test("a location sent with a numeric content type arrives named, with its card and without text", async () => {
   const { received, emit } = await activeProvider(fakeBase());
   emit("message", talk("901", GROUP_A, mid(2), undefined, { contentType: 15, location: { title: "公司", address: "台北市", latitude: 25.03, longitude: 121.56 } }));

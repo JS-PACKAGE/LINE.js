@@ -47,6 +47,13 @@ export interface TextMention {
   userId?: string;
 }
 
+/** A LINE emoji inside a received text: `text.slice(start, end)` is its stand-in, `emojiId` its picture under `/media/`. */
+export interface TextEmoji {
+  start: number;
+  end: number;
+  emojiId: string;
+}
+
 /** What a non-text, non-media message carries that can be shown as text (never fetched content). */
 export type MessageCard =
   | { kind: "location"; title?: string; address?: string; latitude: number; longitude: number }
@@ -104,6 +111,8 @@ export interface Message {
   replyTo?: string;
   /** People tagged in `text`, sorted and non-overlapping. */
   mentions?: TextMention[];
+  /** LINE emoji in `text`, sorted and non-overlapping. */
+  emojis?: TextEmoji[];
   card?: MessageCard;
   /** Absent when nobody reacted (or LINE did not say). */
   reactions?: Reactions;

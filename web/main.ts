@@ -1,6 +1,6 @@
 import QRCode from "qrcode";
 import "./style.css";
-import { REACTION_KINDS, type AuthState, type Channel, type Message, type MessageCard, type Profile, type ReactionKind, type Reactions, type TextMention } from "../src/model/dto.js";
+import { REACTION_KINDS, type AuthState, type Channel, type Message, type MessageCard, type Profile, type ReactionKind, type Reactions, type TextEmoji, type TextMention } from "../src/model/dto.js";
 import type { ClientFrame, ListenState, ServerFrame } from "../src/ws/protocol.js";
 import { createComposer, type MentionCandidate } from "./composer.js";
 import { confirmDialog } from "./dialog.js";
@@ -387,10 +387,11 @@ function scrollToLatest(): void {
 }
 
 /**
- * Message text as DOM: mention ranges become tags, search hits become <mark>, the rest keeps links.
+ * Message text as DOM: mention ranges become tags, LINE emoji become small pictures (their stand-in text
+ * when the picture fails), search hits become <mark>, the rest keeps links.
  * `hit` (a lower-cased query) only highlights when searching.
  */
-function decorate(text: string, mentions: readonly TextMention[], hit: string): Node[] {
+function decorate(text: string, mentions: readonly TextMention[], hit: string, emojis: readonly TextEmoji[] = []): Node[] {
   const nodes: Node[] = [];
   const emit = (part: string, mention?: TextMention): void => {
     if (part === "") return;
@@ -416,15 +417,39 @@ function decorate(text: string, mentions: readonly TextMention[], hit: string): 
     }
     nodes.push(...linkifiedNodes(part));
   };
+  const ranges = [...mentions.map((mention) => ({ start: mention.start, end: mention.end, mention })), ...emojis.map((emoji) => ({ start: emoji.start, end: emoji.end, emoji }))]
+    .sort((a, b) => a.start - b.start);
   let at = 0;
-  for (const mention of mentions) {
-    if (mention.start < at || mention.end > text.length) continue;
-    emit(text.slice(at, mention.start));
-    emit(text.slice(mention.start, mention.end), mention);
-    at = mention.end;
+  for (const range of ranges) {
+    if (range.start < at || range.end > text.length) continue;
+    emit(text.slice(at, range.start));
+    if ("emoji" in range) nodes.push(emojiImage(range.emoji.emojiId, text.slice(range.start, range.end)));
+    else emit(text.slice(range.start, range.end), range.mention);
+    at = range.end;
   }
   emit(text.slice(at));
   return nodes;
+}
+
+function emojiImage(emojiId: string, standIn: string): HTMLImageElement {
+  const image = document.createElement("img");
+  image.className = "line-emoji";
+  image.src = `/media/${emojiId}`;
+  image.alt = standIn;
+  image.addEventListener("load", keepPinned);
+  image.addEventListener("error", () => image.replaceWith(standIn));
+  return image;
+}
+
+/** A text made of LINE emoji alone (spaces aside), which LINE shows large. */
+function emojiOnly(text: string, emojis: readonly TextEmoji[]): boolean {
+  if (emojis.length === 0) return false;
+  let at = 0;
+  for (const emoji of emojis) {
+    if (text.slice(at, emoji.start).trim() !== "") return false;
+    at = emoji.end;
+  }
+  return text.slice(at).trim() === "";
 }
 
 function messageBody(message: Message): HTMLElement {
@@ -455,7 +480,8 @@ function messageBody(message: Message): HTMLElement {
   if (message.card) return cardNode(message.card);
   const body = document.createElement("p");
   if (message.text) {
-    body.append(...decorate(message.text, message.mentions ?? [], ""));
+    body.append(...decorate(message.text, message.mentions ?? [], "", message.emojis));
+    if (emojiOnly(message.text, message.emojis ?? [])) body.className = "emoji-only";
   } else {
     body.className = "placeholder";
     body.textContent = `［${CONTENT_LABEL[message.contentType] ?? "不支援的內容"}］`;
@@ -596,7 +622,7 @@ function renderSearch(): void {
       body.className = "placeholder";
       body.textContent = "（已收回的訊息）";
     } else if (message.text) {
-      body.append(...decorate(message.text, message.mentions ?? [], hit));
+      body.append(...decorate(message.text, message.mentions ?? [], hit, message.emojis));
     } else if (message.card) {
       body.append(...decorate(cardTitle(message.card), [], hit));
     } else {

@@ -26,6 +26,10 @@ function source(sizes = {}) {
       calls.push(["pack", id]);
       return png(sizes[id] ?? 10);
     },
+    async fetchEmoji(product, sticon) {
+      calls.push(["emoji", product, sticon]);
+      return png(10);
+    },
   };
 }
 
@@ -56,6 +60,18 @@ test("avatar ids are built only from clean hashes and route to the right CDN hos
   await media.get("avatar-o-0hAbC_def-123");
   await media.get("avatar-p-0hAbC_def-123");
   assert.deepEqual(upstream.calls, [["profile", "0hAbC_def-123"], ["obs", "0hAbC_def-123"]]);
+});
+
+test("LINE emoji ids carry a 24-hex product and a short number, and reach the adapter split into the two", async () => {
+  const product = "5ac1bfd5040ab15980c9b435";
+  for (const bad of ["emoji-", `emoji-${product}`, `emoji-${product}-`, `emoji-${product}-12345`, `emoji-${product}-1a`, `emoji-${product.toUpperCase()}-001`, `emoji-${product}0-001`, `emoji-../${product}-001`, `emoji-${product}-001/x`]) {
+    assert.equal(isMediaId(bad), false, bad);
+  }
+  const upstream = source();
+  const media = new MediaService(1000, upstream);
+  await media.get(`emoji-${product}-001`);
+  await media.get(`emoji-${product}-001`);
+  assert.deepEqual(upstream.calls, [["emoji", product, "001"]]);
 });
 
 test("message media ids are numeric only and reach the adapter by message id", async () => {

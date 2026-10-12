@@ -6,6 +6,7 @@ import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, 
 import type { Channel, ChannelRef, HistoryPage, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
 import { withMyReaction } from "../model/store.js";
 import { memberRole, mentionMetadata, parseMentions, replyTarget } from "./members.js";
+import { parseEmojis } from "./emoji.js";
 import { parseCheckedOperation, parseReadOperation, parseReadRanges, parseUnsendOperation } from "./read.js";
 import { parseOwnedProducts, parsePackageMeta, type PackageMeta } from "./stickers.js";
 import { chatEventMids, chatEventText, isChatEvent } from "./chatEvent.js";
@@ -59,6 +60,8 @@ export interface LineProvider {
   fetchMessageFile(messageId: string): Promise<MediaBytes | undefined>;
   /** Tab icon of an owned sticker package. */
   fetchStickerPack(packageId: string): Promise<MediaBytes | undefined>;
+  /** One LINE emoji (sticon) picture from the public CDN. */
+  fetchEmoji(productId: string, sticonId: string): Promise<MediaBytes | undefined>;
   /** Sticker packages the account owns, each with its sendable sticker ids. */
   fetchStickerPackages(): Promise<StickerPackage[]>;
   /** Tells LINE the account has read the chat up to `messageId` (the other side sees "read"). */
@@ -381,6 +384,7 @@ export class EvexLineProvider implements LineProvider {
     // Only a numeric id may become a sticker media id: it is later spliced into a CDN URL path.
     const mediaId = fileId ? undefined : fields.mediaId ?? (stickerId && /^\d{1,12}$/.test(stickerId) ? `sticker-${stickerId}${fields.metadata?.STKOPT === "A" ? "-a" : ""}` : undefined);
     const mentions = isText && text ? parseMentions(fields.metadata, text) : [];
+    const emojis = isText && text ? parseEmojis(fields.metadata, text) : [];
     const parsed = isText ? undefined : messageCard(contentType, fields.metadata, fields.location);
     const card = parsed?.kind === "file" && fileId ? { ...parsed, fileId } : parsed;
     return {
@@ -397,6 +401,7 @@ export class EvexLineProvider implements LineProvider {
       ...(mediaId ? { mediaId } : {}),
       ...(fields.replyTo ? { replyTo: fields.replyTo } : {}),
       ...(mentions.length > 0 ? { mentions } : {}),
+      ...(emojis.length > 0 ? { emojis } : {}),
       ...(card ? { card } : {}),
       ...(fields.reactions ? { reactions: fields.reactions } : {}),
       // Fail closed: an E2EE payload without readable text is a placeholder, never a guess.
@@ -454,6 +459,19 @@ export class EvexLineProvider implements LineProvider {
       return { mime, bytes };
     }
     return undefined;
+  }
+
+  /** LINE emoji sit on the same public CDN as stickers; only the static picture is served. */
+  async fetchEmoji(productId: string, sticonId: string): Promise<MediaBytes | undefined> {
+    const response = await fetch(`https://stickershop.line-scdn.net/sticonshop/v1/sticon/${productId}/android/${sticonId}.png`, {
+      signal: AbortSignal.timeout(STICKER_TIMEOUT_MS),
+      redirect: "error",
+    });
+    if (response.status === 404 || response.status === 403) return undefined;
+    if (!response.ok) throw new Error("EMOJI_FETCH_FAILED");
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (sniffImage(bytes) !== "image/png" || bytes.length > STICKER_MAX_BYTES) throw new Error("EMOJI_BAD_CONTENT");
+    return { mime: "image/png", bytes };
   }
 
   /**

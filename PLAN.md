@@ -198,7 +198,7 @@
 
 ### HTTP
 - `GET /`：前端 SPA。
-- `GET /media/:mediaId`：貼圖（`sticker-*`）、大頭照（`avatar-p|o-*`，原圖 `avatarfull-*`）、收到的圖片／影片／語音（`msg-*`）與已上傳媒體位元組（200／206／404／416）；需瀏覽器 cookie，訊息媒體 `Cache-Control: private, no-store`。
+- `GET /media/:mediaId`：貼圖（`sticker-*`）、LINE 表情貼（`emoji-<productId>-<sticonId>`，靜態圖）、大頭照（`avatar-p|o-*`，原圖 `avatarfull-*`）、收到的圖片／影片／語音（`msg-*`）與已上傳媒體位元組（200／206／404／416）；需瀏覽器 cookie，訊息媒體 `Cache-Control: private, no-store`。
 - `POST /media/upload`：媒體上傳（以內容判斷：圖片 PNG／JPEG／GIF ≤ 10MB；影片 MP4／MOV ≤ `limits.uploadVideoMaxBytes`，預設 50MB）→ `{ mediaId }`；發送時以 `mediaId` 引用。
 
 ### 限制
