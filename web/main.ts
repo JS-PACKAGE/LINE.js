@@ -708,6 +708,14 @@ function openMessageMenu(message: Message, x: number, y: number): void {
     items.push({ label: "回覆", action: () => composer.setReply({ messageId: message.messageId, senderName: message.senderName, preview: previewOf(message) }) });
   }
   if (taggable(message)) items.push({ label: `@ 提及 ${message.senderName}`, action: () => composer.insertMention({ userId: message.senderId, name: message.senderName }) });
+  if (message.senderId) items.push({
+    label: "顯示寄件者 ID",
+    action: () => {
+      void confirmDialog({ title: message.senderName, message: message.senderId, confirmLabel: "複製 ID", cancelLabel: "關閉" }).then((copy) => {
+        if (copy) void navigator.clipboard?.writeText(message.senderId).catch(() => {});
+      });
+    },
+  });
   if (message.text) items.push({ label: "複製文字", action: () => { void navigator.clipboard?.writeText(message.text!).catch(() => {}); } });
   if (message.mediaId && (message.contentType === "IMAGE" || message.contentType === "VIDEO")) {
     const mediaId = message.mediaId;

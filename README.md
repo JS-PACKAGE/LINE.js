@@ -71,6 +71,8 @@ npm start
 
 可安裝為 PWA（瀏覽器「安裝」；含 favicon 與 manifest）。Service worker 只快取公開靜態檔，不碰 `/media/*` 與 `/ws`；頁面一律網路優先。網頁會鎖定瀏覽器原生右鍵選單（輸入欄位除外），右鍵改為訊息選單（可收回自己的訊息；觸控長按亦同。聊天頻道上右鍵可顯示並複製頻道 ID，左上角自己的名稱上右鍵可顯示並複製自己的 ID），此為操作便利而非安全機制。聊天列表未讀數取自 LINE 端計數，開啟並回報已讀後清除；在手機等其他裝置讀過（LINE 的 `SEND_CHAT_CHECKED`）也會即時清除。群組改名、換圖、成員加入或離開、好友換名字或大頭照時，服務會重新向 LINE 取得頻道清單（同一波變動只取一次，且最多每 30 秒一次）。
 
+在聊天室訊息上按右鍵（觸控長按），選「顯示寄件者 ID」可查看與複製其他人的 ID。機器人 API 從即時 `message`／`message:edit` 的 `message.senderId`，或 `history` 的 `messages[].senderId` 取得；仍限 `api.chats` 內的聊天室。社群回傳的是社群成員 ID，不是一般 LINE 帳號 ID；此功能不查詢未出現過的成員。
+
 `session.json` 包含憑證與 E2EE key material，必須以權限 `600` 保存，不得分享或提交。`config.yaml` 為個人設定，不入版本控制。`api-token.json`（機器人 Token 的 SHA-256 與建立時間，權限 `600`）與 `linejs.pid`（執行中服務的 PID，供 `stop`／`restart` 使用）同樣不入版本控制。
 
 `src/line/session.ts` 的 SessionStorage 沿用 linejs FileStorage 契約，改以序列化、權限 `600` 的暫存檔與原子替換保存資料，避免併發寫入遺失 token／key。既有檔案會收緊權限；損壞 JSON 或 symlink 拒絕載入，不覆寫原資料。寫入失敗會使後續 `flush()` 失敗，不冒充 session 已保存。
