@@ -344,6 +344,21 @@ channelList.addEventListener("contextmenu", (event) => {
   }]);
 });
 
+const meHeader = $<HTMLElement>("header.me");
+meHeader.addEventListener("contextmenu", (event) => {
+  const userId = myUserId;
+  if (!userId || (event.target as Element).closest("button")) return;
+  event.preventDefault();
+  showMenu(event.clientX, event.clientY, [{
+    label: "顯示我的 ID",
+    action: () => {
+      void confirmDialog({ title: meName.textContent || "我的 ID", message: userId, confirmLabel: "複製 ID", cancelLabel: "關閉" }).then((copy) => {
+        if (copy) void navigator.clipboard?.writeText(userId).catch(() => {});
+      });
+    },
+  }]);
+});
+
 // Bursts of frames (a reconnect snapshot, a busy group) rebuild the channel list once per frame drawn.
 let channelsScheduled = false;
 function scheduleChannels(): void {
@@ -879,6 +894,7 @@ function messageAt(target: EventTarget | null): Message | undefined {
 // Touch screens open the same menus with a long press.
 enableLongPress(messageList);
 enableLongPress(channelList);
+enableLongPress(meHeader);
 
 messageList.addEventListener("contextmenu", (event) => {
   const message = messageAt(event.target);

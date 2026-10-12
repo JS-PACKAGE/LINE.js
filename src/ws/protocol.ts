@@ -13,6 +13,8 @@ export type ServerFrame =
   | { type: "auth:qr"; url: string }
   | { type: "auth:pin"; code: string }
   | { type: "auth:ready"; profile: Profile }
+  /** Answer to `profile:get`, only to the connection that asked: the same profile `auth:ready` carries. */
+  | { type: "profile"; requestId: string; profile: Profile }
   | { type: "channels"; channels: Channel[] }
   /** One chat changed (new activity, its preview, its badge): pages only, bots keep the plain message stream. */
   | { type: "channel"; channel: Channel }
@@ -55,6 +57,8 @@ export type ClientFrame =
   | { type: "message:react"; requestId: string; chatId: string; messageId: string; reaction: ReactionKind | null }
   /** Rate a received text message (someone else's, shown by this server) with Jev. Bots only within `api.chats`. */
   | { type: "scam:check"; requestId: string; chatId: string; messageId: string }
+  /** This account's own id, name and picture, on demand (pages and bots alike). */
+  | { type: "profile:get"; requestId: string }
   | { type: "stickers:list"; requestId: string }
   | { type: "api:token:create"; requestId?: string }
   | { type: "api:token:revoke"; requestId?: string }

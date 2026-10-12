@@ -1287,7 +1287,19 @@ test("a bot can send text and read history in an allowed chat only", async (t) =
   assert.equal(env.provider.calls.some((call) => call[0] === "read-range"), false);
 });
 
-test("everything outside send, history, scam check and ping is unknown to a bot", async (t) => {
+test("a bot can ask for this account's own id at any time, only while signed in", async (t) => {
+  const env = await botEnv(t);
+  const bot = await env.open();
+  bot.socket.send(JSON.stringify({ type: "profile:get", requestId: "p1" }));
+  assert.deepEqual(await bot.until((frame) => frame.requestId === "p1"), { type: "profile", requestId: "p1", profile: { userId: "u-me", displayName: "測試帳號" } });
+  bot.socket.send(JSON.stringify({ type: "profile:get" }));
+  assert.equal((await bot.until((frame) => frame.type === "error")).code, "INVALID_REQUEST");
+  await env.login.logout();
+  bot.socket.send(JSON.stringify({ type: "profile:get", requestId: "p2" }));
+  assert.equal((await bot.until((frame) => frame.requestId === "p2")).code, "INVALID_REQUEST");
+});
+
+test("everything outside send, history, scam check, profile and ping is unknown to a bot", async (t) => {
   const env = await botEnv(t);
   const bot = await env.open();
   const frames = [

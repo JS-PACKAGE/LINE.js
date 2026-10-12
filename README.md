@@ -69,7 +69,7 @@ npm start
 - **鍵盤**：聊天清單中以 ↑／↓ 移動、Home／End 跳到頭尾、Enter 或空白鍵開啟；在清單上方的搜尋框按 ↓ 進入清單，清單第一列按 ↑ 回到搜尋框。Ctrl／⌘＋K 開啟訊息搜尋（瀏覽器自己的 Ctrl／⌘＋F 不受影響）。
 - **手機版**：視窗寬度 ≤ 720px 時，聊天與好友清單收進左側抽屜，由對話標題列左上角的「☰」漢堡按鈕開啟（點背景或按 Esc 關閉，選取聊天室後自動關閉）；尚未選聊天室時預設展開。桌機版面不變。
 
-可安裝為 PWA（瀏覽器「安裝」；含 favicon 與 manifest）。Service worker 只快取公開靜態檔，不碰 `/media/*` 與 `/ws`；頁面一律網路優先。網頁會鎖定瀏覽器原生右鍵選單（輸入欄位除外），右鍵改為訊息選單（可收回自己的訊息；觸控長按亦同。聊天頻道上右鍵可顯示並複製頻道 ID），此為操作便利而非安全機制。聊天列表未讀數取自 LINE 端計數，開啟並回報已讀後清除；在手機等其他裝置讀過（LINE 的 `SEND_CHAT_CHECKED`）也會即時清除。群組改名、換圖、成員加入或離開、好友換名字或大頭照時，服務會重新向 LINE 取得頻道清單（同一波變動只取一次，且最多每 30 秒一次）。
+可安裝為 PWA（瀏覽器「安裝」；含 favicon 與 manifest）。Service worker 只快取公開靜態檔，不碰 `/media/*` 與 `/ws`；頁面一律網路優先。網頁會鎖定瀏覽器原生右鍵選單（輸入欄位除外），右鍵改為訊息選單（可收回自己的訊息；觸控長按亦同。聊天頻道上右鍵可顯示並複製頻道 ID，左上角自己的名稱上右鍵可顯示並複製自己的 ID），此為操作便利而非安全機制。聊天列表未讀數取自 LINE 端計數，開啟並回報已讀後清除；在手機等其他裝置讀過（LINE 的 `SEND_CHAT_CHECKED`）也會即時清除。群組改名、換圖、成員加入或離開、好友換名字或大頭照時，服務會重新向 LINE 取得頻道清單（同一波變動只取一次，且最多每 30 秒一次）。
 
 `session.json` 包含憑證與 E2EE key material，必須以權限 `600` 保存，不得分享或提交。`config.yaml` 為個人設定，不入版本控制。`api-token.json`（機器人 Token 的 SHA-256 與建立時間，權限 `600`）與 `linejs.pid`（執行中服務的 PID，供 `stop`／`restart` 使用）同樣不入版本控制。
 
@@ -121,6 +121,7 @@ npm start
 | Client → Server | `auth:start` / `auth:logout` | 開始 QR 登入／登出 |
 | Client → Server | `history:fetch` / `message:send` | 載入歷史一頁／發送文字、圖片（先 `POST /media/upload`）或貼圖 |
 | Client → Server | `stickers:list` → `stickers` | 取得此帳號已擁有的貼圖包與貼圖 id |
+| Client → Server | `profile:get` → `profile` | `{ requestId }`：取得自己的 `profile`（`userId`、`displayName`、`pictureId?`，同 `auth:ready`）；只讀伺服器登入時取得的資料，不呼叫 LINE；未登入回 `INVALID_REQUEST` |
 | Client → Server | `message:unsend` | `{ requestId, chatId, messageId }`：收回自己的訊息（僅網頁；伺服器只接受本帳號的訊息，與 `message:send` 共用頻率上限）；成功時廣播 `message:unsend` |
 | Client → Server | `message:react` | `{ requestId, chatId, messageId, reaction }`：`NICE`／`LOVE`／`FUN`／`AMAZING`／`SAD`／`OMG`，`null` 取消（僅網頁；只接受伺服器已顯示、未收回的訊息，與 `message:send` 共用頻率上限）；成功時廣播 `message:reactions` |
 | Client → Server | `chat:read` | 回報已讀到某則訊息（無回應；僅限伺服器已顯示過的訊息，每個位置只送一次） |
@@ -160,12 +161,13 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 | 機器人 → 服務 | `message:send` | `{ requestId, chatId, text, mentions?, replyTo? }`：**只能文字**；`mediaId`／`sticker` 回 `INVALID_REQUEST`。成功回 `sent { requestId, messageId }` |
 | 機器人 → 服務 | `history:fetch` | `{ requestId, chatId, limit?, before? }`：與網頁相同的分頁，但不附已讀快照 |
 | 機器人 → 服務 | `scam:check` | `{ requestId, chatId, messageId }`：以 Jev 分析 `api.chats` 內**別人傳來**、服務已顯示（即時收到或 `history:fetch` 取得）的文字訊息；伺服器送自己快取的文字。需設定 `jev.token`（否則 `SCAM_CHECK_UNAVAILABLE`），所有機器人合計每分鐘 10 次，每次依 TypeSafe 計費。成功回 `scam:result { requestId, chatId, messageId, analysis: { probability, tactic? } }` |
+| 機器人 → 服務 | `profile:get` | `{ requestId }`：隨時取得自己的 ID 與名稱，回 `profile { requestId, profile: { userId, displayName, pictureId? } }`（同 `auth:ready`；不呼叫 LINE，與 `history:fetch` 共用每連線每秒 10 次；未登入回 `INVALID_REQUEST`） |
 | 機器人 → 服務 | `ping` → `pong` | 保活；服務另以 WebSocket 協定層 Ping 每 30 秒檢查，連續兩輪未回應即斷線（一般 WebSocket 函式庫會自動回應） |
 | 服務 → 機器人 | `hello`、`auth:state`、`status` | 連線即送；`auth:state` 不是 `ready`（LINE 尚未登入）時還不能收發 |
 | 服務 → 機器人 | `auth:ready` | 含自己的 `profile.userId`，用來略過自己發的訊息（你在手機上發的也會是這個 id） |
 | 服務 → 機器人 | `channels` | 只含 `api.chats` 內的聊天室；有變動時重送 |
 | 服務 → 機器人 | `message`、`message:edit`、`message:unsend` | 只有 `api.chats` 內聊天室的**即時**訊息、編輯與收回；包含你自己發的 |
-| 服務 → 機器人 | `sent`、`history`、`scam:result`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`SCAM_CHECK_FAILED`…） |
+| 服務 → 機器人 | `sent`、`history`、`scam:result`、`profile`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`SCAM_CHECK_FAILED`…） |
 
 其餘一律回 `UNKNOWN_TYPE`：沒有登入／登出、`chat:read`（已讀回報）、`message:unsend`（收回）、`message:react`（回應）、`channels:refresh`、貼圖清單、Token 管理。**不重播舊訊息**（機器人從「現在」開始，不會重複回應歷史；要歷史請用 `history:fetch`）；不給 `read`、`update:available`、`api:state`、`scam:state`；圖片／影片等媒體位元組也無法取得（機器人只看到訊息的 `contentType`）。
 

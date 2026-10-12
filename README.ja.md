@@ -69,7 +69,7 @@ npm start
 - **キーボード**：チャット一覧では ↑／↓ で移動、Home／End で先頭／末尾へ、Enter またはスペースで開きます。一覧の上の検索欄で ↓ を押すと一覧に入り、一覧の先頭行で ↑ を押すと検索欄に戻ります。Ctrl／⌘＋K でメッセージ検索を開きます（ブラウザー自身の Ctrl／⌘＋F には影響しません）。
 - **モバイル版**：ウィンドウ幅が ≤ 720px の場合、チャットと友だちの一覧を左側のドロワーに収納し、会話のタイトルバー左上の「☰」ハンバーガーボタンで開きます（背景のクリックまたは Esc で閉じ、チャットルームを選ぶと自動で閉じます）。まだチャットルームを選んでいない場合は、既定で開きます。デスクトップのレイアウトは変わりません。
 
-PWA としてインストールできます（ブラウザーの「安裝」（インストール）。favicon と manifest を含みます）。Service worker は公開の静的ファイルのみキャッシュし、`/media/*` と `/ws` は扱いません。ページは常にネットワーク優先です。Web ページではブラウザー標準の右クリックメニューを無効にし（入力欄を除く）、メッセージメニューを表示します（自分のメッセージの送信取消に対応。タッチの長押しでも同じです。チャットを右クリックするとチャンネル ID を表示・コピーできます）。これは操作の利便性のためであり、セキュリティ機構ではありません。チャット一覧の未読数は LINE 側の数値を使用し、チャットを開いて既読通知を送った後に消去します。スマートフォンなどほかの端末で読んだ場合（LINE の `SEND_CHAT_CHECKED`）もすぐに消去します。グループ名や画像の変更、メンバーの参加・退出、友だちの名前やプロフィール画像の変更があると、サービスはチャンネル一覧を LINE から取り直します（一連の変更につき 1 回、かつ最大 30 秒に 1 回）。
+PWA としてインストールできます（ブラウザーの「安裝」（インストール）。favicon と manifest を含みます）。Service worker は公開の静的ファイルのみキャッシュし、`/media/*` と `/ws` は扱いません。ページは常にネットワーク優先です。Web ページではブラウザー標準の右クリックメニューを無効にし（入力欄を除く）、メッセージメニューを表示します（自分のメッセージの送信取消に対応。タッチの長押しでも同じです。チャットを右クリックするとチャンネル ID を、左上の自分の名前を右クリックすると自分の ID を表示・コピーできます）。これは操作の利便性のためであり、セキュリティ機構ではありません。チャット一覧の未読数は LINE 側の数値を使用し、チャットを開いて既読通知を送った後に消去します。スマートフォンなどほかの端末で読んだ場合（LINE の `SEND_CHAT_CHECKED`）もすぐに消去します。グループ名や画像の変更、メンバーの参加・退出、友だちの名前やプロフィール画像の変更があると、サービスはチャンネル一覧を LINE から取り直します（一連の変更につき 1 回、かつ最大 30 秒に 1 回）。
 
 `session.json` には認証情報と E2EE key material が含まれるため、必ず権限 `600` で保存し、共有・コミットしてはいけません。`config.yaml` は個人設定であり、バージョン管理には含めません。`api-token.json`（ボット Token の SHA-256 と作成時刻、権限 `600`）と `linejs.pid`（実行中のサービスの PID。`stop`／`restart` で使用）もバージョン管理には含めません。
 
@@ -121,6 +121,7 @@ PWA としてインストールできます（ブラウザーの「安裝」（�
 | Client → Server | `auth:start` / `auth:logout` | QR ログインの開始／ログアウト |
 | Client → Server | `history:fetch` / `message:send` | 履歴 1 ページの取得／テキスト、画像（先に `POST /media/upload`）、スタンプの送信 |
 | Client → Server | `stickers:list` → `stickers` | このアカウントの所有済みスタンプパックとスタンプ id の取得 |
+| Client → Server | `profile:get` → `profile` | `{ requestId }`：自分の `profile`（`userId`、`displayName`、`pictureId?`。`auth:ready` と同じ）を取得。サーバーがログイン時に取得したデータのみを読み、LINE には問い合わせません。未ログイン時は `INVALID_REQUEST` |
 | Client → Server | `message:unsend` | `{ requestId, chatId, messageId }`：自分のメッセージの送信取消（Web ページのみ。サーバーはこのアカウントのメッセージのみ受け付け、`message:send` とレート制限を共有）。成功時は `message:unsend` をブロードキャスト |
 | Client → Server | `message:react` | `{ requestId, chatId, messageId, reaction }`：`NICE`／`LOVE`／`FUN`／`AMAZING`／`SAD`／`OMG`、`null` で取消（Web ページのみ。サーバーが表示した、送信取消されていないメッセージのみ受け付け、`message:send` とレート制限を共有）。成功時は `message:reactions` をブロードキャストします |
 | Client → Server | `chat:read` | 指定メッセージまでの既読通知（応答なし。サーバーが表示済みのメッセージに限り、各位置につき 1 回のみ送信） |
@@ -160,12 +161,13 @@ HTTP：`GET /media/:mediaId`（スタンプ、スタンプパックのアイコ�
 | ボット → サービス | `message:send` | `{ requestId, chatId, text, mentions?, replyTo? }`：**テキストのみ**。`mediaId`／`sticker` は `INVALID_REQUEST` を返します。成功時は `sent { requestId, messageId }` |
 | ボット → サービス | `history:fetch` | `{ requestId, chatId, limit?, before? }`：Web ページと同じページ取得ですが、既読 snapshot は含みません |
 | ボット → サービス | `scam:check` | `{ requestId, chatId, messageId }`：`api.chats` 内の**相手から届いた**、サービスが表示済み（リアルタイム受信または `history:fetch` で取得）のテキストメッセージを Jev で分析します。サーバーは自身のキャッシュのテキストを送ります。`jev.token` の設定が必要で（未設定時は `SCAM_CHECK_UNAVAILABLE`）、全ボット合計で毎分 10 回、1 回ごとに TypeSafe の料金がかかります。成功時は `scam:result { requestId, chatId, messageId, analysis: { probability, tactic? } }` |
+| ボット → サービス | `profile:get` | `{ requestId }`：自分の ID と名前をいつでも取得できます。`profile { requestId, profile: { userId, displayName, pictureId? } }` を返します（`auth:ready` と同じ内容。LINE には問い合わせず、`history:fetch` と接続ごとに毎秒 10 回の枠を共有。未ログイン時は `INVALID_REQUEST`） |
 | ボット → サービス | `ping` → `pong` | 接続維持。サービスは WebSocket プロトコルレベルの Ping でも 30 秒ごとに確認し、2 回続けて応答がなければ切断します（一般的な WebSocket ライブラリは自動で応答します） |
 | サービス → ボット | `hello`、`auth:state`、`status` | 接続時に送信。`auth:state` が `ready` でない場合（LINE 未ログイン）、まだ送受信できません |
 | サービス → ボット | `auth:ready` | 自分の `profile.userId` を含み、自分が送ったメッセージを除外するために使えます（スマートフォンから送ったメッセージもこの id です） |
 | サービス → ボット | `channels` | `api.chats` のチャットルームのみ。変更時に再送します |
 | サービス → ボット | `message`、`message:edit`、`message:unsend` | `api.chats` のチャットルームの**リアルタイム**メッセージ、編集、送信取消のみ。自分が送ったものも含みます |
-| サービス → ボット | `sent`、`history`、`scam:result`、`error` | 対応するリクエストへの応答。エラーは汎用コードのみ（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`SCAM_CHECK_FAILED`…） |
+| サービス → ボット | `sent`、`history`、`scam:result`、`profile`、`error` | 対応するリクエストへの応答。エラーは汎用コードのみ（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`SCAM_CHECK_FAILED`…） |
 
 それ以外はすべて `UNKNOWN_TYPE` を返します。ログイン／ログアウト、`chat:read`（既読通知）、`message:unsend`（送信取消）、`message:react`（リアクション）、`channels:refresh`、スタンプ一覧、Token 管理は利用できません。**過去のメッセージは再送しません**（ボットは「今」から開始し、履歴に重複して応答しません。履歴は `history:fetch` を使ってください）。`read`、`update:available`、`api:state`、`scam:state` は送信しません。画像／動画などのメディアのバイト列も取得できません（ボットにはメッセージの `contentType` のみ見えます）。
 

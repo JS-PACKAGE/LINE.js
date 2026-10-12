@@ -490,6 +490,13 @@ export function createHub(options: HubOptions): Hub {
     }
   }
 
+  /** Local only (no LINE request): the profile LINE gave at sign-in. */
+  function handleProfile(socket: WebSocket, frame: Record<string, unknown>): void {
+    const requestId = requestIdOf(frame);
+    if (!requestId || login.state !== "ready") return fail(socket, "INVALID_REQUEST", requestId);
+    send(socket, { type: "profile", requestId, profile: provider.getProfile() });
+  }
+
   function sendChannels(socket: WebSocket): void {
     send(socket, { type: "channels", channels: store.snapshotChannels() });
   }
@@ -600,6 +607,10 @@ export function createHub(options: HubOptions): Hub {
           if (!botScamLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
           else void handleScamCheck(socket, frame as Record<string, unknown>, botScope);
           return;
+        case "profile:get":
+          if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else handleProfile(socket, frame as Record<string, unknown>);
+          return;
         default:
           fail(socket, "UNKNOWN_TYPE");
       }
@@ -658,6 +669,10 @@ export function createHub(options: HubOptions): Hub {
         case "stickers:list":
           if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
           else void handleStickers(socket, frame as Record<string, unknown>);
+          return;
+        case "profile:get":
+          if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else handleProfile(socket, frame as Record<string, unknown>);
           return;
         case "history:fetch":
           if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
