@@ -276,6 +276,40 @@ test("a location sent with a numeric content type arrives named, with its card a
   assert.equal(received[0].message.text, undefined);
 });
 
+test("a tag in an end-to-end encrypted chat travels inside the encrypted payload, where LINE apps read it", async () => {
+  const sends = [];
+  const sealed = [];
+  const base = fakeBase({
+    talk: {
+      async sendMessage(request) {
+        sends.push(request);
+        if (!request.chunks) throw Object.assign(new Error("e2ee required"), { data: { code: "E2EE_UPDATE_SENDER_KEY" } });
+        return { id: "960", to: request.to, contentType: "NONE", createdTime: String(1_700_000_000_960), contentMetadata: request.contentMetadata, chunks: request.chunks };
+      },
+    },
+  });
+  base.e2ee.encryptE2EEMessage = async (to, data, contentType) => {
+    sealed.push({ to, data, contentType });
+    return ["密文"];
+  };
+  const { provider } = await activeProvider(base);
+  const mention = { userId: mid(3), start: 0, end: 3 };
+  const message = await provider.sendText({ channelId: GROUP_A, kind: "group" }, "@小明 好", { mentions: [mention], replyTo: "42" });
+
+  const tag = JSON.stringify({ MENTIONEES: [{ S: "0", E: "3", M: mid(3) }] });
+  assert.equal(sends[0].e2ee, false, "a refused plain send is not re-encrypted by linejs without the tag");
+  assert.deepEqual(sealed, [{ to: GROUP_A, data: { MENTION: tag, text: "@小明 好" }, contentType: "NONE" }]);
+  assert.deepEqual(sends[1].chunks, ["密文"]);
+  assert.equal(sends[1].relatedMessageId, "42");
+  assert.equal(sends[1].contentMetadata.e2eeVersion, "2");
+  assert.deepEqual(message.mentions, [mention]);
+  assert.equal(message.text, "@小明 好");
+
+  base.talk.sendMessage = async () => { throw Object.assign(new Error("boom"), { data: { code: "INTERNAL_ERROR" } }); };
+  await assert.rejects(provider.sendText({ channelId: GROUP_A, kind: "group" }, "hi"), /boom/);
+  assert.equal(sealed.length, 1, "only an E2EE refusal leads to encrypting");
+});
+
 test("taking back calls talk or OpenChat unsend the way linejs' own unsend() does, and the media goes with it", async () => {
   const calls = [];
   const base = fakeBase({

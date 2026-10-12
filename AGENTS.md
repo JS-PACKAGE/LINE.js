@@ -77,6 +77,8 @@ Gate 依 [PLAN.md](PLAN.md) 逐關驗收，不跳關；Gate 0 遠端需存在四
 
 其他 adapter 注意事項：OpenChat 歷史無「最新 N 則」查詢，只能由最舊事件向前走完再於記憶體分頁（快取 10 分鐘，期間以即時訊息與自己送出的訊息補上；LINE 監聽出錯即整個捨棄）；talk 歷史游標為 `deliveredTime:messageId` 且上界含端點，需多取一則並剔除錨點；非好友的群組成員名稱與大頭照以 `getContactsV2`／`getSquareMember` 補查（限時、限量、失敗退避），社群管理員角色同樣來自 `getSquareMember`；他人已讀位置來自 `getMessageReadRange` 與 `NOTIFIED_READ_MESSAGE`。**回報自己的已讀**（`sendChatChecked`／OpenChat `markAsRead`）會改變真實帳號狀態（對方看到「已讀」），因此只在小語要求下啟用：由網頁在聊天開啟且頁面可見時送 `chat:read`，伺服器只接受已顯示過的訊息、每個位置只送一次，並可用 `chat.sendReadReceipts: false` 關閉；驗證時不得對真實聯絡人的聊天室測試。已擁有貼圖包來自商店服務 `getOwnedProductSummaries`（linejs 3.4.2 未接線，經 `base.request.request` 呼叫 `/TSHOP4`），貼圖 id 與標題來自公開 CDN 的 `productInfo.meta`，失敗時退回 LINE 回傳的 id 區間。即時事件依聊天室各自排序處理：一個聊天室的成員查詢變慢不會拖住其他聊天室；好友資料以每批 100 人、最多 3 批同時查詢。
 
+E2EE 文字發送：linejs 3.4.2 被要求 E2EE 時的自動重試只把 `text` 加密，`MENTION` 等 metadata 只留在明文。`decryptE2EEMessage` 會把解密內容的其他欄位併回 metadata，由此推斷 LINE App 從加密內容讀取標記（尚未以真實帳號實測）。因此 adapter 以 `e2ee: false` 先送明文，被拒才自行用 `encryptE2EEMessage(to, { ...metadata, text })` 加密後送出（明文 metadata 照舊保留）；不得改回交給 linejs 重試。
+
 LINE operation 與連線注意事項：linejs 未記載多數 operation 的參數排列，`SEND_CHAT_CHECKED`（手機已讀）只取 `param1` 且須為伺服器已知聊天室；群組／個人資料／聊天室成員變動不解析參數，只觸發節流的頻道清單重新整理（3 秒合併、最多每 30 秒一次），不得改成依參數猜測內容。頻道清單的最後一則訊息（`Channel.lastMessage`）是預覽，不登記媒體來源，不能藉此下載。WS 心跳：伺服器以協定層 Ping 每 30 秒檢查、兩輪無回應即關閉；網頁 `ping` 需 10 秒內收到 `pong`，回到前景立即探測。斷線記錄（網頁主控台、服務日誌 `WS_CLOSED`）只可含時間、close code、截短的 reason 與前後景狀態，不得含標頭、cookie 或 Token。
 
 PWA 注意事項：`web/public/sw.js` 只可快取公開靜態檔（`/`、`/assets/*`、`/icons/*`、manifest、favicon）；`/media/*`、`/ws` 與非 GET 請求絕不經手，避免私人內容在登出後殘留於 Cache Storage。新增靜態副檔名須同步 `src/http/server.ts` 的 mime 表。未讀數以 LINE 的 `unreadCount` 為準（talk `getMessageBoxes`、社群 `getSquareChatStatus`，盡力而為），連線時的訊息快照（`messages` 影格）不計未讀。

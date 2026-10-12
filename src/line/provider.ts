@@ -860,10 +860,28 @@ export class EvexLineProvider implements LineProvider {
       this.rememberSquareMessage(message);
       return message;
     }
-    // e2ee left undefined: linejs first tries plain and retries encrypted when LINE demands E2EE.
-    const sent = await client.base.talk.sendMessage({ to: channel.channelId, text, contentMetadata, ...reply });
+    const sent = await this.sendTalkText(client, channel.channelId, text, contentMetadata, options.replyTo);
     if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
     return echo(this.talkToMessage({ ...sent, to: channel.channelId, from: me.userId }, me.userId));
+  }
+
+  /**
+   * Plain first; when LINE demands E2EE the payload is encrypted here rather than by linejs' own retry,
+   * which encrypts the text alone and leaves MENTION only in plain metadata. Received E2EE messages
+   * carry such metadata inside the payload (decryptE2EEMessage merges it back), so it goes there too.
+   */
+  private async sendTalkText(client: Client, to: string, text: string, contentMetadata: Record<string, string>, replyTo?: string): Promise<LineMessage> {
+    const reply = replyTo ? { relatedMessageId: replyTo } : {};
+    try {
+      return await client.base.talk.sendMessage({ to, text, contentMetadata, ...reply, e2ee: false });
+    } catch (error) {
+      if (!String((error as { data?: { code?: unknown } } | undefined)?.data?.code ?? "").includes("E2EE")) throw error;
+    }
+    const chunks = await client.base.e2ee.encryptE2EEMessage(to, { ...contentMetadata, text }, "NONE");
+    return client.base.talk.sendMessage({
+      to, contentType: "NONE", chunks, e2ee: true, ...reply,
+      contentMetadata: { ...contentMetadata, e2eeVersion: "2", contentType: "0", e2eeMark: "2" },
+    });
   }
 
   async sendSticker(channel: ChannelRef, packageId: number, stickerId: number): Promise<Message> {
