@@ -102,11 +102,12 @@
             <span id="reply-preview"></span>
             <button id="reply-cancel" type="button" class="ghost" aria-label="取消回覆">✕</button>
           </div>
+          <ul id="mention-list" class="mention-list" role="listbox" aria-label="提及成員" hidden></ul>
           <div class="composer-row">
             <button id="attach" type="button" class="ghost" aria-label="傳送圖片或影片">媒體</button>
             <input id="file" type="file" multiple accept="image/png,image/jpeg,image/gif,video/mp4,video/quicktime" hidden />
             <button id="sticker-toggle" type="button" class="ghost" aria-haspopup="dialog" aria-expanded="false">貼圖</button>
-            <textarea id="draft" rows="1" maxlength="8000" aria-label="訊息內容" disabled></textarea>
+            <textarea id="draft" rows="1" maxlength="8000" aria-label="訊息內容" role="combobox" aria-autocomplete="list" aria-controls="mention-list" aria-expanded="false" disabled></textarea>
             <button id="send" type="submit" disabled>送出</button>
           </div>
         </form>

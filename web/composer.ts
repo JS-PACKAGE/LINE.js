@@ -12,6 +12,16 @@ const STICKER_ID = /^\d{1,12}$/;
 // Matches the server's limits (text length, tags per message); the server enforces them again.
 const MAX_TEXT_LENGTH = 8000;
 const MAX_MENTIONS = 20;
+const MAX_SUGGESTIONS = 8;
+// "@" at the start or after a space, then the name typed so far (up to the caret).
+const MENTION_QUERY = /(?:^|\s)@([^\s@]{0,40})$/u;
+
+/** Someone who can be tagged in the open chat. */
+export interface MentionCandidate {
+  userId: string;
+  name: string;
+  pictureId?: string;
+}
 
 /** The message a reply answers, as shown in the quote bar. */
 export interface ReplyTarget {
@@ -43,7 +53,13 @@ export interface Composer {
   reset(): void;
 }
 
-export function createComposer(send: (frame: ClientFrame) => boolean): Composer {
+/** Who can be tagged in the open chat (newest speaker first) and how to draw their avatar in the "@" list. */
+export interface MentionSource {
+  candidates(): MentionCandidate[];
+  avatar(person: MentionCandidate): HTMLElement;
+}
+
+export function createComposer(send: (frame: ClientFrame) => boolean, mentions: MentionSource): Composer {
   const query = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
   const form = query<HTMLFormElement>("#composer");
   const note = query<HTMLParagraphElement>("#composer-note");
@@ -69,6 +85,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
   const stickerInput = query<HTMLInputElement>("#sticker-id");
   const preview = query<HTMLImageElement>("#sticker-preview");
   const stickerSend = query<HTMLButtonElement>("#sticker-send");
+  const mentionList = query<HTMLUListElement>("#mention-list");
 
   let channelId: string | undefined;
   let connected = false;
@@ -82,8 +99,10 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
   let uploadRequest: XMLHttpRequest | undefined;
   let followUpText = false;
   let replyTarget: ReplyTarget | undefined;
-  // People tagged through insertMention; only those whose "@name" is still in the text are sent.
+  // People tagged from the "@" list or a name click; only those whose "@name" is still in the text are sent.
   let mentioned: { userId: string; name: string }[] = [];
+  // The open "@" suggestion list: where its "@query" starts and which suggestion Enter would pick.
+  let suggesting: { start: number; options: MentionCandidate[]; active: number } | undefined;
   let packages: StickerPackage[] | undefined;
   let stickerRequest: string | undefined;
   let activePackage: number | undefined;
@@ -159,6 +178,73 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     const ranges: Mention[] = [];
     for (const range of found) if (range.start >= (ranges.at(-1)?.end ?? 0)) ranges.push(range);
     return ranges.slice(0, MAX_MENTIONS);
+  }
+
+  function remember(person: { userId: string; name: string }): void {
+    if (!mentioned.some((entry) => entry.userId === person.userId && entry.name === person.name)) mentioned.push({ userId: person.userId, name: person.name });
+  }
+
+  function closeSuggestions(): void {
+    suggesting = undefined;
+    mentionList.hidden = true;
+    mentionList.replaceChildren();
+    draft.removeAttribute("aria-activedescendant");
+    draft.ariaExpanded = "false";
+  }
+
+  function renderSuggestions(): void {
+    if (!suggesting) return closeSuggestions();
+    mentionList.replaceChildren(...suggesting.options.map((person, index) => {
+      const item = document.createElement("li");
+      item.id = `mention-option-${index}`;
+      item.role = "option";
+      item.ariaSelected = String(index === suggesting!.active);
+      const name = document.createElement("span");
+      name.textContent = person.name;
+      item.append(mentions.avatar(person), name);
+      // mousedown, not click: the draft keeps focus (and its caret) while picking.
+      item.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        pickSuggestion(index);
+      });
+      return item;
+    }));
+    mentionList.hidden = false;
+    draft.ariaExpanded = "true";
+    draft.setAttribute("aria-activedescendant", `mention-option-${suggesting.active}`);
+  }
+
+  /** Opens, narrows or closes the suggestion list for the "@name" being typed at the caret. */
+  function updateSuggestions(): void {
+    const caret = draft.selectionStart ?? 0;
+    const match = draft.selectionEnd === caret ? MENTION_QUERY.exec(draft.value.slice(0, caret)) : null;
+    if (!match) return closeSuggestions();
+    const typed = match[1]!.toLocaleLowerCase();
+    const options = mentions.candidates().filter((person) => person.name.toLocaleLowerCase().includes(typed)).slice(0, MAX_SUGGESTIONS);
+    if (options.length === 0) return closeSuggestions();
+    const start = caret - match[1]!.length - 1;
+    const keep = suggesting?.start === start ? options.findIndex((person) => person.userId === suggesting!.options[suggesting!.active]?.userId) : -1;
+    suggesting = { start, options, active: Math.max(keep, 0) };
+    renderSuggestions();
+  }
+
+  /** Replaces the typed "@query" with "@name " and remembers who it refers to. */
+  function pickSuggestion(index: number): void {
+    const person = suggesting?.options[index];
+    if (!suggesting || !person) return;
+    const caret = draft.selectionStart ?? draft.value.length;
+    const inserted = `@${person.name} `;
+    if (draft.value.length - (caret - suggesting.start) + inserted.length > MAX_TEXT_LENGTH) {
+      closeSuggestions();
+      return showNote("訊息太長，無法再加入 @。", true);
+    }
+    draft.value = `${draft.value.slice(0, suggesting.start)}${inserted}${draft.value.slice(caret)}`;
+    const at = suggesting.start + inserted.length;
+    remember(person);
+    closeSuggestions();
+    draft.setSelectionRange(at, at);
+    draft.focus();
+    resizeDraft();
   }
 
   function submitText(): void {
@@ -318,6 +404,23 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
   });
 
   draft.addEventListener("keydown", (event) => {
+    // While the "@" list is open, arrows move through it and Enter/Tab pick (never while an IME is composing).
+    if (suggesting && !event.isComposing) {
+      const count = suggesting.options.length;
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        suggesting.active = (suggesting.active + (event.key === "ArrowDown" ? 1 : count - 1)) % count;
+        return renderSuggestions();
+      }
+      if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+        event.preventDefault();
+        return pickSuggestion(suggesting.active);
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        return closeSuggestions();
+      }
+    }
     // Enter while composing (IME) confirms a candidate; it must not send.
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
@@ -330,7 +433,16 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
     clearReply();
     draft.focus();
   });
-  draft.addEventListener("input", resizeDraft);
+  draft.addEventListener("input", () => {
+    resizeDraft();
+    updateSuggestions();
+  });
+  // Moving the caret into or out of an "@name" opens or closes the list; leaving the box closes it.
+  draft.addEventListener("click", updateSuggestions);
+  draft.addEventListener("keyup", (event) => {
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End") updateSuggestions();
+  });
+  draft.addEventListener("blur", closeSuggestions);
 
   // Pasting media: an image or video on the clipboard becomes a preview that is sent on request. Text pastes untouched.
   draft.addEventListener("paste", (event) => {
@@ -462,7 +574,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
       const inserted = `${before === "" || /\s$/.test(before) ? "" : " "}${token} `;
       if (draft.value.length - (end - start) + inserted.length > MAX_TEXT_LENGTH) return showNote("訊息太長，無法再加入 @。", true);
       draft.value = `${before}${inserted}${draft.value.slice(end)}`;
-      if (!mentioned.some((entry) => entry.userId === person.userId && entry.name === person.name)) mentioned.push(person);
+      remember(person);
       draft.setSelectionRange(start + inserted.length, start + inserted.length);
       draft.focus();
       resizeDraft();
@@ -480,6 +592,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
         else drafts.delete(channelId);
       }
       channelId = next;
+      closeSuggestions();
       // Each conversation gets its own draft back; a staged image is not carried over.
       const saved = next !== undefined ? drafts.get(next) : undefined;
       draft.value = saved?.text ?? "";
@@ -514,6 +627,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
           draft.value = "";
           clearReply();
           mentioned = [];
+          closeSuggestions();
           resizeDraft();
         }
       }
@@ -564,6 +678,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean): Composer 
       clearSelection();
       clearReply();
       mentioned = [];
+      closeSuggestions();
       packages = undefined;
       stickerRequest = undefined;
       renderStickers();

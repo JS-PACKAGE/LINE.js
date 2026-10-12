@@ -2,7 +2,7 @@ import QRCode from "qrcode";
 import "./style.css";
 import { REACTION_KINDS, type AuthState, type Channel, type Message, type MessageCard, type Profile, type ReactionKind, type Reactions, type TextMention } from "../src/model/dto.js";
 import type { ClientFrame, ListenState, ServerFrame } from "../src/ws/protocol.js";
-import { createComposer } from "./composer.js";
+import { createComposer, type MentionCandidate } from "./composer.js";
 import { confirmDialog } from "./dialog.js";
 import { createAvatar } from "./avatar.js";
 import { mediaElement } from "./media.js";
@@ -114,7 +114,19 @@ function send(frame: ClientFrame): boolean {
   return true;
 }
 
-const composer = createComposer(send);
+// Who the "@" list offers: people who have spoken in the open chat (the server only accepts those), newest first.
+const composer = createComposer(send, {
+  candidates() {
+    const seen = new Map<string, MentionCandidate>();
+    for (const message of [...(messages[selected ?? ""] ?? [])].reverse()) {
+      if (taggable(message) && !seen.has(message.senderId)) {
+        seen.set(message.senderId, { userId: message.senderId, name: message.senderName, ...(message.senderPictureId ? { pictureId: message.senderPictureId } : {}) });
+      }
+    }
+    return [...seen.values()];
+  },
+  avatar: (person) => createAvatar(person.pictureId, person.name),
+});
 const notifier = createNotifier($<HTMLButtonElement>("#notify"), (chatId) => openChat(chatId));
 
 function clearSecrets(): void {

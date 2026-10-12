@@ -20,8 +20,8 @@ function makeElement(id) {
     addEventListener(type, fn) {
       listeners.set(type, fn);
     },
-    fire(type) {
-      return listeners.get(type)?.({ preventDefault() {}, stopPropagation() {}, clipboardData: { files: [], getData: () => "" } });
+    fire(type, extra = {}) {
+      return listeners.get(type)?.({ preventDefault() {}, stopPropagation() {}, clipboardData: { files: [], getData: () => "" }, ...extra });
     },
     appendChild() {},
     append() {},
@@ -41,7 +41,7 @@ const SELECTORS = [
   "#draft", "#send", "#attach", "#file", "#sticker-toggle", "#sticker-panel", "#sticker-tabs", "#sticker-grid",
   "#sticker-state", "#sticker-package", "#sticker-id", "#sticker-preview", "#sticker-send", "#attachment",
   "#attachment-info", "#attachment-send", "#attachment-cancel", "#attachment img", "#attachment video",
-  "#reply-bar", "#reply-preview", "#reply-cancel", "#composer-note", "#composer",
+  "#reply-bar", "#reply-preview", "#reply-cancel", "#composer-note", "#composer", "#mention-list",
 ];
 
 function withShims(run) {
@@ -87,6 +87,7 @@ function withShims(run) {
 }
 
 const file = (name) => ({ name, size: 1024, type: "image/png" });
+const nobody = { candidates: () => [], avatar: () => makeElement("avatar") };
 
 test("a selection of several files is sent one at a time, then the draft text follows", async () => {
   await withShims(async (nodes) => {
@@ -95,7 +96,7 @@ test("a selection of several files is sent one at a time, then the draft text fo
     const composer = createComposer((frame) => {
       sent.push(frame);
       return true;
-    });
+    }, nobody);
     composer.setConnected(true);
     composer.setChannel("c1");
 
@@ -139,7 +140,7 @@ test("the draft text is sent only after the selection, and only when it has one"
     const composer = createComposer((frame) => {
       sent.push(frame);
       return true;
-    });
+    }, nobody);
     composer.setConnected(true);
     composer.setChannel("c1");
 
@@ -157,5 +158,48 @@ test("the draft text is sent only after the selection, and only when it has one"
       if (sent.length >= 2 && outstanding.length === 0) break;
     }
     assert.deepEqual(sent.filter((frame) => frame.type === "message:send").map((frame) => frame.mediaId), ["up-a.png", "up-b.png"]);
+  });
+});
+
+test("typing @ offers the chat's people; picking one with Enter tags them instead of sending", async () => {
+  await withShims(async (nodes) => {
+    const { createComposer } = await import("../web/composer.ts");
+    const sent = [];
+    const people = [{ userId: `u${"1".repeat(32)}`, name: "小明" }, { userId: `u${"2".repeat(32)}`, name: "阿華" }];
+    const composer = createComposer((frame) => {
+      sent.push(frame);
+      return true;
+    }, { candidates: () => people, avatar: () => makeElement("avatar") });
+    composer.setConnected(true);
+    composer.setChannel("c1");
+    const draft = nodes.get("#draft");
+    const list = nodes.get("#mention-list");
+    const type = (value) => {
+      draft.value = value;
+      draft.selectionStart = draft.selectionEnd = value.length;
+      draft.fire("input");
+    };
+
+    type("嗨 a@");
+    assert.equal(list.hidden, true, "an @ inside a word is not a tag");
+    type("嗨 @阿");
+    assert.equal(list.hidden, false);
+    draft.fire("keydown", { key: "Enter", shiftKey: false, isComposing: true });
+    assert.equal(draft.value, "嗨 @阿", "Enter that confirms an IME candidate picks nothing");
+    draft.fire("keydown", { key: "Enter", shiftKey: false, isComposing: false });
+    assert.equal(draft.value, "嗨 @阿華 ");
+    assert.equal(list.hidden, true);
+    assert.equal(sent.length, 0, "picking does not send");
+
+    type(`${draft.value}@`);
+    draft.fire("keydown", { key: "Escape" });
+    assert.equal(list.hidden, true, "Escape closes the list and leaves the text alone");
+    type(`${draft.value}找不到的人`);
+    assert.equal(list.hidden, true, "a name nobody has closes the list");
+
+    type("嗨 @阿華 好");
+    draft.fire("keydown", { key: "Enter", shiftKey: false, isComposing: false });
+    const frame = sent.find((entry) => entry.type === "message:send");
+    assert.deepEqual(frame.mentions, [{ userId: people[1].userId, start: 2, end: 5 }]);
   });
 });
