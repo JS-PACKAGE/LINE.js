@@ -1088,6 +1088,8 @@ export class EvexLineProvider implements LineProvider {
         try {
           const { chatStatus } = await client.base.square.getSquareChatStatus({ request: { squareChatMid: channel.channelId } });
           counts.set(channel.channelId, Number(chatStatus.otherStatus.unreadMessageCount));
+          const members = Number(chatStatus.otherStatus.memberCount);
+          if (Number.isInteger(members) && members > 0) channel.memberCount = members;
           const last = chatStatus.lastMessage;
           if (last?.message && typeof last.message.id === "string") squareLast.set(channel.channelId, { raw: last, name: chatStatus.senderDisplayName });
         } catch {

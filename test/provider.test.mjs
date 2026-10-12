@@ -147,7 +147,7 @@ test("the chat list carries LINE's unread count, activity time and last message;
     },
     square: {
       async getSquareChatStatus() {
-        return { chatStatus: { lastMessage: { message: { id: "60", to: SQUARE, from: "p-member", contentType: "NONE", text: "社群最新", createdTime: at(60), contentMetadata: {} } }, senderDisplayName: "社群成員", otherStatus: { unreadMessageCount: 2 } } };
+        return { chatStatus: { lastMessage: { message: { id: "60", to: SQUARE, from: "p-member", contentType: "NONE", text: "社群最新", createdTime: at(60), contentMetadata: {} } }, senderDisplayName: "社群成員", otherStatus: { unreadMessageCount: 2, memberCount: 42 } } };
       },
     },
     relation: {
@@ -157,7 +157,7 @@ test("the chat list carries LINE's unread count, activity time and last message;
   });
   base.e2ee = { async decryptE2EEMessage(raw) { decrypts += 1; return { ...raw, text: "解開了" }; } };
   const { provider } = await activeProvider(base, {
-    async fetchJoinedChats() { return [{ mid: GROUP_A, name: "群A", raw: { type: "GROUP" } }, { mid: GROUP_B, name: "群B", raw: { type: "GROUP" } }]; },
+    async fetchJoinedChats() { return [{ mid: GROUP_A, name: "群A", raw: { type: "GROUP", extra: { groupExtra: { memberMids: { [ME]: 1, [mid(2)]: 1, [mid(3)]: 1 } } } } }, { mid: GROUP_B, name: "群B", raw: { type: "GROUP" } }]; },
     async fetchJoinedSquares() { return []; },
     async fetchJoinedSquareChats() { return [{ raw: { squareChatMid: SQUARE, squareMid: "s1", name: "社群聊天" } }]; },
   });
@@ -170,6 +170,7 @@ test("the chat list carries LINE's unread count, activity time and last message;
   assert.equal(byId[GROUP_B].lastMessage, undefined);
   assert.equal(byId[GROUP_B].lastMessageAt, Number(at(30)));
   assert.deepEqual([byId[SQUARE].unreadCount, byId[SQUARE].lastMessage.text, byId[SQUARE].lastMessage.senderName, byId[SQUARE].lastMessageAt], [2, "社群最新", "社群成員", Number(at(60))]);
+  assert.deepEqual([byId[GROUP_A].memberCount, byId[GROUP_B].memberCount, byId[SQUARE].memberCount, byId[friend].memberCount], [3, undefined, 42, undefined], "groups and OpenChats show how many members they have");
   await provider.fetchChannels();
   assert.equal(boxRequests, 2);
   assert.equal(decrypts, 1, "the same last message is not decrypted again on the next refresh");

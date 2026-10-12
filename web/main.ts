@@ -917,7 +917,7 @@ function renderMessages(anchor: "bottom" | "keep" | "prepend" = "bottom"): void 
     channelAvatar.dataset.key = avatarKey;
     channelAvatar.replaceChildren(...(channel ? [createAvatar(channel.pictureId, channel.name, { zoomable: true })] : []));
   }
-  channelMeta.textContent = channel ? KIND_LABEL[channel.kind] : "";
+  channelMeta.textContent = channel ? KIND_LABEL[channel.kind] + (channel.kind !== "user" && channel.memberCount ? ` · ${channel.memberCount} 人` : "") : "";
   if (searching) {
     renderSearch();
     return;
