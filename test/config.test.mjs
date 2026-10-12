@@ -60,3 +60,18 @@ test("the bot API is off by default and, once on, needs a non-empty list of vali
     await assert.rejects(load(bad), /CONFIG_INVALID/);
   }
 });
+
+test("the scam check is off until a Jev token is set; tokens that cannot be a header value are rejected", async (t) => {
+  const { root, config } = await fixture(t);
+  const load = async (jev) => {
+    await writeFile(join(root, "config.yaml"), stringify({ ...config, jev }));
+    return loadConfig(root);
+  };
+  assert.deepEqual((await loadConfig(root)).jev, { model: "jev-1.13.0" }, "the shipped template has no token");
+  assert.deepEqual((await load(undefined)).jev, { model: "jev-1.13.0" }, "configs written before the section existed keep working");
+  assert.deepEqual((await load({ token: null })).jev, { model: "jev-1.13.0" });
+  assert.deepEqual((await load({ token: "ts_live_abc123", model: "jev-latest" })).jev, { token: "ts_live_abc123", model: "jev-latest" });
+  for (const bad of [{ token: "has space" }, { token: "line\nbreak" }, { token: 42 }, { token: "x".repeat(513) }, { token: "ok", model: "jev 1" }, "token"]) {
+    await assert.rejects(load(bad), /CONFIG_INVALID/, JSON.stringify(bad));
+  }
+});

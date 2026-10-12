@@ -118,7 +118,7 @@ async function freePort() {
   return port;
 }
 
-async function start(t, { restore = true, readReceipts = true, api = {} } = {}) {
+async function start(t, { restore = true, readReceipts = true, api = {}, scam } = {}) {
   const port = await freePort();
   const root = await mkdtemp(join(tmpdir(), "linejs-hub-"));
   await writeFile(join(root, "index.html"), "<!doctype html><title>test</title>");
@@ -136,7 +136,7 @@ async function start(t, { restore = true, readReceipts = true, api = {} } = {}) 
   const media = new MediaService(1024, provider);
   const apiTokens = new ApiTokenStore(join(root, "api-token.json"));
   const web = createWebServer(config, root, media, apiTokens);
-  const hub = createHub({ server: web.server, authorizeUpgrade: web.authorizeUpgrade, authorizeApiUpgrade: web.authorizeApiUpgrade, apiTokens, config, login, provider, store, media, serverVersion: "test" });
+  const hub = createHub({ server: web.server, authorizeUpgrade: web.authorizeUpgrade, authorizeApiUpgrade: web.authorizeApiUpgrade, apiTokens, config, login, provider, store, media, serverVersion: "test", ...(scam ? { scam } : {}) });
   await new Promise((resolve) => web.server.listen(port, "127.0.0.1", resolve));
   t.after(async () => {
     hub.close();
@@ -771,6 +771,58 @@ test("reactions: only shown, real messages; a change (or taking it back) reaches
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(env.client.frames.filter((frame) => frame.type === "message:reactions").length, 4);
   assert.equal(env.store.get("701", CHAT).reactions, undefined);
+});
+
+test("scam check: only someone else's shown text is rated, its stored copy is what goes out, and failures stay generic", async (t) => {
+  const rated = [];
+  const scam = {
+    failure: undefined,
+    async analyzeScam(text) {
+      rated.push(text);
+      if (this.failure) throw this.failure;
+      return { probability: 0.91, tactic: { kind: "phishing", confidence: 0.7 } };
+    },
+  };
+  const env = await signedIn(t, { scam });
+  assert.deepEqual(env.client.frames.find((frame) => frame.type === "scam:state"), { type: "scam:state", enabled: true });
+  const base = { channelId: CHAT, channelKind: "group", senderName: "小明", contentType: "NONE", createdAt: 1 };
+  env.hub.handleMessage({ ...base, messageId: "801", senderId: "u1", text: "您的帳戶異常，請點連結驗證" }, "new");
+  env.hub.handleMessage({ ...base, messageId: "802", senderId: "u-me", text: "我自己說的" }, "new");
+  env.hub.handleMessage({ ...base, messageId: "803", senderId: "u1", contentType: "IMAGE", mediaId: "msg-803" }, "new");
+  env.hub.handleMessage({ ...base, messageId: "804", senderId: "u1", text: "等等收回" }, "new");
+  env.hub.handleUnsend(CHAT, "804");
+  for (const [requestId, messageId] of [["k1", "802"], ["k2", "803"], ["k3", "804"], ["k4", "999"]]) {
+    env.request({ type: "scam:check", requestId, chatId: CHAT, messageId });
+    assert.equal((await env.client.until((frame) => frame.requestId === requestId)).code, "INVALID_REQUEST", messageId);
+  }
+  assert.deepEqual(rated, [], "nothing is sent to TypeSafe for own, non-text, taken-back or unknown messages");
+
+  // Text the page puts in the frame is ignored: the server's own copy of message 801 is what gets rated.
+  env.request({ type: "scam:check", requestId: "k5", chatId: CHAT, messageId: "801", text: "安全的內容" });
+  assert.deepEqual(await env.client.until((frame) => frame.type === "scam:result"), {
+    type: "scam:result", requestId: "k5", chatId: CHAT, messageId: "801", analysis: { probability: 0.91, tactic: { kind: "phishing", confidence: 0.7 } },
+  });
+  assert.deepEqual(rated, ["您的帳戶異常，請點連結驗證"]);
+
+  scam.failure = new Error("status 401 key=ts_secret");
+  env.request({ type: "scam:check", requestId: "k6", chatId: CHAT, messageId: "801" });
+  const failure = await env.client.until((frame) => frame.requestId === "k6");
+  assert.equal(failure.code, "SCAM_CHECK_FAILED");
+  assert.ok(!JSON.stringify(failure).includes("ts_secret"));
+
+  scam.failure = undefined;
+  // Six checks spent above; the per-page budget is ten per minute.
+  for (let i = 0; i < 5; i += 1) env.request({ type: "scam:check", requestId: `r${i}`, chatId: CHAT, messageId: "801" });
+  await env.client.until((frame) => frame.requestId === "r3" && frame.type === "scam:result");
+  assert.equal((await env.client.until((frame) => frame.requestId === "r4")).code, "RATE_LIMITED");
+});
+
+test("without a Jev token pages are told the scam check is off and requests are refused before anything is sent", async (t) => {
+  const env = await signedIn(t);
+  assert.deepEqual(env.client.frames.find((frame) => frame.type === "scam:state"), { type: "scam:state", enabled: false });
+  env.hub.handleMessage({ messageId: "801", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "嗨", contentType: "NONE", createdAt: 1 }, "new");
+  env.request({ type: "scam:check", requestId: "k1", chatId: CHAT, messageId: "801" });
+  assert.equal((await env.client.until((frame) => frame.requestId === "k1")).code, "SCAM_CHECK_UNAVAILABLE");
 });
 
 test("in OpenChat the account's own member id is learned from its sends before anything there can be taken back", async (t) => {

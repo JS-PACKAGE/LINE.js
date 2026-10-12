@@ -8,7 +8,7 @@
 
 ## 定案用途與範圍
 
-完整目標包含 QR 掃碼登入／登出、session 復用、好友／群組／聊天室／社群清單、即時訊息及編輯事件、歷史分頁、文字／圖片／貼圖發送，以及圖片／GIF／影片／語音／貼圖的顯示與檔案下載。不提供公開部署、多帳號、通話或套件發布；尚未交付的功能以 Gate 狀態為準。
+完整目標包含 QR 掃碼登入／登出、session 復用、好友／群組／聊天室／社群清單、即時訊息及編輯事件、歷史分頁、文字／圖片／貼圖發送，以及圖片／GIF／影片／語音／貼圖的顯示與檔案下載；另可選用 TypeSafe Jev 對別人的文字訊息做詐騙機率分析。不提供公開部署、多帳號、通話或套件發布；尚未交付的功能以 Gate 狀態為準。
 
 本作品使用非官方 LINE API，可能造成帳號限制或封鎖。**請先用次要帳號驗證**，不要直接以主帳號測試。
 
@@ -80,7 +80,7 @@ npm start
 
 ## 設定
 
-`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`chat`、`update`、`api`、`limits`（`chat`、`update`、`api` 區段與 `limits.downloadMaxBytes`、`limits.uploadVideoMaxBytes` 可省略，舊設定檔照常運作；`api` 預設關閉）。
+`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`chat`、`update`、`api`、`jev`、`limits`（`chat`、`update`、`api`、`jev` 區段與 `limits.downloadMaxBytes`、`limits.uploadVideoMaxBytes` 可省略，舊設定檔照常運作；`api` 與 `jev` 預設關閉）。
 
 - 監聽 host：預設且建議 `127.0.0.1`。以 `config.yaml` 為準，可改為其他主機名稱、IPv4 或 IPv6；程式不再強制本機迴路。網頁沒有帳號密碼，能連到該位址的人就能操作已登入的 LINE 帳號，啟動時非本機位址會印出警告。**不限制 `Host` 標頭**：不論監聽哪個位址，用任何 IP 或網域名稱連入都可以（例如反向代理、區網名稱、通道服務）；`Origin`、cookie 與 Token 檢查不變，`Sec-Fetch-Site: cross-site` 的請求仍拒絕。代價是不再防 DNS rebinding（攻擊者網域解析到本機位址時，該網頁與自己同源）。
 - port：預設 `3789`，可調整；host 與 port 從 `config.yaml` 讀取，程式不得寫死。
@@ -91,6 +91,7 @@ npm start
 - 發送：每 WS 連線最多每秒 5 次；媒體上傳：圖片每檔最多 10MB（PNG／JPEG／GIF）、影片每檔最多 50MB（MP4／MOV，`limits.uploadVideoMaxBytes` 可調，上限 200MB；影片整份暫存於記憶體）、每連線每分鐘最多 5 次。
 - 收到的媒體與檔案：每個最多 50MB（`limits.downloadMaxBytes`），超過者只顯示類型標籤（檔案的下載會失敗）。
 - 機器人 API：預設關閉；`api.enabled`、`api.chats`（必填、至少一個聊天室 id）、`api.sendsPerMinute`（預設 20、≤120）。細節見[機器人 API](#機器人-apiapiws)。
+- 詐騙訊息分析（選用）：在 `jev.token` 填入 [TypeSafe](https://console.typesafe.ai/keys) 的 API 金鑰並重啟後，網頁對**別人傳來的文字訊息**按右鍵（觸控長按）會出現「詐騙機率分析」，以 TypeSafe 的 Jev 決策模型估計詐騙機率（> 80% 高度疑似、≤ 20% 不太像，中間為無法確定）與最接近的手法。只有點選的那一則文字會送到 `api.typesafe.ai`（伺服器取自己快取的內容，不採用網頁傳來的文字；不送寄件者或聊天室），每次依 TypeSafe 計費、每個網頁連線每分鐘最多 10 次。金鑰只留在伺服器，不送網頁、不入日誌；`jev.model` 預設固定 `jev-1.13.0`。結果是模型估計，僅供參考。`token` 留空或省略即停用。
 
 ## 通訊協定
 
@@ -124,6 +125,8 @@ npm start
 | Client → Server | `channels:refresh` / `ping` → `pong` | 重新載入頻道／連線保活（伺服器回 `pong`，網頁以此判斷連線仍通） |
 | Server → Client | `api:state` / `api:token` | 機器人 API 狀態（只給網頁）／剛產生的 Token（只送給要求的那個連線，僅此一次） |
 | Client → Server | `api:token:create` / `api:token:revoke` | 產生或撤銷機器人 Token（僅網頁連線可用，機器人不行） |
+| Server → Client | `scam:state` / `scam:result` | 是否已設定 Jev 金鑰（只給網頁，連線即送）／分析結果 `{ requestId, chatId, messageId, analysis: { probability, tactic? } }`（只送給要求的連線） |
+| Client → Server | `scam:check` | `{ requestId, chatId, messageId }`：分析別人傳來、伺服器已顯示且未收回的文字訊息（僅網頁、每連線每分鐘 10 次；未設定金鑰回 `SCAM_CHECK_UNAVAILABLE`，失敗回 generic `SCAM_CHECK_FAILED`） |
 
 HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、收到的圖片／影片／語音；支援 Range）與 `POST /media/upload`（圖片／影片上傳）皆需瀏覽器 cookie 與同源。WS 不傳媒體位元組。
 
@@ -160,7 +163,7 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 | 服務 → 機器人 | `message`、`message:edit`、`message:unsend` | 只有 `api.chats` 內聊天室的**即時**訊息、編輯與收回；包含你自己發的 |
 | 服務 → 機器人 | `sent`、`history`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`…） |
 
-其餘一律回 `UNKNOWN_TYPE`：沒有登入／登出、`chat:read`（已讀回報）、`message:unsend`（收回）、`message:react`（回應）、`channels:refresh`、貼圖清單、Token 管理。**不重播舊訊息**（機器人從「現在」開始，不會重複回應歷史；要歷史請用 `history:fetch`）；不給 `read`、`update:available`、`api:state`；圖片／影片等媒體位元組也無法取得（機器人只看到訊息的 `contentType`）。
+其餘一律回 `UNKNOWN_TYPE`：沒有登入／登出、`chat:read`（已讀回報）、`message:unsend`（收回）、`message:react`（回應）、`scam:check`（詐騙分析）、`channels:refresh`、貼圖清單、Token 管理。**不重播舊訊息**（機器人從「現在」開始，不會重複回應歷史；要歷史請用 `history:fetch`）；不給 `read`、`update:available`、`api:state`、`scam:state`；圖片／影片等媒體位元組也無法取得（機器人只看到訊息的 `contentType`）。
 
 **頻率與風險**
 - 每個連線受 `limits.sendsPerSecond`（≤5）限制，且所有機器人合計每分鐘不超過 `api.sendsPerMinute`；超過回 `RATE_LIMITED`。
@@ -293,7 +296,9 @@ npm audit
 
 測試使用 `node --test` 與 Mock Provider；Mock 不代替真實 LINE 驗收。Gate 1 需要次要帳號掃碼後 60 秒內收到一則真實訊息，Gate 2–4 另驗證網頁同步、歷史、發送與媒體。全部 Gate 及驗收條件見 [PLAN.md](PLAN.md)。
 
-本次修改已驗證：typecheck、build、193 項測試全部通過，`npm audit --audit-level=high` 無漏洞。無頭且以 `--mute-audio` 禁止音訊輸出的 Chromium，使用隔離 provider 驗證搜尋排序與即時更新、初次歷史失敗重試、回應更新保留圖片 DOM、登出清理；另啟動實際 `dist/main.js` 並確認未登入畫面。未操作真實 LINE 帳號，這些結果不代表 Gate 通過。以下保留先前版本的實測紀錄：
+本次修改（詐騙訊息分析）已驗證：typecheck、build、200 項測試全部通過，`npm audit --audit-level=high` 無漏洞；以無頭 Chromium 與隔離 provider（假的分析器）確認右鍵選單只對別人的文字訊息出現「詐騙機率分析」、結果對話框內容與單一按鈕，以及之後其他確認框仍有取消鍵；以無效金鑰呼叫真實 TypeSafe 端點得到 401（端點與認證方式正確）。**未驗證**：以有效金鑰取得真實分析結果（沒有金鑰）、真實 LINE 帳號上的操作。
+
+前一次修改已驗證：typecheck、build、193 項測試全部通過，`npm audit --audit-level=high` 無漏洞。無頭且以 `--mute-audio` 禁止音訊輸出的 Chromium，使用隔離 provider 驗證搜尋排序與即時更新、初次歷史失敗重試、回應更新保留圖片 DOM、登出清理；另啟動實際 `dist/main.js` 並確認未登入畫面。未操作真實 LINE 帳號，這些結果不代表 Gate 通過。以下保留先前版本的實測紀錄：
 
 已驗證：typecheck、build、172 項測試、`npm audit` 無 high。真實 LINE 帳號：session 復用、頻道清單、好友／群組／社群的即時訊息、talk 歷史分頁（無重複、有序、可翻到底）、OpenChat 歷史分頁、大頭照與非好友名稱查詢、OpenChat 圖片下載與顯示、已擁有貼圖包列表（7 包、含繁中名稱與圖示）、社群訊息的管理員／共同管理員角色辨識、網頁上重新掃碼登入（服務日誌出現 QR 登入流程，換成另一個帳號）。瀏覽器以假 provider 驗證：往上翻頁、輸入與發送流程、貼上圖片預覽並送出（含接著送文字）、拒絕貼上影片、已擁有貼圖面板（分頁、點選即送）、圖片上傳、頭像與備援字母、已讀／未讀標示、已讀回報的觸發、徽章與完整暱稱不斷行、時間在訊息後與 24 小時制（00:05 不顯示 24:05）、圖片放大、影片（Range）與語音播放、觸控長按開啟訊息選單、確認對話框、發送後捲到最底（含回覆者 id 與自己不同的社群情況）與收到貼圖時維持在底部、新版本橫幅（關閉後記住）、服務版本與頁面版本不同時的重新整理提示、服務重啟後舊分頁自動重新載入、聊天清單的最後訊息預覽與時間及即時重新排序、「↓ N 則新訊息」按鈕（計數與點擊回到最底）、手機已讀（`chat:checked`）清除頁面自己累計與 LINE 給的未讀數、鍵盤操作（↑↓／Home／End／Enter、Ctrl／⌘＋K）、心跳（凍結服務程序後頁面判定斷線並顯示覆蓋，恢復後自動重連；一般 ping 推遲時回到前景的探測仍能發現；主控台與服務日誌的斷線記錄）、漏接的 Promise rejection 只記錄不中止、未捕捉例外時乾淨關閉並釋放 `linejs.pid`。**機器人 API、CLI 與其他新增項目**：以假 provider 的自動測試涵蓋認證（缺 Token／錯誤 Token／帶 `Origin`／錯誤 `Host`）、影格白名單、聊天室範圍、不重播舊訊息、全域發送上限、最多 4 連線、換／撤銷 Token 立即斷線、Token 只存雜湊與檔案權限、CLI 的 `login`（QR 與 PIN 只在終端機）／`logout`／`token`／`token --revoke`（撤銷、無 Token 時不動作、`--revoke` 與其他指令搭配視為用法錯誤）；CLI 對真實服務只跑了無副作用的 `login`（已登入時回報狀態）與未啟用 API 時的 `token` 錯誤；「XX 新增 OO 至群組」以真實帳號的歷史訊息驗證解析與名稱。**尚未驗證**（需要對真實聯絡人產生副作用或對應的真實訊息）：機器人 API 實際對 LINE 發送與接收即時訊息、CLI `logout` 與真實 QR 掃描登入流程、系統訊息的即時事件路徑（只驗證了歷史）、綁定非本機位址的實際使用、真實的文字／貼圖／圖片發送、真實的已讀回報（`sendChatChecked`／OpenChat `markAsRead` 對 LINE 的效果）、LINE 端登出的伺服器確認、E2EE 圖片的接收解密、1:1 已讀事件欄位格式（已知形狀不符時會忽略）、GIF 與影片的真實來源、listen 中斷後的退避重連、真實帳號的聊天摘要（`getMessageBoxes` 的 `lastMessages` 與社群 `getSquareChatStatus.lastMessage`；欄位缺漏時只是不顯示預覽）、`SEND_CHAT_CHECKED` 的實際欄位（只採用 `param1` 且必須是已知聊天室，不合即忽略）與群組／個人資料變更事件觸發的重新整理、在 Edge 等瀏覽器背景閒置時斷線的實際原因（新增的斷線記錄可用來釐清）、真實檔案的下載（含 E2EE 檔案解密）、真實回應的送出與取消（`talk.react`／`cancelReaction`、社群 `reactToMessage` 的 `UNDO`）以及社群 `NOTIFIED_UPDATE_MESSAGE_STATUS` 的實際內容；`npm run update` 的完整流程只以暫時的 git 倉庫與假 `npm` 驗證，尚未對真實的新版本跑過（倉庫目前最新 Release 為 v0.9.0，更新通知對真實 GitHub Release API 的查詢已實測）。
 

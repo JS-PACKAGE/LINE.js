@@ -109,14 +109,14 @@ export function parseChatRead(frame: Record<string, unknown>): Parsed<ReadReques
   return { ok: true, value: { chatId, messageId } };
 }
 
-export interface UnsendRequest {
+export interface MessageRequest {
   requestId: string;
   chatId: string;
   messageId: string;
 }
 
-/** "Take back my message": LINE's numeric message id in a valid chat. */
-export function parseUnsend(frame: Record<string, unknown>): Parsed<UnsendRequest> {
+/** A request about one message ("take back my message", "rate this message"): LINE's numeric message id in a valid chat. */
+export function parseMessageRequest(frame: Record<string, unknown>): Parsed<MessageRequest> {
   const base = header(frame);
   if (!base) return { ok: false, ...(requestIdOf(frame) ? { requestId: requestIdOf(frame)! } : {}) };
   if (typeof frame.messageId !== "string" || !MESSAGE_ID.test(frame.messageId)) return { ok: false, requestId: base.requestId };

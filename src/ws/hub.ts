@@ -5,19 +5,22 @@ import type { Config } from "../config.js";
 import type { LoginController } from "../line/login.js";
 import type { LineProvider } from "../line/provider.js";
 import type { ApiTokenStore } from "../http/apiToken.js";
+import type { ScamAnalyzer } from "../jev/client.js";
 import { SlidingWindowLimiter } from "../limit.js";
 import type { MediaService } from "../media/service.js";
 import type { Channel, ChannelKind, Message, Reactions, ReadPosition } from "../model/dto.js";
 import type { UpdateInfo } from "../update/checker.js";
 import { withMyReaction, type ChatStore } from "../model/store.js";
 import { PROTOCOL_VERSION, type ClientFrame, type ListenState, type ServerFrame } from "./protocol.js";
-import { parseChatRead, parseHistory, parseReact, parseSend, parseUnsend, requestIdOf } from "./requests.js";
+import { parseChatRead, parseHistory, parseMessageRequest, parseReact, parseSend, requestIdOf } from "./requests.js";
 
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const HISTORY_PER_SECOND = 10;
 const NEW_CHANNEL_REFRESH_MS = 1000;
 const MAX_BOT_CONNECTIONS = 4;
 const READ_RANGE_FRESH_MS = 10_000;
+// Each check is a paid call to TypeSafe made on a user's click: plenty for that, too few for a runaway script.
+const SCAM_CHECKS_PER_MINUTE = 10;
 // A connection that has not answered a ping by the next round is gone (a sleeping laptop, a dropped
 // network): it is closed so broadcasts stop piling up behind it and the page can reconnect.
 const HEARTBEAT_MS = 30_000;
@@ -38,6 +41,8 @@ export interface HubOptions {
   /** Bot endpoint (/api/ws): Host, no Origin and a valid bearer token. */
   authorizeApiUpgrade: (request: IncomingMessage) => boolean;
   apiTokens: ApiTokenStore;
+  /** Set when config.yaml has a Jev token: enables `scam:check`. */
+  scam?: ScamAnalyzer;
 }
 
 export interface Hub {
@@ -75,6 +80,8 @@ const GENERIC = {
   API_FAILED: "無法更新 API Token，請稍後重試。",
   UNSEND_FAILED: "無法收回這則訊息，請稍後重試。",
   REACT_FAILED: "無法送出回應，請稍後重試。",
+  SCAM_CHECK_UNAVAILABLE: "未啟用詐騙訊息分析。",
+  SCAM_CHECK_FAILED: "詐騙機率分析失敗，請稍後重試。",
 } as const;
 
 function updateFrame(info: UpdateInfo): ServerFrame {
@@ -82,7 +89,7 @@ function updateFrame(info: UpdateInfo): ServerFrame {
 }
 
 export function createHub(options: HubOptions): Hub {
-  const { server, authorizeUpgrade, authorizeApiUpgrade, config, login, provider, store, media, serverVersion, apiTokens } = options;
+  const { server, authorizeUpgrade, authorizeApiUpgrade, config, login, provider, store, media, serverVersion, apiTokens, scam } = options;
   const wss = new WebSocketServer({ noServer: true, maxPayload: config.limits.frameMaxBytes });
   const botWss = new WebSocketServer({ noServer: true, maxPayload: config.limits.frameMaxBytes });
   const botScope: ReadonlySet<string> = new Set(config.api.chats);
@@ -324,7 +331,7 @@ export function createHub(options: HubOptions): Hub {
 
   /** Pages only. Only this account's own messages, as far as this server can tell, are ever sent to LINE. */
   async function handleUnsendRequest(socket: WebSocket, frame: Record<string, unknown>): Promise<void> {
-    const parsed = parseUnsend(frame);
+    const parsed = parseMessageRequest(frame);
     if (!parsed.ok) return fail(socket, "INVALID_REQUEST", parsed.requestId);
     const { requestId, chatId, messageId } = parsed.value;
     const channel = store.channelOf(chatId);
@@ -365,6 +372,31 @@ export function createHub(options: HubOptions): Hub {
       if (account !== generation) return;
       logFailure("REACT_FAILED", error);
       fail(socket, "REACT_FAILED", requestId);
+    }
+  }
+
+  /**
+   * Pages only. The text sent to TypeSafe is the server's own copy of a message it has shown, from
+   * someone else: a page cannot use this to send arbitrary text out, or to rate its own messages.
+   */
+  async function handleScamCheck(socket: WebSocket, frame: Record<string, unknown>): Promise<void> {
+    const parsed = parseMessageRequest(frame);
+    if (!parsed.ok) return fail(socket, "INVALID_REQUEST", parsed.requestId);
+    const { requestId, chatId, messageId } = parsed.value;
+    if (!scam) return fail(socket, "SCAM_CHECK_UNAVAILABLE", requestId);
+    if (login.state !== "ready" || !store.channelOf(chatId)) return fail(socket, "UNKNOWN_CHAT", requestId);
+    const message = store.get(messageId, chatId);
+    const mine = message !== undefined && (message.senderId === provider.getProfile().userId || message.senderId === ownSquareSenders.get(chatId));
+    if (!message?.text || mine || message.unsent || message.decryptFailed || message.contentType === "CHATEVENT") return fail(socket, "INVALID_REQUEST", requestId);
+    const account = generation;
+    try {
+      const analysis = await scam.analyzeScam(message.text);
+      if (account !== generation || login.state !== "ready") return;
+      send(socket, { type: "scam:result", requestId, chatId, messageId, analysis });
+    } catch (error) {
+      if (account !== generation) return;
+      logFailure("SCAM_CHECK_FAILED", error);
+      fail(socket, "SCAM_CHECK_FAILED", requestId);
     }
   }
 
@@ -572,11 +604,13 @@ export function createHub(options: HubOptions): Hub {
     // Per connection: a runaway script must not be able to hammer LINE through us.
     const sendLimiter = new SlidingWindowLimiter(config.limits.sendsPerSecond, 1000);
     const historyLimiter = new SlidingWindowLimiter(HISTORY_PER_SECOND, 1000);
+    const scamLimiter = new SlidingWindowLimiter(SCAM_CHECKS_PER_MINUTE, 60_000);
     send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion });
     if (update) send(socket, updateFrame(update));
     send(socket, { type: "auth:state", state: login.state });
     send(socket, { type: "status", state: status });
     send(socket, apiState());
+    send(socket, { type: "scam:state", enabled: scam !== undefined });
     if (login.state === "ready") sendReady(socket);
 
     socket.on("message", (data, isBinary) => {
@@ -605,6 +639,10 @@ export function createHub(options: HubOptions): Hub {
           // Visible to the other side like a send, so it shares the send budget.
           if (!sendLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
           else void handleReactRequest(socket, frame as Record<string, unknown>);
+          return;
+        case "scam:check":
+          if (!scamLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else void handleScamCheck(socket, frame as Record<string, unknown>);
           return;
         case "chat:read":
           // Silent on purpose (see handleChatRead); the shared limiter keeps a script from hammering LINE.

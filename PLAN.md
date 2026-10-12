@@ -1,4 +1,4 @@
-# LINE.js 本機 LINE 網頁客戶端 企劃書 v1.14
+# LINE.js 本機 LINE 網頁客戶端 企劃書 v1.15
 
 一句話：以 **WebSocket** 為即時通道、以 **@evex/linejs v3.4.2** 為 LINE 連線核心的本機 TypeScript 網頁客戶端（**LINE.js**）——Node 後端以 QR 掃碼登入 LINE，將訊息與頻道清單經 ws 推送到監聽 `127.0.0.1:3789` 的網頁前端。
 
@@ -35,7 +35,7 @@
 - 多帳號、多使用者、帳號系統與權限。
 - 檔案（FILE）的預覽與播放（v1.14 裁示：可下載，見下）。
 - 網頁端發送檔案、發送影片／語音；訊息編輯送出（linejs 僅支援接收 `message:edit`）、收回他人訊息。
-- 通話（linejs 具 call 能力但不在範圍）、社群管理操作（邀請／踢人／公告）、Timeline／Moa 相簿、貼圖商店、自動回覆／AI Agent 整合。
+- 通話（linejs 具 call 能力但不在範圍）、社群管理操作（邀請／踢人／公告）、Timeline／Moa 相簿、貼圖商店、自動回覆／AI Agent 整合（v1.15 的詐騙機率分析只在使用者點選時估計單則訊息，不自動處理訊息，不屬此項）。
 
 ### 硬性要求
 
@@ -144,6 +144,8 @@
 
 > 實作補完（協定版本仍為 2）：登出／換帳號以 session generation 作廢歷史、發送、回應、收回、已讀與頻道查詢的舊結果；歷史重新載入也同步清除已取消的回應。OpenChat 歷史採同聊天室 single-flight、時間＋訊息 id 錨點，快取最多 5 個聊天室各 5000 則、10 分鐘，合併即時訊息與狀態，過期時重新取得回應，僅已提供頁面的訊息授權媒體。網頁搜尋維持即時更新並跨聊天室依時間排序；初次歷史失敗可重試，回應更新不重建媒體 DOM，登出清除搜尋、私人畫面與通知。隔離測試與無頭靜音瀏覽器已驗證；尚未對本次變動重新進行真實 LINE Gate 驗收。
 
+> v1.15（小語裁示：JEV 詐騙分析，協定版本仍為 2）：`config.yaml` 新增選用區段 `jev`（`token`：TypeSafe API 金鑰，有值才啟用；`model`：預設 `jev-1.13.0`）。新增 Server → Client `scam:state`（`{ enabled }`，連線即送、只給網頁，不含金鑰）與 `scam:result`（`{ requestId, chatId, messageId, analysis: { probability, tactic?: { kind, confidence } } }`，只送給要求的連線），Client → Server `scam:check`（`{ requestId, chatId, messageId }`，僅網頁、每連線每分鐘 10 次）。伺服器只接受已顯示、非本帳號、未收回、已解密、非系統訊息的文字訊息，以自己快取的文字經 `src/jev/` 呼叫 `POST https://api.typesafe.ai/v1/systemone`（Noul 題問是否為詐騙、Choice 題問最接近的手法；題目用英文，因官方說明英文準確度最佳），回應 fail-closed；未設定金鑰回 `SCAM_CHECK_UNAVAILABLE`，失敗回 `SCAM_CHECK_FAILED`。網頁對別人的文字訊息右鍵出現「詐騙機率分析」，以官方範例門檻分級（> 0.8 高度疑似、≤ 0.2 不太像、其間無法確定）並註明為模型估計、文字已送至 TypeSafe。尚未以有效金鑰實測真實分析結果。
+
 ### Server → Client
 
 | type | 負載 |
@@ -168,6 +170,8 @@
 | `sent` | `{ requestId, messageId }` |
 | `api:state` | `{ enabled, chats: string[], createdAt? }`（只給網頁連線；`createdAt` 為目前 Token 的建立時間，無 Token 則省略） |
 | `api:token` | `{ token }`（新 Token；**只送給發起 `api:token:create` 的連線、僅此一次**，不入日誌） |
+| `scam:state` | `{ enabled }`（是否設定 `jev.token`；只給網頁，不含金鑰） |
+| `scam:result` | `{ requestId, chatId, messageId, analysis: { probability, tactic?: { kind, confidence } } }`（只送給發起 `scam:check` 的連線） |
 | `error` | `{ requestId?, code, message }`（generic） |
 | `status` | `{ state: "starting"｜"listening"｜"reconnecting" }` |
 
@@ -179,6 +183,7 @@
 | `history:fetch` | `{ requestId, chatId, limit?, before? }` |
 | `message:send` | `{ requestId, chatId, text?, mediaId?, sticker?: { packageId, stickerId } }` |
 | `message:react` | `{ requestId, chatId, messageId, reaction: "NICE"｜"LOVE"｜"FUN"｜"AMAZING"｜"SAD"｜"OMG"｜null }`（僅網頁，與 `message:send` 共用頻率上限） |
+| `scam:check` | `{ requestId, chatId, messageId }`（僅網頁、每連線每分鐘 10 次；只接受別人傳來、已顯示、未收回的文字訊息） |
 | `channels:refresh` | `{}` |
 | `api:token:create` / `api:token:revoke` | `{}`（產生或撤銷機器人 Token，並中斷所有機器人連線） |
 | `ping` | `{}` |
@@ -231,6 +236,7 @@ Media   { mediaId, mime, size, kind: "image"｜"sticker"｜"video"｜"audio" }
 9. 依賴釘選版本；`npm audit` 無 high 以上（Gate 4 驗收）。
 10. 解密／解析失敗 **fail-closed**：顯示佔位，不降級猜測內容。
 11. 機器人 API（v1.11）：預設關閉；Bearer Token（只存雜湊、一次性顯示）、不得帶 `Origin`、影格白名單、`api.chats` 範圍、全域每分鐘發送上限、最多 4 連線、換／撤銷 Token 立即斷線。
+12. 詐騙機率分析（v1.15）：`jev.token` 有值才啟用；金鑰只作為送往 TypeSafe 的 Bearer 標頭、不送網頁、不入日誌；只在使用者點選時送出伺服器快取的那一則他人文字；僅網頁、每連線每分鐘 10 次；回應 fail-closed、錯誤 generic。
 
 ---
 

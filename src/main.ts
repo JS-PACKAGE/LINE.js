@@ -5,6 +5,7 @@ import { SessionStorage } from "./line/session.js";
 import { EvexLineProvider } from "./line/provider.js";
 import { LoginController } from "./line/login.js";
 import { ApiTokenStore } from "./http/apiToken.js";
+import { JevClient } from "./jev/client.js";
 import { createWebServer } from "./http/server.js";
 import { MediaService } from "./media/service.js";
 import { ChatStore } from "./model/store.js";
@@ -55,6 +56,7 @@ async function main(): Promise<void> {
     provider,
     store,
     serverVersion: manifest.version,
+    ...(config.jev.token ? { scam: new JevClient({ token: config.jev.token, model: config.jev.model }) } : {}),
   });
   await new Promise<void>((ready, reject) => {
     web.server.once("error", reject);
@@ -77,6 +79,7 @@ async function main(): Promise<void> {
     console.warn("警告：監聽位址不是本機迴路。能連到此位址的人都能開啟網頁並操作已登入的 LINE 帳號，請確認網路環境可信。");
   }
   if (config.api.enabled) console.info(`機器人 API：ws://${config.server.host}:${config.server.port}/api/ws（Token 以 npm run cli -- token 產生）`);
+  if (config.jev.token) console.info(`詐騙訊息分析：已啟用（TypeSafe ${config.jev.model}；只在你對訊息按右鍵選擇分析時送出該則文字）`);
   console.info("請使用次要帳號；QR 與 PIN 僅於網頁顯示。");
   void login.restore();
   const updates = config.update.check ? new UpdateChecker({ current: manifest.version, onUpdate: (info) => hub.setUpdate(info) }) : undefined;

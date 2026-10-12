@@ -130,6 +130,15 @@ approval, and a regression against any of them is treated as a vulnerability.
 | A bot may send only `message:send` (text only), `history:fetch` and `ping`; everything else, including login, logout, read receipts, stickers and media, is `UNKNOWN_TYPE`. It can reach only the chats in `api.chats` (anything else is `UNKNOWN_CHAT`), receives only live messages (no replay, no read positions) and never receives media bytes. | `src/ws/hub.ts`, `src/ws/requests.ts` |
 | Sending is limited per connection (`limits.sendsPerSecond`, at most 5/s) and across all bots (`api.sendsPerMinute`, at most 120/min). | `src/ws/hub.ts`, `src/limit.ts` |
 
+### Scam check (TypeSafe Jev, off by default)
+
+| Rule | Enforcement |
+|---|---|
+| The check exists only when `jev.token` is set in `config.yaml`; an empty or missing token disables it. The token must be printable ASCII without spaces (it goes into an HTTP header as is). | `src/config.ts` |
+| The token is used only as the `Authorization: Bearer` header to `https://api.typesafe.ai/v1/systemone`, with redirects refused. It is never sent to the page (pages only learn `scam:state { enabled }`), logged, or included in errors; a failed call logs only `SCAM_CHECK_FAILED` with the HTTP status. | `src/jev/client.ts`, `src/ws/hub.ts` |
+| Only an explicit user action sends anything: `scam:check` is page-only (bots get `UNKNOWN_TYPE`) and limited to 10 per minute per connection. The server sends **its own cached text** of a message it has shown, from someone other than this account, that was not taken back, decrypted and not a system message; text supplied by the page is ignored, so the endpoint cannot be used to send arbitrary text out. Nothing else (sender, chat, other messages) is sent. | `src/ws/hub.ts`, `src/ws/requests.ts` |
+| The answer is parsed fail-closed: without a probability between 0 and 1 there is no result, and an unknown scam kind is dropped. The result goes only to the connection that asked. | `src/jev/client.ts`, `src/ws/hub.ts` |
+
 ### Secrets and credentials
 
 | Rule | Enforcement |
@@ -235,6 +244,10 @@ Be aware of these. They are not bugs, and reports that only restate them will be
    extension or a compromised browser profile can read it. Desktop notifications are off by default;
    when turned on, sender names and message previews appear in the operating system's notification
    center, outside the page.
+9. **The scam check sends message text to a third party.** With `jev.token` set, each check sends that
+   message's text to TypeSafe, subject to TypeSafe's own terms and data handling, and is billed to the
+   key. The result is a model estimate that can be wrong in both directions (and a scammer can word a
+   message to look harmless); it is advice, not a verdict.
 
 ## 7. Hardening checklist for users
 
@@ -243,6 +256,9 @@ Be aware of these. They are not bugs, and reports that only restate them will be
 - Leave `api.enabled` off unless you run a bot. If you do, list only the chats it needs in
   `api.chats`, keep the token out of git and shell history, regenerate it if it may have leaked
   (`npm run cli -- token`; `npm run cli -- token --revoke` revokes it without issuing a new one), and keep `api.sendsPerMinute` low.
+- Leave `jev.token` empty unless you want the scam check. The key is stored in plaintext in
+  `config.yaml` (git-ignored); keep that file private and revoke the key in the TypeSafe console if it
+  may have leaked.
 - Use a secondary LINE account and review LINE's "logged-in devices" list periodically; remove the
   device if you stop using LINE.js.
 - Keep `session.json` out of backups you do not control, and out of git. If it may have leaked, log out

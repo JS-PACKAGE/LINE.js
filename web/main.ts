@@ -13,7 +13,7 @@ import { registerServiceWorker } from "./pwa.js";
 import { createUpdateNotice } from "./update.js";
 import { copyImage, downloadMedia } from "./save.js";
 import { createNotifier } from "./notify.js";
-import { CONTENT_LABEL, cardTitle, dayLabel, formatBytes, formatTime, listTime, previewOf } from "./format.js";
+import { CONTENT_LABEL, cardTitle, dayLabel, formatBytes, formatTime, listTime, previewOf, scamSummary } from "./format.js";
 
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const login = $<HTMLElement>("#login");
@@ -104,6 +104,9 @@ let searchTimer: ReturnType<typeof setTimeout> | undefined;
 interface HistoryState { cursor?: string; hasMore: boolean; loading: boolean; loaded: boolean; failed: boolean }
 let historyOf: Record<string, HistoryState> = {};
 let pendingHistory: Record<string, string> = {};
+// The service has a Jev token (scam:state), and the scam checks this page is waiting on.
+let scamCheck = false;
+let pendingScam = new Set<string>();
 
 function send(frame: ClientFrame): boolean {
   if (socket?.readyState !== WebSocket.OPEN) return false;
@@ -173,6 +176,7 @@ function applyAuthState(state: AuthState): void {
     filter.value = "";
     historyOf = {};
     pendingHistory = {};
+    pendingScam = new Set();
     reportedRead = {};
     readPositions = {};
     mySquareSenders = {};
@@ -662,8 +666,26 @@ function openMessageMenu(message: Message, x: number, y: number): void {
     items.push({ label: isImage ? "下載圖片" : "下載影片", action: () => { void downloadMedia(mediaId).catch(() => {}); } });
   }
   if (reactable(message)) items.push({ label: "回應…", action: () => openReactionMenu(message, x, y) });
+  // Someone else's text only: the service enforces the same and sends that text, not ours, to TypeSafe.
+  if (scamCheck && message.text && !isMine(message) && !message.unsent && !message.decryptFailed && message.contentType !== "CHATEVENT" && /^\d{1,24}$/.test(message.messageId)) {
+    items.push({ label: "詐騙機率分析", action: () => {
+      const requestId = crypto.randomUUID();
+      if (send({ type: "scam:check", requestId, chatId: message.channelId, messageId: message.messageId })) pendingScam.add(requestId);
+    } });
+  }
   if (isMine(message) && !message.unsent && /^\d{1,24}$/.test(message.messageId)) items.push({ label: "收回", action: () => { void takeBack(message); } });
   showMenu(x, y, items);
+}
+
+/** Results arrive whenever TypeSafe answers: wait for any dialog already open (one <dialog> serves them all). */
+function showScamDialog(text: string): void {
+  const dialog = $<HTMLDialogElement>("#confirm");
+  if (dialog.open) {
+    // Logging out closes that dialog too: a result for the old session is then dropped.
+    dialog.addEventListener("close", () => { if (signedIn) showScamDialog(text); }, { once: true });
+    return;
+  }
+  void confirmDialog({ title: "詐騙機率分析", message: text, confirmLabel: "關閉", notice: true });
 }
 
 const REACTION_FACES: Record<ReactionKind, { face: string; name: string }> = {
@@ -1049,6 +1071,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       liveCounted = new Set();
       historyOf = {};
       pendingHistory = {};
+      pendingScam = new Set();
       reportedRead = {};
       return;
     case "update:available":
@@ -1166,6 +1189,13 @@ async function handle(frame: ServerFrame): Promise<void> {
     case "stickers":
       composer.handleStickers(frame.requestId, frame.packages);
       return;
+    case "scam:state":
+      scamCheck = frame.enabled;
+      return;
+    case "scam:result":
+      if (!pendingScam.delete(frame.requestId)) return;
+      showScamDialog(scamSummary(frame.analysis));
+      return;
     case "pong":
       clearTimeout(pongTimer);
       return;
@@ -1184,6 +1214,10 @@ async function handle(frame: ServerFrame): Promise<void> {
           state.failed = true;
         }
         if (channelId === selected) renderMessages("keep");
+        return;
+      }
+      if (frame.requestId && pendingScam.delete(frame.requestId)) {
+        showScamDialog(frame.message);
         return;
       }
       if (composer.handleError(frame.requestId, frame.message)) return;

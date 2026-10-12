@@ -161,7 +161,7 @@ dialog#confirm { border: 1px solid var(--line); border-radius: 16px; padding: 0;
 dialog#confirm::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
 .dialog-body { padding: 24px; display: grid; gap: 10px; }
 .dialog-body h2 { margin: 0; font-size: 19px; }
-.dialog-body p { margin: 0; color: var(--muted); }
+.dialog-body p { margin: 0; color: var(--muted); white-space: pre-line; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 12px; }
 .dialog-actions button { height: 40px; min-width: 84px; }
 #confirm-ok.danger { background: #b3261e; }

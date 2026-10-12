@@ -1,4 +1,4 @@
-import type { AuthState, Channel, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
+import type { AuthState, Channel, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, ScamAnalysis, StickerPackage } from "../model/dto.js";
 
 export type ListenState = "starting" | "listening" | "reconnecting";
 
@@ -35,6 +35,10 @@ export type ServerFrame =
   | { type: "api:state"; enabled: boolean; chats: string[]; createdAt?: number }
   /** A freshly made bot token: shown once, only to the connection that asked (the CLI), never repeated or stored in clear. */
   | { type: "api:token"; token: string }
+  /** Whether config.yaml has a Jev token, i.e. whether `scam:check` is available. Pages only; the token itself never leaves the server. */
+  | { type: "scam:state"; enabled: boolean }
+  /** Answer to `scam:check`, only to the connection that asked. */
+  | { type: "scam:result"; requestId: string; chatId: string; messageId: string; analysis: ScamAnalysis }
   /** Answer to a client `ping`: lets the page tell a silent connection from a dead one. */
   | { type: "pong" }
   | { type: "error"; requestId?: string; code: string; message: string };
@@ -49,6 +53,8 @@ export type ClientFrame =
   | { type: "message:unsend"; requestId: string; chatId: string; messageId: string }
   /** Set this account's reaction (`null` takes it back). Pages only. */
   | { type: "message:react"; requestId: string; chatId: string; messageId: string; reaction: ReactionKind | null }
+  /** Rate a received text message (someone else's, shown by this server) with Jev. Pages only. */
+  | { type: "scam:check"; requestId: string; chatId: string; messageId: string }
   | { type: "stickers:list"; requestId: string }
   | { type: "api:token:create"; requestId?: string }
   | { type: "api:token:revoke"; requestId?: string }

@@ -13,7 +13,7 @@
 
 ## 結構對應
 
-以下為定案結構；目前已建立設定、session、LineProvider、同埠 HTTP（靜態頁、`/media`、圖片與影片上傳）、WS hub（登入、登出、頻道、即時與歷史訊息、發送、已讀）、訊息快取與聊天網頁（大頭照、貼圖、收到的圖片／GIF／影片／語音內嵌顯示、輸入框、自製確認對話框）。
+以下為定案結構；目前已建立設定、session、LineProvider、同埠 HTTP（靜態頁、`/media`、圖片與影片上傳）、WS hub（登入、登出、頻道、即時與歷史訊息、發送、已讀、詐騙機率分析）、訊息快取與聊天網頁（大頭照、貼圖、收到的圖片／GIF／影片／語音內嵌顯示、輸入框、自製確認對話框）。
 
 | 路徑 | 職責 |
 |---|---|
@@ -22,6 +22,7 @@
 | `src/http/` | 同埠 HTTP、靜態網頁、媒體上傳（圖片／影片）與媒體位元組 |
 | `src/model/` | Channel／Message／Media DTO、正規化、去重與記憶體快取 |
 | `src/update/` | 版本比較與 GitHub Release 檢查器（只通知） |
+| `src/jev/` | 詐騙機率分析的 TypeSafe Jev 用戶端（`jev.token` 設定時才啟用；非 LINE API，不經 LineProvider） |
 | `scripts/update.mjs` | `npm run update`：使用者主動執行的 fast-forward 更新 |
 | `src/cli.ts` / `scripts/cli.mjs` | `npm run cli -- login｜logout｜token`：經正在執行的服務（同一個 WS）登入（終端機 QR）、登出、重新產生機器人 Token；不直接讀寫 session |
 | `linejs.sh` / `linejs.ps1` | 根目錄管理腳本（POSIX sh／PowerShell，功能相同）：`start｜stop｜restart｜update｜login｜logout｜token｜help`；只是 `node dist/main.js`、`scripts/service.mjs`（依 `linejs.pid` 停止服務，只終止命令列為本專案 `dist/main.js` 的程序）、`scripts/update.mjs`、`scripts/cli.mjs` 的捷徑，不得加入額外權限或繞過 CLI／服務的檢查。`linejs.ps1` 必須保留 UTF-8 BOM 與主控台 UTF-8 設定（Windows PowerShell 5.1 否則中文亂碼），兩支腳本的指令與行為要同步修改 |
@@ -68,6 +69,7 @@ Gate 依 [PLAN.md](PLAN.md) 逐關驗收，不跳關；Gate 0 遠端需存在四
 9. 依賴釘選版本；`npm audit` 無 high 以上（Gate 4 驗收）。
 10. 解密／解析失敗 **fail-closed**：顯示佔位，不降級猜測內容。
 11. 機器人 API（`/api/ws`，預設關閉，`api.enabled`）：Bearer Token 認證（只存雜湊、比對用 `timingSafeEqual`、產生後只顯示一次、不入日誌）；升級**不得帶 `Origin`**（網頁不可用此入口），`Host` 不檢查；只開放 `message:send`（僅文字）、`history:fetch`、`ping`，其餘一律 `UNKNOWN_TYPE`；只能存取 `api.chats` 清單內的聊天室（空清單視為設定錯誤，未列出者一律 `UNKNOWN_CHAT`）；不給 `chat:read`、登入／登出、`channels:refresh`、媒體與貼圖發送；連線不重播舊訊息、不收 `read`；所有機器人合計 `api.sendsPerMinute`（≤120/分鐘）加每連線 `limits.sendsPerSecond`；同時最多 4 個連線；重新產生／撤銷 Token 立即中斷所有機器人連線。Token 的產生與撤銷只接受一般 `/ws` 連線（實務上只有取得瀏覽器 cookie 的本機 CLI 會送；網頁不提供此 UI），機器人連線無此權限。
+12. 詐騙機率分析（2026-10 小語裁示，`jev.token` 有值才啟用）：金鑰只用於送往 `https://api.typesafe.ai/v1/systemone` 的 Bearer 標頭（拒絕重新導向），不送網頁（網頁只收 `scam:state { enabled }`）、不入日誌與錯誤；`scam:check` 僅網頁、每連線每分鐘 10 次，機器人一律 `UNKNOWN_TYPE`；只送使用者點選的那一則、伺服器已顯示、非本帳號、未收回、非系統訊息的**伺服器快取文字**，不採用網頁傳來的文字，不送寄件者或聊天室；回應 fail-closed（無 0–1 機率即失敗），失敗對外只回 generic `SCAM_CHECK_FAILED`；結果只送給要求的連線，網頁標示為模型估計、僅供參考。
 
 內部日誌也不得包含憑證、token、QR URL、PIN 或 key material；不得直接 dump 套件錯誤物件、session 或登入 payload。圖片／貼圖／影片／語音位元組一律走 HTTP，WS 不傳位元組；收到的檔案只以 `file-<id>` 附件下載（`Content-Disposition: attachment`、`application/octet-stream`，不嗅探、不內嵌），規則同收到的媒體。訊息不落盤；每頻道最多 500 則，同 messageId 去重，編輯覆寫快取。LINE listen 失效採退避重啟；QR 失敗不自動循環，須由使用者動作重新產生。
 
