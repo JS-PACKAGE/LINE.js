@@ -57,6 +57,7 @@ npm start
 - **收回**：對方（或你在其他裝置上）收回訊息時，該訊息改為「XX 已收回訊息」（自己的顯示「你已收回訊息」），引用它的回覆顯示「［已收回的訊息］」，圖片／影片／語音／檔案也不再提供下載；收回通知比訊息本身先到時同樣只顯示佔位。只處理本服務已收過的訊息 id，不依通知內容猜測是哪一則。自己的訊息可在右鍵選單按「收回」（會先確認；LINE 只允許收回一段時間內送出的訊息，被拒時顯示一般錯誤）；社群裡要先從此頁送過訊息，服務才認得你在該社群的成員 id。
 - **回應（reaction）**：訊息下方顯示 LINE 六種預設回應（👍 讚、❤️ 愛心、😆 好笑、😲 驚訝、😢 難過、😱 天啊）的人數，你按過的會標亮；右鍵選單「回應…」或點小膠囊即可送出，點自己已選的回應則取消（對方會看到，與送出訊息共用頻率上限）。一般聊天室的回應隨訊息與歷史載入，LINE 的即時回應通知格式尚未驗證，因此他人的新回應要重新載入歷史才會出現；社群另有即時狀態事件（`NOTIFIED_UPDATE_MESSAGE_STATUS`）會即時更新。LINE 新版的自訂回應不顯示。
 - **@ 提及**：在群組、聊天室或社群的輸入框打 `@` 會列出在此聊天室發過言的人（最近發言者在前），繼續打字可篩選，↑／↓ 選擇、Enter 或 Tab 確認、Esc 關閉（輸入法選字中的 Enter 不會選取）；也可點訊息上的人名或用右鍵選單「@ 提及」。只有從清單或人名加入、且 `@名字` 仍完整留在文字中的才會成為真正的標記，自己手打的 `@名字` 只是文字。端對端加密聊天室的標記資料會一併放進加密內容，不只留在明文（尚未以真實帳號確認 LINE App 的顯示）。收到的訊息裡被 @ 的人名以強調色顯示，@ 你或 @All 另加黃色底色；範圍以 LINE 附帶的提及資料為準，資料不合（超出文字、重疊）的部分不標示。社群裡你的成員 id 與帳號不同，因此社群中 @ 你的訊息只有一般強調色。
+- **詐騙機率分析**（需設定 `jev.token`，見[設定](#設定)）：對**別人傳來的文字訊息**按右鍵（觸控長按）選「詐騙機率分析」，結果以對話框顯示：詐騙機率與判讀（> 80% 高度疑似詐騙、≤ 20% 不太像詐騙，其間為無法確定、請小心查證）；機率超過 20% 時另列最接近的手法與信心（假投資／飆股群、假冒機關／銀行／客服、釣魚連結、網購／解除分期付款、冒充親友借錢、感情詐騙、求職打工／租借帳戶、中獎贈品、貸款代辦、其他）。自己的訊息、已收回、無法解密、系統訊息與非文字訊息不提供此選項；未設定金鑰時選單不出現。每次分析都會把那一則文字送到 TypeSafe 並計費，結果只是模型估計。
 - **桌面通知**：左上「通知」按一下會向瀏覽器要求通知權限並開啟（按鈕轉為強調色；設定存在瀏覽器的 localStorage，再按一次關閉）。只在頁面不在前景時通知他人傳來的新訊息；每個聊天室最多一則通知，新訊息會取代舊的；點通知回到頁面並開啟該聊天室，讀過後通知自動收起。通知內容（寄件者與訊息摘要）會出現在作業系統的通知中心。需要安全環境（`127.0.0.1`／`localhost` 或 HTTPS），其他 http 位址不顯示此按鈕。
 - **草稿**：切換聊天室時，未送出的文字（含 @ 提及與回覆對象）保留在原聊天室，回來時還原；只存頁面記憶體，重新整理或登出即清除。已選取的圖片／影片不保留。
 - **訊息搜尋**：搜尋所有已載入聊天室的訊息，依訊息時間由新到舊排列；收到新訊息、歷史或收回事件時維持搜尋結果，不切回一般訊息列表。搜尋本身不額外載入歷史或回報已讀。
@@ -180,6 +181,20 @@ ws.on("message", (data) => {
   if (frame.type === "auth:ready") me = frame.profile.userId;
   if (frame.type === "message" && frame.message.senderId !== me && frame.message.text === "ping") {
     ws.send(JSON.stringify({ type: "message:send", requestId: "r1", chatId: frame.message.channelId, text: "pong" }));
+  }
+});
+```
+
+分析別人傳來的訊息（需設定 `jev.token`）：`analysis.probability` 為 0～1 的詐騙機率；`tactic` 可能沒有，有的話 `kind` 為 `investment`（假投資）、`impersonation`（假冒機關／銀行／客服）、`phishing`（釣魚）、`shopping`（網購／解除分期）、`friend`（冒充親友）、`romance`（感情）、`job`（求職打工／租借帳戶）、`prize`（中獎）、`loan`（貸款）、`other` 之一，`confidence` 為 0～1。每次呼叫都依 TypeSafe 計費，且所有機器人合計每分鐘只有 10 次，請只挑需要的訊息分析（例如下面只看含網址的訊息）。
+
+```js
+ws.on("message", (data) => {
+  const frame = JSON.parse(data);
+  if (frame.type === "message" && frame.message.senderId !== me && /https?:\/\//.test(frame.message.text ?? "")) {
+    ws.send(JSON.stringify({ type: "scam:check", requestId: frame.message.messageId, chatId: frame.message.channelId, messageId: frame.message.messageId }));
+  }
+  if (frame.type === "scam:result" && frame.analysis.probability > 0.8) {
+    ws.send(JSON.stringify({ type: "message:send", requestId: `warn-${frame.messageId}`, chatId: frame.chatId, text: "⚠️ 疑似詐騙訊息", replyTo: frame.messageId }));
   }
 });
 ```
