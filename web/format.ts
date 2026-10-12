@@ -75,10 +75,6 @@ export function scamSummary(analysis: ScamAnalysis): string {
   const verdict = probability > 0.8 ? "高度疑似詐騙" : probability > 0.2 ? "無法確定，請小心查證" : "不太像詐騙";
   const lines = [`詐騙機率：${Math.round(probability * 100)}%（${verdict}）`];
   // Which kind of scam it resembles only matters when it may be one.
-  if (probability > 0.2) {
-    if (tactic) lines.push(`若為詐騙，最接近的手法：${SCAM_TACTIC_LABEL[tactic.kind]}（信心 ${Math.round(tactic.confidence * 100)}%）`);
-    lines.push("有疑慮請勿付款或提供資料，可撥 165 反詐騙諮詢專線查證。");
-  }
-  lines.push("", "由 TypeSafe Jev 模型估計，僅供參考；這則訊息的文字已傳送至 TypeSafe 分析。");
+  if (probability > 0.2 && tactic) lines.push(`若為詐騙，最接近的手法：${SCAM_TACTIC_LABEL[tactic.kind]}（信心 ${Math.round(tactic.confidence * 100)}%）`);
   return lines.join("\n");
 }

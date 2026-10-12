@@ -35,11 +35,9 @@ test("a quote preview is one line of at most 60 characters, or names what the me
 test("a scam check reads as a band (above 0.8 likely, 0.2 or less unlikely), and names the tactic only when a scam is plausible", () => {
   const phishing = { kind: "phishing", confidence: 0.704 };
   const likely = scamSummary({ probability: 0.93, tactic: phishing });
-  assert.match(likely, /^詐騙機率：93%（高度疑似詐騙）\n若為詐騙，最接近的手法：釣魚連結、騙取密碼或驗證碼（信心 70%）\n/);
-  assert.match(likely, /165/);
+  assert.equal(likely, "詐騙機率：93%（高度疑似詐騙）\n若為詐騙，最接近的手法：釣魚連結、騙取密碼或驗證碼（信心 70%）");
   assert.match(scamSummary({ probability: 0.8 }), /^詐騙機率：80%（無法確定，請小心查證）/);
   const unlikely = scamSummary({ probability: 0.2, tactic: phishing });
   assert.match(unlikely, /^詐騙機率：20%（不太像詐騙）/);
-  assert.doesNotMatch(unlikely, /手法|165/);
-  assert.match(unlikely, /僅供參考/);
+  assert.doesNotMatch(unlikely, /手法/);
 });
