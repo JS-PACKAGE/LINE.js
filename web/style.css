@@ -64,6 +64,7 @@ footer { color: #667c73; font-size: 12px; line-height: 1.7; }
 mark { background: #ffe7a3; color: #6b4a00; padding: 0 2px; border-radius: 3px; }
 .conversation-head h2 { margin: 0; font-size: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #channel-meta { color: var(--muted); font-size: 13px; }
+.head-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: none; }
 .timeline { position: relative; flex: 1; min-height: 0; display: flex; }
 #messages { flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; }
 .jump { position: absolute; right: 24px; bottom: 16px; padding: 8px 14px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); color: var(--accent); font-weight: 600; box-shadow: 0 4px 14px rgb(0 0 0 / 0.15); cursor: pointer; }
@@ -200,4 +201,9 @@ dialog#confirm::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
   #app[data-drawer="open"] .sidebar { transform: none; visibility: visible; }
   #drawer-backdrop:not([hidden]) { display: block; position: fixed; inset: 0; z-index: 40; background: #0b151166; }
   #menu { display: inline-flex; }
+  .conversation-head { gap: 8px; padding: 10px 12px; }
+  .conversation-head h2 { min-width: 0; font-size: 16px; }
+  #channel-meta { display: none; }
+  .head-actions { gap: 6px; }
+  .head-actions .ghost { padding: 6px 10px; }
 }
