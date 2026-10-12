@@ -91,7 +91,7 @@ npm start
 - 發送：每 WS 連線最多每秒 5 次；媒體上傳：圖片每檔最多 10MB（PNG／JPEG／GIF）、影片每檔最多 50MB（MP4／MOV，`limits.uploadVideoMaxBytes` 可調，上限 200MB；影片整份暫存於記憶體）、每連線每分鐘最多 5 次。
 - 收到的媒體與檔案：每個最多 50MB（`limits.downloadMaxBytes`），超過者只顯示類型標籤（檔案的下載會失敗）。
 - 機器人 API：預設關閉；`api.enabled`、`api.chats`（必填、至少一個聊天室 id）、`api.sendsPerMinute`（預設 20、≤120）。細節見[機器人 API](#機器人-apiapiws)。
-- 詐騙訊息分析（選用）：在 `jev.token` 填入 [TypeSafe](https://console.typesafe.ai/keys) 的 API 金鑰並重啟後，網頁對**別人傳來的文字訊息**按右鍵（觸控長按）會出現「詐騙機率分析」，以 TypeSafe 的 Jev 決策模型估計詐騙機率（> 80% 高度疑似、≤ 20% 不太像，中間為無法確定）與最接近的手法。只有點選的那一則文字會送到 `api.typesafe.ai`（伺服器取自己快取的內容，不採用網頁傳來的文字；不送寄件者或聊天室），每次依 TypeSafe 計費、每個網頁連線每分鐘最多 10 次。金鑰只留在伺服器，不送網頁、不入日誌；`jev.model` 預設固定 `jev-1.13.0`。結果是模型估計，僅供參考。`token` 留空或省略即停用。
+- 詐騙訊息分析（選用）：在 `jev.token` 填入 [TypeSafe](https://console.typesafe.ai/keys) 的 API 金鑰並重啟後，網頁對**別人傳來的文字訊息**按右鍵（觸控長按）會出現「詐騙機率分析」，以 TypeSafe 的 Jev 決策模型估計詐騙機率（> 80% 高度疑似、≤ 20% 不太像，中間為無法確定）與最接近的手法。只有點選的那一則文字會送到 `api.typesafe.ai`（伺服器取自己快取的內容，不採用網頁傳來的文字；不送寄件者或聊天室），每次依 TypeSafe 計費、每個網頁連線每分鐘最多 10 次。機器人也可透過[機器人 API](#機器人-apiapiws) 的 `scam:check` 分析 `api.chats` 內的訊息（所有機器人合計每分鐘最多 10 次）。金鑰只留在伺服器，不送網頁、不入日誌；`jev.model` 預設固定 `jev-1.13.0`。結果是模型估計，僅供參考。`token` 留空或省略即停用。
 
 ## 通訊協定
 
@@ -126,7 +126,7 @@ npm start
 | Server → Client | `api:state` / `api:token` | 機器人 API 狀態（只給網頁）／剛產生的 Token（只送給要求的那個連線，僅此一次） |
 | Client → Server | `api:token:create` / `api:token:revoke` | 產生或撤銷機器人 Token（僅網頁連線可用，機器人不行） |
 | Server → Client | `scam:state` / `scam:result` | 是否已設定 Jev 金鑰（只給網頁，連線即送）／分析結果 `{ requestId, chatId, messageId, analysis: { probability, tactic? } }`（只送給要求的連線） |
-| Client → Server | `scam:check` | `{ requestId, chatId, messageId }`：分析別人傳來、伺服器已顯示且未收回的文字訊息（僅網頁、每連線每分鐘 10 次；未設定金鑰回 `SCAM_CHECK_UNAVAILABLE`，失敗回 generic `SCAM_CHECK_FAILED`） |
+| Client → Server | `scam:check` | `{ requestId, chatId, messageId }`：分析別人傳來、伺服器已顯示且未收回的文字訊息（網頁每連線每分鐘 10 次；機器人見[機器人 API](#機器人-apiapiws)；未設定金鑰回 `SCAM_CHECK_UNAVAILABLE`，失敗回 generic `SCAM_CHECK_FAILED`） |
 
 HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、收到的圖片／影片／語音；支援 Range）與 `POST /media/upload`（圖片／影片上傳）皆需瀏覽器 cookie 與同源。WS 不傳媒體位元組。
 
@@ -156,17 +156,19 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 |---|---|---|
 | 機器人 → 服務 | `message:send` | `{ requestId, chatId, text, mentions?, replyTo? }`：**只能文字**；`mediaId`／`sticker` 回 `INVALID_REQUEST`。成功回 `sent { requestId, messageId }` |
 | 機器人 → 服務 | `history:fetch` | `{ requestId, chatId, limit?, before? }`：與網頁相同的分頁，但不附已讀快照 |
+| 機器人 → 服務 | `scam:check` | `{ requestId, chatId, messageId }`：以 Jev 分析 `api.chats` 內**別人傳來**、服務已顯示（即時收到或 `history:fetch` 取得）的文字訊息；伺服器送自己快取的文字。需設定 `jev.token`（否則 `SCAM_CHECK_UNAVAILABLE`），所有機器人合計每分鐘 10 次，每次依 TypeSafe 計費。成功回 `scam:result { requestId, chatId, messageId, analysis: { probability, tactic? } }` |
 | 機器人 → 服務 | `ping` → `pong` | 保活；服務另以 WebSocket 協定層 Ping 每 30 秒檢查，連續兩輪未回應即斷線（一般 WebSocket 函式庫會自動回應） |
 | 服務 → 機器人 | `hello`、`auth:state`、`status` | 連線即送；`auth:state` 不是 `ready`（LINE 尚未登入）時還不能收發 |
 | 服務 → 機器人 | `auth:ready` | 含自己的 `profile.userId`，用來略過自己發的訊息（你在手機上發的也會是這個 id） |
 | 服務 → 機器人 | `channels` | 只含 `api.chats` 內的聊天室；有變動時重送 |
 | 服務 → 機器人 | `message`、`message:edit`、`message:unsend` | 只有 `api.chats` 內聊天室的**即時**訊息、編輯與收回；包含你自己發的 |
-| 服務 → 機器人 | `sent`、`history`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`…） |
+| 服務 → 機器人 | `sent`、`history`、`scam:result`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`SCAM_CHECK_FAILED`…） |
 
-其餘一律回 `UNKNOWN_TYPE`：沒有登入／登出、`chat:read`（已讀回報）、`message:unsend`（收回）、`message:react`（回應）、`scam:check`（詐騙分析）、`channels:refresh`、貼圖清單、Token 管理。**不重播舊訊息**（機器人從「現在」開始，不會重複回應歷史；要歷史請用 `history:fetch`）；不給 `read`、`update:available`、`api:state`、`scam:state`；圖片／影片等媒體位元組也無法取得（機器人只看到訊息的 `contentType`）。
+其餘一律回 `UNKNOWN_TYPE`：沒有登入／登出、`chat:read`（已讀回報）、`message:unsend`（收回）、`message:react`（回應）、`channels:refresh`、貼圖清單、Token 管理。**不重播舊訊息**（機器人從「現在」開始，不會重複回應歷史；要歷史請用 `history:fetch`）；不給 `read`、`update:available`、`api:state`、`scam:state`；圖片／影片等媒體位元組也無法取得（機器人只看到訊息的 `contentType`）。
 
 **頻率與風險**
 - 每個連線受 `limits.sendsPerSecond`（≤5）限制，且所有機器人合計每分鐘不超過 `api.sendsPerMinute`；超過回 `RATE_LIMITED`。
+- `scam:check` 另有所有機器人合計每分鐘 10 次的上限（與網頁的額度分開），超過回 `RATE_LIMITED`。
 - 機器人以**你的真人帳號**發言，頻繁或機械式的發送可能觸發 LINE 風控。請保守設定上限，並先用次要帳號。
 
 ```js

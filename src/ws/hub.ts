@@ -94,6 +94,8 @@ export function createHub(options: HubOptions): Hub {
   const botWss = new WebSocketServer({ noServer: true, maxPayload: config.limits.frameMaxBytes });
   const botScope: ReadonlySet<string> = new Set(config.api.chats);
   const botSendLimiter = new SlidingWindowLimiter(config.api.sendsPerMinute, 60_000);
+  // Shared by every bot connection: several connections must not multiply the paid TypeSafe calls.
+  const botScamLimiter = new SlidingWindowLimiter(SCAM_CHECKS_PER_MINUTE, 60_000);
   let status: ListenState = "starting";
   let refreshing: Promise<void> | undefined;
   // State can become ready again before an old LINE request settles; "ready" alone is not an account boundary.
@@ -376,15 +378,16 @@ export function createHub(options: HubOptions): Hub {
   }
 
   /**
-   * Pages only. The text sent to TypeSafe is the server's own copy of a message it has shown, from
-   * someone else: a page cannot use this to send arbitrary text out, or to rate its own messages.
+   * The text sent to TypeSafe is the server's own copy of a message it has shown, from someone else:
+   * a client cannot use this to send arbitrary text out, or to rate its own messages. Bots are also
+   * held to their `api.chats` scope.
    */
-  async function handleScamCheck(socket: WebSocket, frame: Record<string, unknown>): Promise<void> {
+  async function handleScamCheck(socket: WebSocket, frame: Record<string, unknown>, scope?: ReadonlySet<string>): Promise<void> {
     const parsed = parseMessageRequest(frame);
     if (!parsed.ok) return fail(socket, "INVALID_REQUEST", parsed.requestId);
     const { requestId, chatId, messageId } = parsed.value;
     if (!scam) return fail(socket, "SCAM_CHECK_UNAVAILABLE", requestId);
-    if (login.state !== "ready" || !store.channelOf(chatId)) return fail(socket, "UNKNOWN_CHAT", requestId);
+    if (login.state !== "ready" || !store.channelOf(chatId) || (scope && !scope.has(chatId))) return fail(socket, "UNKNOWN_CHAT", requestId);
     const message = store.get(messageId, chatId);
     const mine = message !== undefined && (message.senderId === provider.getProfile().userId || message.senderId === ownSquareSenders.get(chatId));
     if (!message?.text || mine || message.unsent || message.decryptFailed || message.contentType === "CHATEVENT") return fail(socket, "INVALID_REQUEST", requestId);
@@ -592,6 +595,10 @@ export function createHub(options: HubOptions): Hub {
           // Both budgets: this connection's per-second one, and the all-bots per-minute one.
           if (!sendLimiter.allow() || !botSendLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
           else void handleSend(socket, frame as Record<string, unknown>, botScope);
+          return;
+        case "scam:check":
+          if (!botScamLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else void handleScamCheck(socket, frame as Record<string, unknown>, botScope);
           return;
         default:
           fail(socket, "UNKNOWN_TYPE");

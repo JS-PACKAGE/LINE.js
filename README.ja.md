@@ -91,7 +91,7 @@ PWA としてインストールできます（ブラウザーの「安裝」（�
 - 送信：WS 接続ごとに毎秒最大 5 回。メディアアップロード：画像は 1 ファイル最大 10MB（PNG／JPEG／GIF）、動画は 1 ファイル最大 50MB（MP4／MOV、`limits.uploadVideoMaxBytes` で変更可能、上限 200MB。動画全体をメモリに一時保存）、接続ごとに毎分最大 5 回。
 - 受信メディアとファイル：1 件あたり最大 50MB（`limits.downloadMaxBytes`）。超過したものは種類のラベルのみ表示します（ファイルのダウンロードは失敗します）。
 - ボット API：既定で無効です。`api.enabled`、`api.chats`（必須、チャットルーム id が 1 個以上）、`api.sendsPerMinute`（既定 20、≤120）。詳細は[ボット API](#ボット-apiapiws)を参照してください。
-- 詐欺メッセージ分析（オプション）：`jev.token` に [TypeSafe](https://console.typesafe.ai/keys) の API キーを設定して再起動すると、Web ページで**相手から届いたテキストメッセージ**を右クリック（タッチ画面では長押し）したときに「詐騙機率分析」（詐欺確率分析）が表示され、TypeSafe の Jev 決定モデルで詐欺である確率（> 80% は詐欺の疑いが高い、≤ 20% は詐欺らしくない、その間は判断不能）と最も近い手口を推定します。TypeSafe（`api.typesafe.ai`）に送るのは選んだ 1 件のテキストのみです（サーバーは自身のキャッシュの内容を使い、ページから送られたテキストは使いません。送信者やチャットの情報は送りません）。1 回ごとに TypeSafe の料金がかかり、Web 接続ごとに毎分最大 10 回です。キーはサーバーにのみ保持し、ページに送らず、ログにも記録しません。`jev.model` の既定は固定版の `jev-1.13.0` です。結果はモデルの推定であり、参考程度にしてください。`token` を空にするか省略すると無効になります。
+- 詐欺メッセージ分析（オプション）：`jev.token` に [TypeSafe](https://console.typesafe.ai/keys) の API キーを設定して再起動すると、Web ページで**相手から届いたテキストメッセージ**を右クリック（タッチ画面では長押し）したときに「詐騙機率分析」（詐欺確率分析）が表示され、TypeSafe の Jev 決定モデルで詐欺である確率（> 80% は詐欺の疑いが高い、≤ 20% は詐欺らしくない、その間は判断不能）と最も近い手口を推定します。TypeSafe（`api.typesafe.ai`）に送るのは選んだ 1 件のテキストのみです（サーバーは自身のキャッシュの内容を使い、ページから送られたテキストは使いません。送信者やチャットの情報は送りません）。1 回ごとに TypeSafe の料金がかかり、Web 接続ごとに毎分最大 10 回です。ボットも[ボット API](#ボット-apiapiws) の `scam:check` で `api.chats` 内のメッセージを分析できます（全ボット合計で毎分最大 10 回）。キーはサーバーにのみ保持し、ページに送らず、ログにも記録しません。`jev.model` の既定は固定版の `jev-1.13.0` です。結果はモデルの推定であり、参考程度にしてください。`token` を空にするか省略すると無効になります。
 
 ## 通信プロトコル
 
@@ -126,7 +126,7 @@ PWA としてインストールできます（ブラウザーの「安裝」（�
 | Server → Client | `api:state` / `api:token` | ボット API の状態（Web ページのみ）／新しく生成した Token（要求元の接続のみに 1 回限り送信） |
 | Client → Server | `api:token:create` / `api:token:revoke` | ボット Token の生成・取り消し（Web 接続のみ。ボットは利用不可） |
 | Server → Client | `scam:state` / `scam:result` | Jev キーが設定済みか（Web ページのみ、接続時に送信）／分析結果 `{ requestId, chatId, messageId, analysis: { probability, tactic? } }`（要求元の接続のみに送信） |
-| Client → Server | `scam:check` | `{ requestId, chatId, messageId }`：相手から届き、サーバーが表示済みで送信取消されていないテキストメッセージを分析（Web ページのみ、接続ごとに毎分 10 回。キー未設定時は `SCAM_CHECK_UNAVAILABLE`、失敗時は汎用の `SCAM_CHECK_FAILED`） |
+| Client → Server | `scam:check` | `{ requestId, chatId, messageId }`：相手から届き、サーバーが表示済みで送信取消されていないテキストメッセージを分析（Web 接続ごとに毎分 10 回。ボットは[ボット API](#ボット-apiapiws)を参照。キー未設定時は `SCAM_CHECK_UNAVAILABLE`、失敗時は汎用の `SCAM_CHECK_FAILED`） |
 
 HTTP：`GET /media/:mediaId`（スタンプ、スタンプパックのアイコン、プロフィール画像と元画像、受信した画像／動画／音声。Range 対応）と `POST /media/upload`（画像／動画のアップロード）は、どちらもブラウザー cookie と同一オリジンが必要です。WS ではメディアのバイト列を送信しません。
 
@@ -156,17 +156,19 @@ HTTP：`GET /media/:mediaId`（スタンプ、スタンプパックのアイコ�
 |---|---|---|
 | ボット → サービス | `message:send` | `{ requestId, chatId, text, mentions?, replyTo? }`：**テキストのみ**。`mediaId`／`sticker` は `INVALID_REQUEST` を返します。成功時は `sent { requestId, messageId }` |
 | ボット → サービス | `history:fetch` | `{ requestId, chatId, limit?, before? }`：Web ページと同じページ取得ですが、既読 snapshot は含みません |
+| ボット → サービス | `scam:check` | `{ requestId, chatId, messageId }`：`api.chats` 内の**相手から届いた**、サービスが表示済み（リアルタイム受信または `history:fetch` で取得）のテキストメッセージを Jev で分析します。サーバーは自身のキャッシュのテキストを送ります。`jev.token` の設定が必要で（未設定時は `SCAM_CHECK_UNAVAILABLE`）、全ボット合計で毎分 10 回、1 回ごとに TypeSafe の料金がかかります。成功時は `scam:result { requestId, chatId, messageId, analysis: { probability, tactic? } }` |
 | ボット → サービス | `ping` → `pong` | 接続維持。サービスは WebSocket プロトコルレベルの Ping でも 30 秒ごとに確認し、2 回続けて応答がなければ切断します（一般的な WebSocket ライブラリは自動で応答します） |
 | サービス → ボット | `hello`、`auth:state`、`status` | 接続時に送信。`auth:state` が `ready` でない場合（LINE 未ログイン）、まだ送受信できません |
 | サービス → ボット | `auth:ready` | 自分の `profile.userId` を含み、自分が送ったメッセージを除外するために使えます（スマートフォンから送ったメッセージもこの id です） |
 | サービス → ボット | `channels` | `api.chats` のチャットルームのみ。変更時に再送します |
 | サービス → ボット | `message`、`message:edit`、`message:unsend` | `api.chats` のチャットルームの**リアルタイム**メッセージ、編集、送信取消のみ。自分が送ったものも含みます |
-| サービス → ボット | `sent`、`history`、`error` | 対応するリクエストへの応答。エラーは汎用コードのみ（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`…） |
+| サービス → ボット | `sent`、`history`、`scam:result`、`error` | 対応するリクエストへの応答。エラーは汎用コードのみ（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`SCAM_CHECK_FAILED`…） |
 
-それ以外はすべて `UNKNOWN_TYPE` を返します。ログイン／ログアウト、`chat:read`（既読通知）、`message:unsend`（送信取消）、`message:react`（リアクション）、`scam:check`（詐欺分析）、`channels:refresh`、スタンプ一覧、Token 管理は利用できません。**過去のメッセージは再送しません**（ボットは「今」から開始し、履歴に重複して応答しません。履歴は `history:fetch` を使ってください）。`read`、`update:available`、`api:state`、`scam:state` は送信しません。画像／動画などのメディアのバイト列も取得できません（ボットにはメッセージの `contentType` のみ見えます）。
+それ以外はすべて `UNKNOWN_TYPE` を返します。ログイン／ログアウト、`chat:read`（既読通知）、`message:unsend`（送信取消）、`message:react`（リアクション）、`channels:refresh`、スタンプ一覧、Token 管理は利用できません。**過去のメッセージは再送しません**（ボットは「今」から開始し、履歴に重複して応答しません。履歴は `history:fetch` を使ってください）。`read`、`update:available`、`api:state`、`scam:state` は送信しません。画像／動画などのメディアのバイト列も取得できません（ボットにはメッセージの `contentType` のみ見えます）。
 
 **頻度とリスク**
 - 各接続は `limits.sendsPerSecond`（≤5）の制限を受け、全ボット合計で毎分 `api.sendsPerMinute` を超えてはいけません。超過すると `RATE_LIMITED` を返します。
+- `scam:check` には別途、全ボット合計で毎分 10 回の上限があります（Web ページの枠とは別）。超過すると `RATE_LIMITED` を返します。
 - ボットは**あなたの個人アカウント**として発言します。頻繁な送信や機械的な送信は LINE の不正利用対策に検知される可能性があります。上限は控えめに設定し、まずサブアカウントを使ってください。
 
 ```js

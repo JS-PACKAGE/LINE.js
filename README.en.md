@@ -91,7 +91,7 @@ SessionStorage in `src/line/session.ts` follows the linejs FileStorage contract,
 - Sending: at most 5 sends per second per WS connection. Media uploads: at most 10MB per image (PNG/JPEG/GIF), at most 50MB per video (MP4/MOV; configurable with `limits.uploadVideoMaxBytes`, capped at 200MB; the entire video is temporarily held in memory), and at most 5 uploads per minute per connection.
 - Received media and files: at most 50MB each (`limits.downloadMaxBytes`); larger items show only a type label (a file download fails).
 - Bot API: disabled by default; `api.enabled`, `api.chats` (required, at least one chat room id), and `api.sendsPerMinute` (20 by default, ≤120). See [Bot API](#bot-apiapiws) for details.
-- Scam check (optional): put a [TypeSafe](https://console.typesafe.ai/keys) API key in `jev.token` and restart; right-clicking (long-pressing on touch screens) **a text message from someone else** in the web interface then offers 「詐騙機率分析」 (Scam probability check), which uses TypeSafe's Jev decision model to estimate the probability that it is a scam (> 80% likely, ≤ 20% unlikely, uncertain in between) and the kind of scam it most resembles. Only that one message's text is sent to `api.typesafe.ai` (the server uses its own cached copy, never text supplied by the page; no sender or chat information), each check is billed by TypeSafe, and each web connection may run at most 10 checks per minute. The key stays on the server: it is never sent to the page or logged. `jev.model` defaults to the pinned `jev-1.13.0`. The result is a model estimate for reference only. Leave `token` empty or omit it to disable the feature.
+- Scam check (optional): put a [TypeSafe](https://console.typesafe.ai/keys) API key in `jev.token` and restart; right-clicking (long-pressing on touch screens) **a text message from someone else** in the web interface then offers 「詐騙機率分析」 (Scam probability check), which uses TypeSafe's Jev decision model to estimate the probability that it is a scam (> 80% likely, ≤ 20% unlikely, uncertain in between) and the kind of scam it most resembles. Only that one message's text is sent to `api.typesafe.ai` (the server uses its own cached copy, never text supplied by the page; no sender or chat information), each check is billed by TypeSafe, and each web connection may run at most 10 checks per minute. Bots can also check messages in `api.chats` with `scam:check` on the [Bot API](#bot-apiapiws) (at most 10 per minute across all bots). The key stays on the server: it is never sent to the page or logged. `jev.model` defaults to the pinned `jev-1.13.0`. The result is a model estimate for reference only. Leave `token` empty or omit it to disable the feature.
 
 ## Protocol
 
@@ -126,7 +126,7 @@ Available:
 | Server → Client | `api:state` / `api:token` | Bot API state (web interface only)/newly generated Token (sent only once to the requesting connection) |
 | Client → Server | `api:token:create` / `api:token:revoke` | Generate or revoke a bot Token (web connections only, not bots) |
 | Server → Client | `scam:state` / `scam:result` | Whether a Jev key is configured (pages only, sent on connection)/the result `{ requestId, chatId, messageId, analysis: { probability, tactic? } }` (only to the requesting connection) |
-| Client → Server | `scam:check` | `{ requestId, chatId, messageId }`: check a text message from someone else that the server has shown and that was not taken back (pages only, 10 per minute per connection; without a key it returns `SCAM_CHECK_UNAVAILABLE`, failures return the generic `SCAM_CHECK_FAILED`) |
+| Client → Server | `scam:check` | `{ requestId, chatId, messageId }`: check a text message from someone else that the server has shown and that was not taken back (10 per minute per web connection; for bots see [Bot API](#bot-apiapiws); without a key it returns `SCAM_CHECK_UNAVAILABLE`, failures return the generic `SCAM_CHECK_FAILED`) |
 
 HTTP: both `GET /media/:mediaId` (stickers, sticker pack icons, profile pictures and originals, received images/videos/voice messages; supports Range) and `POST /media/upload` (image/video uploads) require a browser cookie and same-origin access. WS does not carry media bytes.
 
@@ -156,17 +156,19 @@ Lets your own programs (bots) send and receive messages. **Disabled by default**
 |---|---|---|
 | Bot → Service | `message:send` | `{ requestId, chatId, text, mentions?, replyTo? }`: **text only**; `mediaId`／`sticker` returns `INVALID_REQUEST`. Success returns `sent { requestId, messageId }` |
 | Bot → Service | `history:fetch` | `{ requestId, chatId, limit?, before? }`: the same pagination as the web interface, without a read-receipt snapshot |
+| Bot → Service | `scam:check` | `{ requestId, chatId, messageId }`: check with Jev a text message **from someone else** in `api.chats` that the service has shown (received live or returned by `history:fetch`); the server sends its own cached text. Requires `jev.token` (otherwise `SCAM_CHECK_UNAVAILABLE`); 10 per minute across all bots, each billed by TypeSafe. Success returns `scam:result { requestId, chatId, messageId, analysis: { probability, tactic? } }` |
 | Bot → Service | `ping` → `pong` | Keepalive; the service also checks with WebSocket protocol-level Pings every 30 seconds and disconnects after two missed rounds (ordinary WebSocket libraries answer automatically) |
 | Service → Bot | `hello`, `auth:state`, `status` | Sent on connection; sending/receiving is unavailable until `auth:state` is `ready` (LINE is logged in) |
 | Service → Bot | `auth:ready` | Includes your own `profile.userId` to skip your own messages (messages sent from your phone also use this id) |
 | Service → Bot | `channels` | Only chat rooms in `api.chats`; resent on changes |
 | Service → Bot | `message`, `message:edit`, `message:unsend` | Only **live** messages, edits and take-backs from chat rooms in `api.chats`, including your own |
-| Service → Bot | `sent`, `history`, `error` | Responses to corresponding requests; errors contain only generic codes (`UNKNOWN_CHAT`, `INVALID_REQUEST`, `RATE_LIMITED`, `SEND_FAILED`…) |
+| Service → Bot | `sent`, `history`, `scam:result`, `error` | Responses to corresponding requests; errors contain only generic codes (`UNKNOWN_CHAT`, `INVALID_REQUEST`, `RATE_LIMITED`, `SEND_FAILED`, `SCAM_CHECK_FAILED`…) |
 
-Everything else returns `UNKNOWN_TYPE`: no login/logout, `chat:read` (sending read receipts), `message:unsend` (taking back), `message:react` (reactions), `scam:check` (scam check), `channels:refresh`, sticker lists, or Token management. **Old messages are not replayed** (bots start from “now” and do not respond to history again; use `history:fetch` for history). No `read`, `update:available`, `api:state`, or `scam:state` is provided. Image/video and other media bytes are also inaccessible (bots see only the message's `contentType`).
+Everything else returns `UNKNOWN_TYPE`: no login/logout, `chat:read` (sending read receipts), `message:unsend` (taking back), `message:react` (reactions), `channels:refresh`, sticker lists, or Token management. **Old messages are not replayed** (bots start from “now” and do not respond to history again; use `history:fetch` for history). No `read`, `update:available`, `api:state`, or `scam:state` is provided. Image/video and other media bytes are also inaccessible (bots see only the message's `contentType`).
 
 **Rate limits and risks**
 - Each connection is limited by `limits.sendsPerSecond` (≤5), and all bots together may not exceed `api.sendsPerMinute`; exceeding either returns `RATE_LIMITED`.
+- `scam:check` has its own limit of 10 per minute across all bots (separate from the web pages' budget); exceeding it returns `RATE_LIMITED`.
 - Bots speak through **your personal account**. Frequent or mechanical sending may trigger LINE's risk controls. Set conservative limits and use a secondary account first.
 
 ```js

@@ -127,7 +127,7 @@ approval, and a regression against any of them is treated as a vulnerability.
 | An upgrade needs **no `Origin` header** (every browser WebSocket sends one, so no web page can use this endpoint even if the token leaks into it) and `Authorization: Bearer <token>`; the `Host` header is not checked. Failures all look the same (403); more than 4 concurrent bots get 429. | `src/http/server.ts` (`authorizeApiUpgrade`), `src/ws/hub.ts` |
 | The token is 256 bits of randomness with a `linejs_` prefix. Only its SHA-256 is stored (`api-token.json`, mode `0600`, git-ignored, written via temporary file and rename); it is compared in constant time and shown **once**, only to the connection that asked for it. It is never logged or broadcast. | `src/http/apiToken.ts`, `src/ws/hub.ts`, `src/cli.ts` |
 | Regenerating or revoking the token closes every bot connection immediately. Only ordinary `/ws` connections (the web page, or the local CLI, which obtains the page cookie the same way) can create or revoke it; a bot cannot. | `src/ws/hub.ts` |
-| A bot may send only `message:send` (text only), `history:fetch` and `ping`; everything else, including login, logout, read receipts, stickers and media, is `UNKNOWN_TYPE`. It can reach only the chats in `api.chats` (anything else is `UNKNOWN_CHAT`), receives only live messages (no replay, no read positions) and never receives media bytes. | `src/ws/hub.ts`, `src/ws/requests.ts` |
+| A bot may send only `message:send` (text only), `history:fetch`, `scam:check` (see the scam check section) and `ping`; everything else, including login, logout, read receipts, stickers and media, is `UNKNOWN_TYPE`. It can reach only the chats in `api.chats` (anything else is `UNKNOWN_CHAT`), receives only live messages (no replay, no read positions) and never receives media bytes. | `src/ws/hub.ts`, `src/ws/requests.ts` |
 | Sending is limited per connection (`limits.sendsPerSecond`, at most 5/s) and across all bots (`api.sendsPerMinute`, at most 120/min). | `src/ws/hub.ts`, `src/limit.ts` |
 
 ### Scam check (TypeSafe Jev, off by default)
@@ -136,7 +136,7 @@ approval, and a regression against any of them is treated as a vulnerability.
 |---|---|
 | The check exists only when `jev.token` is set in `config.yaml`; an empty or missing token disables it. The token must be printable ASCII without spaces (it goes into an HTTP header as is). | `src/config.ts` |
 | The token is used only as the `Authorization: Bearer` header to `https://api.typesafe.ai/v1/systemone`, with redirects refused. It is never sent to the page (pages only learn `scam:state { enabled }`), logged, or included in errors; a failed call logs only `SCAM_CHECK_FAILED` with the HTTP status. | `src/jev/client.ts`, `src/ws/hub.ts` |
-| Only an explicit user action sends anything: `scam:check` is page-only (bots get `UNKNOWN_TYPE`) and limited to 10 per minute per connection. The server sends **its own cached text** of a message it has shown, from someone other than this account, that was not taken back, decrypted and not a system message; text supplied by the page is ignored, so the endpoint cannot be used to send arbitrary text out. Nothing else (sender, chat, other messages) is sent. | `src/ws/hub.ts`, `src/ws/requests.ts` |
+| Only an explicit request sends anything: from a page, `scam:check` is limited to 10 per minute per connection; from a bot, it is limited to the chats in `api.chats` and to 10 per minute across all bot connections together. The server sends **its own cached text** of a message it has shown, from someone other than this account, that was not taken back, decrypted and not a system message; text supplied by the client is ignored, so the endpoint cannot be used to send arbitrary text out. Nothing else (sender, chat, other messages) is sent. | `src/ws/hub.ts`, `src/ws/requests.ts` |
 | The answer is parsed fail-closed: without a probability between 0 and 1 there is no result, and an unknown scam kind is dropped. The result goes only to the connection that asked. | `src/jev/client.ts`, `src/ws/hub.ts` |
 
 ### Secrets and credentials
@@ -223,7 +223,8 @@ Be aware of these. They are not bugs, and reports that only restate them will be
    *other websites*. They cannot stop another process running as the same OS user, which can read
    `session.json` directly or fetch `/` to obtain the cookie (the bundled CLI does exactly that, by
    design). Treat the machine's user account as the trust boundary. The same applies to the bot API
-   token: anyone who holds it can send messages as the account in the listed chats.
+   token: anyone who holds it can send messages as the account in the listed chats, and, when
+   `jev.token` is set, spend paid TypeSafe checks on messages in those chats.
 3. **Secrets at rest.** `session.json` holds credentials and E2EE key material in plaintext, protected
    only by file permissions (`0600`). Full-disk encryption and a locked screen are the user's
    responsibility.

@@ -66,7 +66,7 @@ update:
 # 機器人 API：讓你自己的程式經 WebSocket 連到 ws://<host>:<port>/api/ws 收發訊息。預設關閉。
 # 啟用後，用 `npm run cli -- token` 產生 Token（只顯示一次；伺服器只保存雜湊，存於 api-token.json），`token --revoke` 撤銷。
 # 機器人連線時帶標頭 Authorization: Bearer <Token>，不可帶 Origin。可用的影格：
-# message:send（僅文字）、history:fetch、ping；會收到 chats 內聊天室的即時訊息，不重播舊訊息。
+# message:send（僅文字）、history:fetch、scam:check（需設定下方 jev.token）、ping；會收到 chats 內聊天室的即時訊息，不重播舊訊息。
 api:
   enabled: false
   # 機器人可存取的聊天室 id（必填且至少一個）。未列出的聊天室一律視為不存在。
@@ -78,6 +78,7 @@ api:
 # 詐騙訊息分析：填入 TypeSafe 的 API 金鑰（https://console.typesafe.ai/keys）後，在網頁對「別人傳來的文字訊息」
 # 按右鍵（觸控螢幕長按）會多出「詐騙機率分析」，以 TypeSafe 的 Jev 模型估計這則訊息是詐騙的機率與可能手法。
 # 只有你點選分析的那一則文字會送到 TypeSafe（api.typesafe.ai），不送寄件者、聊天室或其他訊息；每次分析依 TypeSafe 計費。
+# 機器人 API 也可對 api.chats 內的訊息送 scam:check（所有機器人合計每分鐘最多 10 次）。
 # 金鑰只留在伺服器（不送給網頁、不寫入日誌）；token 留空或省略即停用。結果是模型估計，僅供參考。
 jev:
   token: ""

@@ -53,7 +53,7 @@ export type ClientFrame =
   | { type: "message:unsend"; requestId: string; chatId: string; messageId: string }
   /** Set this account's reaction (`null` takes it back). Pages only. */
   | { type: "message:react"; requestId: string; chatId: string; messageId: string; reaction: ReactionKind | null }
-  /** Rate a received text message (someone else's, shown by this server) with Jev. Pages only. */
+  /** Rate a received text message (someone else's, shown by this server) with Jev. Bots only within `api.chats`. */
   | { type: "scam:check"; requestId: string; chatId: string; messageId: string }
   | { type: "stickers:list"; requestId: string }
   | { type: "api:token:create"; requestId?: string }

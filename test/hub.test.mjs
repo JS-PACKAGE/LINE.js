@@ -1164,8 +1164,8 @@ test("a newer release is announced to every client, including ones that connect 
 
 const OTHER = `c${"b".repeat(32)}`;
 
-async function botEnv(t, options = {}) {
-  const env = await start(t, { api: { enabled: true, chats: [CHAT], ...options } });
+async function botEnv(t, options = {}, { scam } = {}) {
+  const env = await start(t, { api: { enabled: true, chats: [CHAT], ...options }, scam });
   await env.login.restore();
   const page = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
   t.after(() => page.socket.close());
@@ -1287,7 +1287,7 @@ test("a bot can send text and read history in an allowed chat only", async (t) =
   assert.equal(env.provider.calls.some((call) => call[0] === "read-range"), false);
 });
 
-test("everything outside send, history and ping is unknown to a bot", async (t) => {
+test("everything outside send, history, scam check and ping is unknown to a bot", async (t) => {
   const env = await botEnv(t);
   const bot = await env.open();
   const frames = [
@@ -1303,6 +1303,39 @@ test("everything outside send, history and ping is unknown to a bot", async (t) 
   assert.equal(env.apiTokens.verify(env.token), true);
   assert.equal(env.provider.calls.some((call) => call[0] === "read" || call[0] === "stickers" || call[0] === "unsend" || call[0] === "react"), false);
   bot.socket.send(JSON.stringify({ type: "ping" }));
+});
+
+test("a bot can rate someone else's text only in an allowed chat, on one budget shared by all bots", async (t) => {
+  const rated = [];
+  const env = await botEnv(t, {}, { scam: { async analyzeScam(text) { rated.push(text); return { probability: 0.12 }; } } });
+  const first = await env.open();
+  const second = await env.open();
+  const ask = async (bot, frame) => {
+    bot.socket.send(JSON.stringify(frame));
+    return bot.until((reply) => reply.requestId === frame.requestId);
+  };
+  const base = { channelKind: "group", senderName: "小明", contentType: "NONE", createdAt: 1 };
+  env.hub.handleMessage({ ...base, messageId: "901", channelId: CHAT, senderId: "u1", text: "抽獎中獎請匯款" }, "new");
+  env.hub.handleMessage({ ...base, messageId: "902", channelId: OTHER, senderId: "u1", text: "別群的訊息" }, "new");
+  env.hub.handleMessage({ ...base, messageId: "903", channelId: CHAT, senderId: "u-me", text: "我自己說的" }, "new");
+  assert.deepEqual(await ask(first, { type: "scam:check", requestId: "b1", chatId: CHAT, messageId: "901", text: "安全的內容" }), {
+    type: "scam:result", requestId: "b1", chatId: CHAT, messageId: "901", analysis: { probability: 0.12 },
+  });
+  assert.equal((await ask(first, { type: "scam:check", requestId: "b2", chatId: OTHER, messageId: "902" })).code, "UNKNOWN_CHAT");
+  assert.equal((await ask(first, { type: "scam:check", requestId: "b3", chatId: CHAT, messageId: "903" })).code, "INVALID_REQUEST");
+  assert.deepEqual(rated, ["抽獎中獎請匯款"], "only the allowed chat's stored text went out");
+  // Three checks spent on the first connection; a second connection draws on the same ten per minute.
+  for (let i = 0; i < 7; i += 1) assert.equal((await ask(second, { type: "scam:check", requestId: `c${i}`, chatId: CHAT, messageId: "901" })).type, "scam:result");
+  assert.equal((await ask(second, { type: "scam:check", requestId: "c7", chatId: CHAT, messageId: "901" })).code, "RATE_LIMITED");
+  assert.equal(rated.length, 8);
+});
+
+test("a bot is refused the scam check when no Jev token is set", async (t) => {
+  const env = await botEnv(t);
+  const bot = await env.open();
+  env.hub.handleMessage({ messageId: "901", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "嗨", contentType: "NONE", createdAt: 1 }, "new");
+  bot.socket.send(JSON.stringify({ type: "scam:check", requestId: "b1", chatId: CHAT, messageId: "901" }));
+  assert.equal((await bot.until((frame) => frame.requestId === "b1")).code, "SCAM_CHECK_UNAVAILABLE");
 });
 
 test("bots share one send budget per minute across connections, on top of the per-connection limit", async (t) => {
