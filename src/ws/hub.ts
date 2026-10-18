@@ -12,7 +12,7 @@ import type { Channel, ChannelKind, Message, Reactions, ReadPosition } from "../
 import type { UpdateInfo } from "../update/checker.js";
 import { withMyReaction, type ChatStore } from "../model/store.js";
 import { PROTOCOL_VERSION, type ClientFrame, type ListenState, type ServerFrame } from "./protocol.js";
-import { parseChatRead, parseHistory, parseMessageRequest, parseReact, parseSend, requestIdOf } from "./requests.js";
+import { parseChatRead, parseChatRequest, parseHistory, parseMessageRequest, parseReact, parseSend, requestIdOf } from "./requests.js";
 
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const HISTORY_PER_SECOND = 10;
@@ -72,6 +72,8 @@ const GENERIC = {
   CHANNELS_FAILED: "無法載入頻道清單，請稍後重試。",
   HISTORY_FAILED: "無法載入歷史訊息，請稍後重試。",
   SEND_FAILED: "訊息發送失敗，請稍後重試；草稿已保留。",
+  CHAT_ADMINS_UNSUPPORTED: "這個聊天室不支援查詢管理員。",
+  CHAT_ADMINS_FAILED: "無法載入聊天室管理員，請稍後重試。",
   RATE_LIMITED: "操作太頻繁，請稍後再試。",
   UNKNOWN_CHAT: "找不到這個聊天室。",
   UPLOAD_EXPIRED: "媒體已過期，請重新選擇。",
@@ -250,6 +252,26 @@ export function createHub(options: HubOptions): Hub {
       if (account !== generation) return;
       logFailure("HISTORY_FAILED", error);
       fail(socket, "HISTORY_FAILED", requestId);
+    }
+  }
+
+  async function handleChatAdmins(socket: WebSocket, frame: Record<string, unknown>, scope: ReadonlySet<string>): Promise<void> {
+    const parsed = parseChatRequest(frame);
+    if (!parsed.ok) return fail(socket, "INVALID_REQUEST", parsed.requestId);
+    const { requestId, chatId } = parsed.value;
+    const channel = store.channelOf(chatId);
+    if (login.state !== "ready" || !channel || !scope.has(chatId)) return fail(socket, "UNKNOWN_CHAT", requestId);
+    if (channel.kind !== "square") return fail(socket, "CHAT_ADMINS_UNSUPPORTED", requestId);
+    const account = generation;
+    try {
+      const admins = await provider.fetchChatAdmins({ channelId: chatId, kind: channel.kind });
+      if (account !== generation || login.state !== "ready") return;
+      send(socket, { type: "chat:admins", requestId, chatId, admins });
+    } catch {
+      if (account !== generation || login.state !== "ready") return;
+      // LINE errors can contain credentials or private member data; log only our own code.
+      console.error("CHAT_ADMINS_FAILED");
+      fail(socket, "CHAT_ADMINS_FAILED", requestId);
     }
   }
 
@@ -597,6 +619,10 @@ export function createHub(options: HubOptions): Hub {
         case "history:fetch":
           if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
           else void handleHistory(socket, frame as Record<string, unknown>, botScope);
+          return;
+        case "chat:admins":
+          if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else void handleChatAdmins(socket, frame as Record<string, unknown>, botScope);
           return;
         case "message:send":
           // Both budgets: this connection's per-second one, and the all-bots per-minute one.

@@ -1,4 +1,4 @@
-import type { AuthState, Channel, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, ScamAnalysis, StickerPackage } from "../model/dto.js";
+import type { AuthState, Channel, ChatAdmin, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, ScamAnalysis, StickerPackage } from "../model/dto.js";
 
 export type ListenState = "starting" | "listening" | "reconnecting";
 
@@ -30,6 +30,8 @@ export type ServerFrame =
   | { type: "message:reactions"; chatId: string; messageId: string; reactions?: Reactions }
   | { type: "status"; state: ListenState }
   | { type: "history"; requestId: string; chatId: string; messages: Message[]; hasMore: boolean; cursor?: string }
+  /** All administrators of the requested OpenChat, only to the bot connection that asked. */
+  | { type: "chat:admins"; requestId: string; chatId: string; admins: ChatAdmin[] }
   | { type: "sent"; requestId: string; messageId: string }
   | { type: "read"; chatId: string; positions: ReadPosition[] }
   | { type: "stickers"; requestId: string; packages: StickerPackage[] }
@@ -49,6 +51,8 @@ export type ClientFrame =
   | { type: "auth:start" }
   | { type: "auth:logout" }
   | { type: "history:fetch"; requestId: string; chatId: string; limit?: number; before?: string }
+  /** Bot API only; restricted to known OpenChats in `api.chats`. */
+  | { type: "chat:admins"; requestId: string; chatId: string }
   | { type: "message:send"; requestId: string; chatId: string; text?: string; mentions?: Mention[]; mediaId?: string; sticker?: { packageId: number; stickerId: number } }
   | { type: "chat:read"; chatId: string; messageId: string }
   /** Take back one of this account's own messages (pages only; bots cannot). */

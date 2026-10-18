@@ -16,6 +16,7 @@ function fakeBase(overrides = {}) {
   return {
     profile: { mid: ME, displayName: "我" },
     poll: { islisten: true },
+    push: { conns: [] },
     on() {},
     talk: {
       async getContactsV2({ mids }) { return { contacts: Object.fromEntries(mids.map((m) => [m, { contact: { mid: m, displayName: `名-${m.slice(-3)}` } }])) }; },
@@ -649,4 +650,141 @@ test("OpenChat TTL refresh replaces old live reactions with current history whil
   const page = await refreshing;
   assert.deepEqual(page.messages[0].reactions, { counts: { LOVE: 3 } }, "history replaces reactions from before this refresh");
   assert.equal(page.messages[1].reactions, undefined, "live removal during refresh still overrides the walked snapshot");
+});
+
+const squareMember = (id, role, extra = {}) => ({ squareMemberMid: id, displayName: `名-${id}`, role, ...extra });
+
+test("OpenChat administrators enumerate the actual chat across pages, map named/numeric roles and deduplicate members", async () => {
+  const calls = [];
+  const base = fakeBase({ square: {
+    async getSquareChatMembers(request) {
+      calls.push(request);
+      if (!request.continuationToken) return {
+        squareChatMembers: [squareMember("p-admin", "ADMIN", { profileImageObsHash: "avatarhash" }), squareMember("p-co", "CO_ADMIN"), squareMember("p-member", "MEMBER")],
+        continuationToken: "next",
+      };
+      if (request.continuationToken === "next") return {
+        squareChatMembers: [squareMember("p-admin", 1, { profileImageObsHash: "avatarhash" }), squareMember("p-numeric-admin", 1), squareMember("p-numeric-co", 2), squareMember("p-ordinary", 10)],
+        continuationToken: "last",
+      };
+      return { squareChatMembers: [], continuationToken: "" };
+    },
+  } });
+  const { provider } = await activeProvider(base);
+  provider.profiles.set("p-cached", { name: "Not in this chat", role: "admin", settled: true });
+  assert.deepEqual(await provider.fetchChatAdmins({ channelId: SQUARE, kind: "square" }), [
+    { userId: "p-admin", displayName: "名-p-admin", role: "admin", pictureId: "avatar-o-avatarhash" },
+    { userId: "p-co", displayName: "名-p-co", role: "coAdmin" },
+    { userId: "p-numeric-admin", displayName: "名-p-numeric-admin", role: "admin" },
+    { userId: "p-numeric-co", displayName: "名-p-numeric-co", role: "coAdmin" },
+  ]);
+  assert.deepEqual(calls, [undefined, "next", "last"].map((continuationToken) => ({ squareChatMid: SQUARE, limit: 100, continuationToken })));
+});
+
+test("OpenChat administrators reject malformed later pages and never retain a partial list for retries", async (t) => {
+  for (const [name, badPage] of [
+    ["missing members", {}],
+    ["null page", null],
+    ["non-array members", { squareChatMembers: {} }],
+    ["null member", { squareChatMembers: [null] }],
+    ["missing id", { squareChatMembers: [{ displayName: "name", role: "ADMIN" }] }],
+    ["empty id", { squareChatMembers: [squareMember("", "ADMIN")] }],
+    ["missing name", { squareChatMembers: [{ squareMemberMid: "p-bad", role: "ADMIN" }] }],
+    ["invalid picture", { squareChatMembers: [squareMember("p-bad", "ADMIN", { profileImageObsHash: 4 })] }],
+    ["missing role", { squareChatMembers: [squareMember("p-bad", undefined)] }],
+    ["unknown role", { squareChatMembers: [squareMember("p-bad", "OWNER")] }],
+    ["malformed token", { squareChatMembers: [], continuationToken: 5 }],
+  ]) {
+    await t.test(name, async () => {
+      let calls = 0;
+      let retry = false;
+      const base = fakeBase({ square: {
+        async getSquareChatMembers() {
+          calls += 1;
+          if (retry) return { squareChatMembers: [] };
+          return calls === 1 ? { squareChatMembers: [squareMember("p-partial", "ADMIN")], continuationToken: "next" } : badPage;
+        },
+      } });
+      const { provider } = await activeProvider(base);
+      const channel = { channelId: SQUARE, kind: "square" };
+      await assert.rejects(provider.fetchChatAdmins(channel), /CHAT_ADMINS_INVALID_/);
+      retry = true;
+      assert.deepEqual(await provider.fetchChatAdmins(channel), []);
+      assert.equal(calls, 3);
+    });
+  }
+});
+
+test("OpenChat administrator transport failures and token cycles fail instead of returning partial admins", async (t) => {
+  for (const mode of ["transport", "cycle"]) {
+    await t.test(mode, async () => {
+      let calls = 0;
+      const base = fakeBase({ square: {
+        async getSquareChatMembers() {
+          calls += 1;
+          if (mode === "transport" && calls > 1) throw new Error("offline");
+          return { squareChatMembers: [squareMember("p-partial", "ADMIN")], continuationToken: calls === 2 ? "other" : "next" };
+        },
+      } });
+      const { provider } = await activeProvider(base);
+      await assert.rejects(provider.fetchChatAdmins({ channelId: SQUARE, kind: "square" }), mode === "transport" ? /offline/ : /CHAT_ADMINS_PAGINATION_LOOP/);
+      assert.equal(calls, mode === "transport" ? 2 : 3);
+    });
+  }
+});
+
+test("OpenChat administrator enumeration supports large chats but fails closed at its finite page bound", async () => {
+  let calls = 0;
+  let finish = false;
+  const base = fakeBase({ square: {
+    async getSquareChatMembers() {
+      calls += 1;
+      return { squareChatMembers: [squareMember(`p-${calls}`, "ADMIN")], continuationToken: finish && calls === 1000 ? "" : `next-${calls}` };
+    },
+  } });
+  const { provider } = await activeProvider(base);
+  const channel = { channelId: SQUARE, kind: "square" };
+  await assert.rejects(provider.fetchChatAdmins(channel), /CHAT_ADMINS_PAGE_LIMIT/);
+  assert.equal(calls, 1000);
+  calls = 0;
+  finish = true;
+  assert.equal((await provider.fetchChatAdmins(channel)).length, 1000);
+  assert.equal(calls, 1000);
+});
+
+test("OpenChat administrator results are discarded after close or session replacement, before another page is fetched", async (t) => {
+  for (const change of ["close", "replace"]) {
+    await t.test(change, async () => {
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      let calls = 0;
+      const base = fakeBase({ square: {
+        async getSquareChatMembers() {
+          calls += 1;
+          await gate;
+          return { squareChatMembers: [squareMember("p-old", "ADMIN")], continuationToken: "next" };
+        },
+      } });
+      const { provider } = await activeProvider(base);
+      const pending = provider.fetchChatAdmins({ channelId: SQUARE, kind: "square" });
+      if (change === "close") await provider.close();
+      else provider.client = {};
+      release();
+      await assert.rejects(pending, /SESSION_CHANGED/);
+      assert.equal(calls, 1);
+    });
+  }
+});
+
+test("administrator enumeration rejects other channel kinds and unauthenticated calls without calling LINE", async () => {
+  let calls = 0;
+  const { provider } = await activeProvider(fakeBase({ square: {
+    async getSquareChatMembers() { calls += 1; return { squareChatMembers: [] }; },
+  } }));
+  for (const kind of ["user", "group", "room"]) {
+    await assert.rejects(provider.fetchChatAdmins({ channelId: GROUP_A, kind }), /CHAT_ADMINS_UNSUPPORTED/);
+  }
+  await provider.close();
+  await assert.rejects(provider.fetchChatAdmins({ channelId: SQUARE, kind: "square" }), /NOT_AUTHENTICATED/);
+  assert.equal(calls, 0);
 });

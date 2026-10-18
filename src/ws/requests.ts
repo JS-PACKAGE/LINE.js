@@ -42,6 +42,12 @@ export function requestIdOf(frame: Record<string, unknown>): string | undefined 
   return typeof frame.requestId === "string" && REQUEST_ID.test(frame.requestId) ? frame.requestId : undefined;
 }
 
+export function parseChatRequest(frame: Record<string, unknown>): Parsed<{ requestId: string; chatId: string }> {
+  const base = header(frame);
+  if (!base) return { ok: false, ...(requestIdOf(frame) ? { requestId: requestIdOf(frame)! } : {}) };
+  return { ok: true, value: base };
+}
+
 export function parseHistory(frame: Record<string, unknown>, defaultLimit: number): Parsed<HistoryRequest> {
   const base = header(frame);
   if (!base) return { ok: false, ...(requestIdOf(frame) ? { requestId: requestIdOf(frame)! } : {}) };

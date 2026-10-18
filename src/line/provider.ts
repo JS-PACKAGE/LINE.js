@@ -3,7 +3,7 @@ import { BaseClient, type Device, type FetchLike } from "@evex/linejs/base";
 import { LINEStruct } from "@evex/linejs/thrift";
 import type { Message as LineMessage, SquareMessage as LineSquareMessage } from "@evex/linejs-types";
 import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
-import type { Channel, ChannelRef, HistoryPage, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
+import type { Channel, ChannelRef, ChatAdmin, HistoryPage, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
 import { withMyReaction } from "../model/store.js";
 import { memberRole, mentionMetadata, parseMentions, replyTarget } from "./members.js";
 import { parseEmojis } from "./emoji.js";
@@ -69,6 +69,7 @@ export interface LineProvider {
   /** Where other members have read up to; empty when LINE has none (or the chat type has no receipts). */
   fetchReadPositions(channel: ChannelRef): Promise<ReadPosition[]>;
   fetchChannels(): Promise<Channel[]>;
+  fetchChatAdmins(channel: ChannelRef): Promise<ChatAdmin[]>;
   fetchHistory(channel: ChannelRef, limit: number, before?: string): Promise<HistoryPage>;
   sendText(channel: ChannelRef, text: string, options?: SendTextOptions): Promise<Message>;
   sendSticker(channel: ChannelRef, packageId: number, stickerId: number): Promise<Message>;
@@ -89,6 +90,7 @@ const STICKER_TIMEOUT_MS = 10_000;
 const STICKER_MAX_BYTES = 2 * 1024 * 1024;
 const SQUARE_PAGE_SIZE = 100;
 const SQUARE_MAX_PAGES = 50;
+const SQUARE_MEMBER_MAX_PAGES = 1000;
 // The walked OpenChat history is kept current by live messages (see rememberSquareMessage), so it
 // can live longer than a page-through; any gap in listening drops it.
 const SQUARE_CACHE_MS = 10 * 60_000;
@@ -666,6 +668,52 @@ export class EvexLineProvider implements LineProvider {
   private requireClient(): Client {
     if (!this.client || this.stopped) throw new Error("NOT_AUTHENTICATED");
     return this.client;
+  }
+
+  async fetchChatAdmins(channel: ChannelRef): Promise<ChatAdmin[]> {
+    if (channel.kind !== "square") throw new Error("CHAT_ADMINS_UNSUPPORTED");
+    const client = this.requireClient();
+    const admins = new Map<string, ChatAdmin>();
+    const tokens = new Set<string>();
+    let continuationToken: string | undefined;
+    for (let page = 0; page < SQUARE_MEMBER_MAX_PAGES; page += 1) {
+      const response = await client.base.square.getSquareChatMembers({
+        squareChatMid: channel.channelId,
+        limit: SQUARE_PAGE_SIZE,
+        continuationToken,
+      });
+      if (this.client !== client || this.stopped) throw new Error("SESSION_CHANGED");
+      if (!response || !Array.isArray(response.squareChatMembers)
+        || (response.continuationToken !== undefined && typeof response.continuationToken !== "string")) {
+        throw new Error("CHAT_ADMINS_INVALID_RESPONSE");
+      }
+      for (const member of response.squareChatMembers) {
+        if (!member || typeof member.squareMemberMid !== "string" || !member.squareMemberMid
+          || typeof member.displayName !== "string"
+          || (member.profileImageObsHash !== undefined && typeof member.profileImageObsHash !== "string")) {
+          throw new Error("CHAT_ADMINS_INVALID_MEMBER");
+        }
+        const role = memberRole(member.role);
+        if (!role && member.role !== "MEMBER" && member.role !== 10) throw new Error("CHAT_ADMINS_INVALID_ROLE");
+        if (role) {
+          const pictureId = avatarMediaId("obs", member.profileImageObsHash);
+          admins.set(member.squareMemberMid, {
+            userId: member.squareMemberMid,
+            displayName: member.displayName,
+            role,
+            ...(pictureId ? { pictureId } : {}),
+          });
+        } else {
+          admins.delete(member.squareMemberMid);
+        }
+      }
+      continuationToken = response.continuationToken;
+      if (!continuationToken) return [...admins.values()];
+      // Cycles and bounds must fail, rather than claim that a partial administrator list is complete.
+      if (tokens.has(continuationToken)) throw new Error("CHAT_ADMINS_PAGINATION_LOOP");
+      tokens.add(continuationToken);
+    }
+    throw new Error("CHAT_ADMINS_PAGE_LIMIT");
   }
 
   async fetchHistory(channel: ChannelRef, limit: number, before?: string): Promise<HistoryPage> {

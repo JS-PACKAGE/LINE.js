@@ -33,6 +33,13 @@ export interface ReadPosition {
 
 export type MemberRole = "admin" | "coAdmin";
 
+export interface ChatAdmin {
+  userId: string;
+  displayName: string;
+  role: MemberRole;
+  pictureId?: string;
+}
+
 /** A tagged person inside a text message: `text.slice(start, end)` is "@name". */
 export interface Mention {
   userId: string;
