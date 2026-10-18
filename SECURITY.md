@@ -137,9 +137,10 @@ approval, and a regression against any of them is treated as a vulnerability.
 | Rule | Enforcement |
 |---|---|
 | The check exists only when `jev.token` is set in `config.yaml`; an empty or missing token disables it. The token must be printable ASCII without spaces (it goes into an HTTP header as is). | `src/config.ts` |
-| The token is used only as the `Authorization: Bearer` header to `https://api.typesafe.ai/v1/systemone`, with redirects refused. It is never sent to the page (pages only learn `scam:state { enabled }`), logged, or included in errors; a failed call logs only `SCAM_CHECK_FAILED` with the HTTP status. | `src/jev/client.ts`, `src/ws/hub.ts` |
+| The token is used only as the `Authorization: Bearer` header to `https://api.typesafe.ai/v1/systemone`, with redirects refused. It is never sent to the page (pages only learn `scam:state { enabled }`), logged, or included in errors; a failed call logs only the constant `SCAM_CHECK_FAILED`, never the upstream error. | `src/jev/client.ts`, `src/ws/hub.ts` |
 | Only an explicit request sends anything: from a page, `scam:check` is limited to 10 per minute per connection; from a bot, it is limited to the chats in `api.chats` and to 10 per minute across all bot connections together. The server sends **its own cached text** of a message it has shown, from someone other than this account, that was not taken back, decrypted and not a system message; text supplied by the client is ignored, so the endpoint cannot be used to send arbitrary text out. Nothing else (sender, chat, other messages) is sent. | `src/ws/hub.ts`, `src/ws/requests.ts` |
 | The answer is parsed fail-closed: without a probability between 0 and 1 there is no result, and an unknown scam kind is dropped. The result goes only to the connection that asked. | `src/jev/client.ts`, `src/ws/hub.ts` |
+| Within one account session, authorized checks of exactly identical text share in-flight work and successful results valid for 5 minutes after completion. The memory-only LRU holds at most 256 entries including pending requests, indexed by SHA-256 of UTF-16 text without retaining an extra plaintext copy. Failures are not cached; logout/account changes and shutdown clear the cache. Every check still consumes its original rate budget and passes message/chat authorization before cache lookup. Changed, withdrawn or evicted messages cannot receive stale results; old-session requests cannot populate a new session's cache or send results to it. | `src/ws/hub.ts` |
 
 ### Secrets and credentials
 
@@ -247,10 +248,11 @@ Be aware of these. They are not bugs, and reports that only restate them will be
    extension or a compromised browser profile can read it. Desktop notifications are off by default;
    when turned on, sender names and message previews appear in the operating system's notification
    center, outside the page.
-9. **The scam check sends message text to a third party.** With `jev.token` set, each check sends that
-   message's text to TypeSafe, subject to TypeSafe's own terms and data handling, and is billed to the
-   key. The result is a model estimate that can be wrong in both directions (and a scammer can word a
-   message to look harmless); it is advice, not a verdict.
+9. **The scam check sends message text to a third party.** With `jev.token` set, a check requiring a
+   new analysis sends that message's text to TypeSafe, subject to TypeSafe's own terms and data handling,
+   and is billed to the key. Cache hits and coalesced requests do not send it again. The result is a model
+   estimate that can be wrong in both directions (and a scammer can word a message to look harmless);
+   it is advice, not a verdict.
 
 ## 7. Hardening checklist for users
 

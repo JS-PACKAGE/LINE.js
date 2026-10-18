@@ -96,7 +96,8 @@ npm start
 - 發送：每 WS 連線最多每秒 5 次；媒體上傳：圖片每檔最多 10MB（PNG／JPEG／GIF）、影片每檔最多 50MB（MP4／MOV，`limits.uploadVideoMaxBytes` 可調，上限 200MB；影片整份暫存於記憶體）、每連線每分鐘最多 5 次。
 - 收到的媒體與檔案：每個最多 50MB（`limits.downloadMaxBytes`），超過者只顯示類型標籤（檔案的下載會失敗）。
 - 機器人 API：預設關閉；`api.enabled`、`api.chats`（必填、至少一個聊天室 id）、`api.sendsPerMinute`（預設 20、≤120）。細節見[機器人 API](#機器人-apiapiws)。
-- 詐騙訊息分析（選用）：在 `jev.token` 填入 [TypeSafe](https://console.typesafe.ai/keys) 的 API 金鑰並重啟後，網頁對**別人傳來的文字訊息**按右鍵（觸控長按）會出現「詐騙機率分析」，以 TypeSafe 的 Jev 決策模型估計詐騙機率（> 80% 高度疑似、≤ 20% 不太像，中間為無法確定）與最接近的手法。只有點選的那一則文字會送到 `api.typesafe.ai`（伺服器取自己快取的內容，不採用網頁傳來的文字；不送寄件者或聊天室），每次依 TypeSafe 計費、每個網頁連線每分鐘最多 10 次。機器人也可透過[機器人 API](#機器人-apiapiws) 的 `scam:check` 分析 `api.chats` 內的訊息（所有機器人合計每分鐘最多 10 次）。金鑰只留在伺服器，不送網頁、不入日誌；`jev.model` 預設固定 `jev-1.13.0`。結果是模型估計，僅供參考。`token` 留空或省略即停用。
+- 詐騙訊息分析（選用）：在 `jev.token` 填入 [TypeSafe](https://console.typesafe.ai/keys) 的 API 金鑰並重啟後，網頁對**別人傳來的文字訊息**按右鍵（觸控長按）會出現「詐騙機率分析」，以 TypeSafe 的 Jev 決策模型估計詐騙機率（> 80% 高度疑似、≤ 20% 不太像，中間為無法確定）與最接近的手法。需要新分析時，只有點選的那一則文字會送到 `api.typesafe.ai`（伺服器取自己快取的內容，不採用網頁傳來的文字；不送寄件者或聊天室），實際上游請求依 TypeSafe 計費、每個網頁連線每分鐘最多 10 次查詢。機器人也可透過[機器人 API](#機器人-apiapiws) 的 `scam:check` 分析 `api.chats` 內的訊息（所有機器人合計每分鐘最多 10 次）。金鑰只留在伺服器，不送網頁、不入日誌；`jev.model` 預設固定 `jev-1.13.0`。結果是模型估計，僅供參考。`token` 留空或省略即停用。
+- 分析加速：同一登入期間，網頁與 API 對**完全相同文字**的同時查詢共用一個上游請求；成功結果自完成起有效 5 分鐘，重查直接回覆，不再送出文字。記憶體 LRU 最多 256 筆（含進行中請求），只以文字雜湊索引、不另存原文、不落盤；失敗不快取，登出／換帳號清除。每次仍檢查訊息資格、聊天室權限與原有限流；等待時文字變更、收回或移出訊息快取，回 `INVALID_REQUEST` 而非舊結果。模型、題目與完整文字不變；首次分析新內容仍取決於 Jev／網路耗時，未保證真實上游延遲。
 
 ## 通訊協定
 
@@ -162,7 +163,7 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 |---|---|---|
 | 機器人 → 服務 | `message:send` | `{ requestId, chatId, text, mentions?, replyTo? }`：**只能文字**；`mediaId`／`sticker` 回 `INVALID_REQUEST`。成功回 `sent { requestId, messageId }` |
 | 機器人 → 服務 | `history:fetch` | `{ requestId, chatId, limit?, before? }`：與網頁相同的分頁，但不附已讀快照 |
-| 機器人 → 服務 | `scam:check` | `{ requestId, chatId, messageId }`：以 Jev 分析 `api.chats` 內**別人傳來**、服務已顯示（即時收到或 `history:fetch` 取得）的文字訊息；伺服器送自己快取的文字。需設定 `jev.token`（否則 `SCAM_CHECK_UNAVAILABLE`），所有機器人合計每分鐘 10 次，每次依 TypeSafe 計費。成功回 `scam:result { requestId, chatId, messageId, analysis: { probability, tactic? } }` |
+| 機器人 → 服務 | `scam:check` | `{ requestId, chatId, messageId }`：以 Jev 分析 `api.chats` 內**別人傳來**、服務已顯示（即時收到或 `history:fetch` 取得）的文字訊息；伺服器送自己快取的文字。需設定 `jev.token`（否則 `SCAM_CHECK_UNAVAILABLE`），所有機器人合計每分鐘 10 次，命中快取亦計入；只有實際上游請求依 TypeSafe 計費。成功回 `scam:result { requestId, chatId, messageId, analysis: { probability, tactic? } }` |
 | 機器人 → 服務 | `profile:get` | `{ requestId }`：隨時取得自己的 ID 與名稱，回 `profile { requestId, profile: { userId, displayName, pictureId? } }`（同 `auth:ready`；不呼叫 LINE，與 `history:fetch` 共用每連線每秒 10 次；未登入回 `INVALID_REQUEST`） |
 | 機器人 → 服務 | `chat:admins:get` | `{ requestId, chatId }`：取得指定社群聊天室的全部現任管理員與共同管理員（含未發言者）；只限 `api.chats`，與 `history:fetch`／`profile:get` 共用每連線每秒 10 次。只回要求者 `chat:admins { requestId, chatId, ownMemberId, admins: [{ userId, displayName, role, pictureId? }] }`；`role` 為 `admin`／`coAdmin`，`displayName` 是字串，`ownMemberId`（自己在該聊天室的成員 ID）與 `userId` 均符合 `/^p[A-Za-z0-9]{10,64}$/`。普通群組／私聊不支援（`CHAT_ADMINS_UNSUPPORTED`）；未登入或未知／未授權聊天室回 `UNKNOWN_CHAT`；LINE 查詢失敗、ID 不合法或分頁不完整回 `CHAT_ADMINS_FAILED`，不回部分名單。網頁 `/ws` 不提供此操作 |
 | 機器人 → 服務 | `ping` → `pong` | 保活；服務另以 WebSocket 協定層 Ping 每 30 秒檢查，連續兩輪未回應即斷線（一般 WebSocket 函式庫會自動回應） |
@@ -196,7 +197,7 @@ ws.on("message", (data) => {
 });
 ```
 
-分析別人傳來的訊息（需設定 `jev.token`）：`analysis.probability` 為 0～1 的詐騙機率；`tactic` 可能沒有，有的話 `kind` 為 `investment`（假投資）、`impersonation`（假冒機關／銀行／客服）、`phishing`（釣魚）、`shopping`（網購／解除分期）、`friend`（冒充親友）、`romance`（感情）、`job`（求職打工／租借帳戶）、`prize`（中獎）、`loan`（貸款）、`other` 之一，`confidence` 為 0～1。每次呼叫都依 TypeSafe 計費，且所有機器人合計每分鐘只有 10 次，請只挑需要的訊息分析（例如下面只看含網址的訊息）。
+分析別人傳來的訊息（需設定 `jev.token`）：`analysis.probability` 為 0～1 的詐騙機率；`tactic` 可能沒有，有的話 `kind` 為 `investment`（假投資）、`impersonation`（假冒機關／銀行／客服）、`phishing`（釣魚）、`shopping`（網購／解除分期）、`friend`（冒充親友）、`romance`（感情）、`job`（求職打工／租借帳戶）、`prize`（中獎）、`loan`（貸款）、`other` 之一，`confidence` 為 0～1。只有實際上游請求依 TypeSafe 計費；包含快取命中的所有機器人查詢合計每分鐘仍只有 10 次，請只挑需要的訊息分析（例如下面只看含網址的訊息）。
 
 ```js
 ws.on("message", (data) => {
@@ -323,6 +324,8 @@ npm audit
 以上同樣在 GitHub Actions（`.github/workflows/ci.yml`）於每次 push／PR 時以乾淨安裝自動執行（Node 22：`npm ci --include=dev`、typecheck、test、`npm audit --audit-level=high`）。
 
 測試使用 `node --test` 與 Mock Provider；Mock 不代替真實 LINE 驗收。Gate 1 需要次要帳號掃碼後 60 秒內收到一則真實訊息，Gate 2–4 另驗證網頁同步、歷史、發送與媒體。全部 Gate 及驗收條件見 [PLAN.md](PLAN.md)。
+
+詐騙分析加速已驗證：typecheck、build 與 273 項測試通過，涵蓋請求合併、精確文字比對、到期、LRU 淘汰、失敗重試、權限、限流及登出／換帳號隔離。實際 HTTP／WS cookie 與 Token 認證 smoke 使用正式 JevClient、隔離且固定延遲 200ms 的上游：同內容的網頁與 API 同時查詢後再重查，上游請求由 3 次降為 1 次，重查由約 203ms 降為 0.46ms。這不是實際 TypeSafe 延遲，未呼叫付費 API、未操作真實 LINE 帳號，亦不代表 Gate 通過。
 
 本次修改（詐騙訊息分析）已驗證：typecheck、build、200 項測試全部通過，`npm audit --audit-level=high` 無漏洞；以無頭 Chromium 與隔離 provider（假的分析器）確認右鍵選單只對別人的文字訊息出現「詐騙機率分析」、結果對話框內容與單一按鈕，以及之後其他確認框仍有取消鍵；以無效金鑰呼叫真實 TypeSafe 端點得到 401（端點與認證方式正確）。**未驗證**：以有效金鑰取得真實分析結果（沒有金鑰）、真實 LINE 帳號上的操作。
 

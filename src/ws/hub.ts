@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
@@ -8,7 +9,7 @@ import type { ApiTokenStore } from "../http/apiToken.js";
 import type { ScamAnalyzer } from "../jev/client.js";
 import { SlidingWindowLimiter } from "../limit.js";
 import type { MediaService } from "../media/service.js";
-import type { Channel, ChannelKind, Message, Reactions, ReadPosition } from "../model/dto.js";
+import type { Channel, ChannelKind, Message, Reactions, ReadPosition, ScamAnalysis } from "../model/dto.js";
 import type { UpdateInfo } from "../update/checker.js";
 import { withMyReaction, type ChatStore } from "../model/store.js";
 import { PROTOCOL_VERSION, type ClientFrame, type ListenState, type ServerFrame } from "./protocol.js";
@@ -19,8 +20,10 @@ const HISTORY_PER_SECOND = 10;
 const NEW_CHANNEL_REFRESH_MS = 1000;
 const MAX_BOT_CONNECTIONS = 4;
 const READ_RANGE_FRESH_MS = 10_000;
-// Each check is a paid call to TypeSafe made on a user's click: plenty for that, too few for a runaway script.
+// Cache hits still consume the same request budget as paid TypeSafe calls.
 const SCAM_CHECKS_PER_MINUTE = 10;
+const SCAM_CACHE_TTL_MS = 5 * 60_000;
+const SCAM_CACHE_MAX_ENTRIES = 256;
 // A connection that has not answered a ping by the next round is gone (a sleeping laptop, a dropped
 // network): it is closed so broadcasts stop piling up behind it and the page can reconnect.
 const HEARTBEAT_MS = 30_000;
@@ -117,6 +120,9 @@ export function createHub(options: HubOptions): Hub {
   const ownSquareSenders = new Map<string, string>();
   // Extra mention permission belongs only to the requesting bot and chat, never the shared message cache.
   const adminMentions = new WeakMap<WebSocket, Map<string, Set<string>>>();
+  // Exact text only, shared after authorization; hashes avoid retaining another copy of private text.
+  // Pending and completed entries share a bounded LRU, cleared at every account boundary.
+  const scamCache = new Map<string, { result: Promise<ScamAnalysis>; expires: number }>();
   // Sockets that answered the last ping (browsers and the ws client both reply to pings on their own).
   const alive = new WeakSet<WebSocket>();
   const timedOut = new WeakSet<WebSocket>();
@@ -425,12 +431,40 @@ export function createHub(options: HubOptions): Hub {
     if (!message?.text || mine || message.unsent || message.decryptFailed || message.contentType === "CHATEVENT") return fail(socket, "INVALID_REQUEST", requestId);
     const account = generation;
     try {
-      const analysis = await scam.analyzeScam(message.text);
+      const key = createHash("sha256").update(message.text, "utf16le").digest("hex");
+      let entry = scamCache.get(key);
+      if (entry && entry.expires <= Date.now()) {
+        scamCache.delete(key);
+        entry = undefined;
+      }
+      if (entry) {
+        scamCache.delete(key);
+        scamCache.set(key, entry);
+      } else {
+        const fresh = {
+          result: scam.analyzeScam(message.text).then((analysis) => {
+            fresh.expires = Date.now() + SCAM_CACHE_TTL_MS;
+            return analysis;
+          }).catch((error: unknown) => {
+            // An old failed request must not remove a replacement or a new account's result.
+            if (scamCache.get(key) === fresh) scamCache.delete(key);
+            throw error;
+          }),
+          expires: Infinity,
+        };
+        entry = fresh;
+        scamCache.set(key, fresh);
+        if (scamCache.size > SCAM_CACHE_MAX_ENTRIES) scamCache.delete(scamCache.keys().next().value!);
+      }
+      const analysis = await entry.result;
       if (account !== generation || login.state !== "ready") return;
+      const current = store.get(messageId, chatId);
+      if (!current || current.text !== message.text || current.senderId !== message.senderId || current.unsent
+        || current.decryptFailed || current.contentType === "CHATEVENT") return fail(socket, "INVALID_REQUEST", requestId);
       send(socket, { type: "scam:result", requestId, chatId, messageId, analysis });
-    } catch (error) {
+    } catch {
       if (account !== generation) return;
-      logFailure("SCAM_CHECK_FAILED", error);
+      console.error("SCAM_CHECK_FAILED");
       fail(socket, "SCAM_CHECK_FAILED", requestId);
     }
   }
@@ -576,6 +610,7 @@ export function createHub(options: HubOptions): Hub {
       seenReads.clear();
       readFetches.clear();
       ownSquareSenders.clear();
+      scamCache.clear();
       for (const socket of botWss.clients) adminMentions.get(socket)?.clear();
       status = "starting";
     }
@@ -787,6 +822,7 @@ export function createHub(options: HubOptions): Hub {
       clearInterval(heartbeat);
       clearTimeout(refreshTimer);
       clearTimeout(listChangeTimer);
+      scamCache.clear();
       for (const socket of [...wss.clients, ...botWss.clients]) socket.close(1001);
       botWss.close();
       wss.close();
