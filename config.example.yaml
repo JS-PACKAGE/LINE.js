@@ -83,4 +83,4 @@ api:
 jev:
   token: ""
   # 使用的模型；固定版本可避免判斷隨模型更新而改變。可省略，預設 jev-1.13.0。
-  model: jev-1.13.0
+  model: jev-latest
