@@ -150,22 +150,24 @@
 
 > v1.17（小語裁示：取得個人 ID，協定版本仍為 2）：新增 Client → Server `profile:get`（`{ requestId }`），網頁與機器人連線皆可用，回 `profile`（`{ requestId, profile }`，內容同 `auth:ready` 的 `profile`：`userId`、`displayName`、`pictureId?`），只送給要求的連線；只讀伺服器登入時取得的資料、不呼叫 LINE，未登入或缺 `requestId` 回 `INVALID_REQUEST`，與歷史共用每連線每秒 10 次的額度。機器人不受 `api.chats` 限制（不涉及任何聊天室）。網頁在左上角自己的名稱列右鍵（觸控長按）可顯示並複製自己的 ID。
 
-> v1.18（小語裁示：僅機器人 API 查詢管理員，協定版本仍為 2）：新增 `chat:admins { requestId, chatId }`，只給 `/api/ws`；`/ws` 回 `UNKNOWN_TYPE`。指定聊天室須已知、已登入且位於 `api.chats`；否則回 `UNKNOWN_CHAT`。只支援社群聊天室，其他種類回 `CHAT_ADMINS_UNSUPPORTED`。adapter 經 linejs 3.4.2 的 `getSquareChatMembers` 逐頁取得該聊天室成員，以 LINE 的 `ADMIN`／`CO_ADMIN` 角色篩選（非訊息快取推測），回要求者 `chat:admins { requestId, chatId, admins: [{ userId, displayName, role: "admin"｜"coAdmin", pictureId? }] }`；`userId` 為社群成員 ID。分頁失敗、循環或超過安全上限皆回 generic `CHAT_ADMINS_FAILED`，不回部分名單；登出／換帳號後捨棄舊結果與錯誤。與 `history:fetch`／`profile:get` 共用每連線每秒 10 次額度。不新增網頁 UI。
+> v1.18（小語裁示：僅機器人 API 查詢管理員，協定版本仍為 2；依 NekoGuard 契約修正）：請求為 `chat:admins:get { requestId, chatId }`，不保留舊 `chat:admins` 請求別名；只給 `/api/ws`，`/ws` 回 `UNKNOWN_TYPE`。機器人 `hello` 保留 `serverVersion`、數字 `protocol: 2`，新增 `capabilities: ["chat:admins"]`。指定聊天室須已知、已登入且位於 `api.chats`，否則回 `UNKNOWN_CHAT`；非社群回 `CHAT_ADMINS_UNSUPPORTED`。adapter 經 linejs 3.4.2 `getSquareChatMembers` 完整分頁，以 `ADMIN`／`CO_ADMIN` 篩選現任管理員（含未發言者），再以 `getSquareChat.squareChatMember` 取得自己的成員 ID。回要求者 `chat:admins { requestId, chatId, ownMemberId, admins: [{ userId, displayName, role: "admin"｜"coAdmin", pictureId? }] }`；兩種成員 ID 須符合 `/^p[A-Za-z0-9]{10,64}$/`，`displayName` 是字串。查詢／分頁／成員 ID 驗證失敗皆回 generic `CHAT_ADMINS_FAILED`，不回部分名單；與歷史／profile 共用每連線每秒 10 次額度。不新增網頁 UI。
 
-> 本次驗證：已以隔離 LINE 回應驗證 adapter 分頁、實際 HTTP／WS Token 認證與 `chat:admins` 回應，以及授權拒絕／非社群拒絕／網頁入口拒絕；沒有新增網頁 UI，也尚未以真實 LINE 帳號驗收管理員查詢，不宣稱通過 Gate。
+> v1.18（續）：查詢成功僅授予同一機器人連線、同一聊天室以 `message:send.mentions` 標記該名單未發言管理員的權限，不寫入共享訊息快取。新查詢開始即撤銷舊授權，包含限流或後續失敗；只有最新查詢結果可授權，過期並行查詢回 `CHAT_ADMINS_FAILED`。斷線、登出／換帳號清除授權及舊結果；已顯示訊息寄件者仍依原規則可被標記。OpenChat 機器人排除自己訊息須用 `ownMemberId`，不是一般帳號 `profile.userId`。
+
+> 本次驗證：typecheck、build 與 262 項測試通過；已以隔離 LINE 回應、實際 HTTP／WS Token 認證及正式 adapter 驗證 capability 握手、完整分頁、`ownMemberId`、未發言管理員的 MENTION metadata、跨連線拒絕與重新查詢撤銷。回歸測試另涵蓋聊天室／網頁隔離、空名單、失敗、限流、回應順序顛倒、斷線、登出／換帳號。尚未以真實 LINE 帳號或 NekoGuard 程序完成聯測，不宣稱通過 Gate。
 
 ### Server → Client
 
 | type | 負載 |
 |---|---|
-| `hello` | `{ protocol: 2, serverVersion }` |
+| `hello` | `{ protocol: 2, serverVersion, capabilities? }`（僅 `/api/ws` 宣告 `capabilities: ["chat:admins"]`） |
 | `update:available` | `{ version, current, url }`（url 僅限本專案 GitHub Release 頁） |
 | `auth:state` | `{ state: "restoring"｜"idle"｜"authenticating"｜"ready"｜"error" }`（連線即送、變動廣播；不含祕密） |
 | `auth:qr` | `{ url }`（一次性；只送給發起 `auth:start` 的連線） |
 | `auth:pin` | `{ code }`（一次性；僅畫面顯示） |
 | `auth:ready` | `{ profile }` |
 | `profile` | `{ requestId, profile }`（回應 `profile:get`；只送給要求的連線） |
-| `chat:admins` | `{ requestId, chatId, admins: ChatAdmin[] }`（只回要求的機器人連線） |
+| `chat:admins` | `{ requestId, chatId, ownMemberId, admins: ChatAdmin[] }`（只回要求的機器人連線） |
 | `channels` | `{ channels: Channel[] }`（snapshot，連線即送、變動重送） |
 | `messages` | `{ chatId, messages: Message[] }`（連線時快照，每個聊天室一個影格；舊訊息，不計未讀） |
 | `message` | `{ message: Message }`（即時新訊息） |
@@ -195,7 +197,7 @@
 | `message:react` | `{ requestId, chatId, messageId, reaction: "NICE"｜"LOVE"｜"FUN"｜"AMAZING"｜"SAD"｜"OMG"｜null }`（僅網頁，與 `message:send` 共用頻率上限） |
 | `scam:check` | `{ requestId, chatId, messageId }`（網頁每連線每分鐘 10 次；機器人限 `api.chats`、所有機器人合計每分鐘 10 次；只接受別人傳來、已顯示、未收回的文字訊息） |
 | `profile:get` | `{ requestId }`（自己的 `profile`；網頁與機器人皆可，不呼叫 LINE） |
-| `chat:admins` | `{ requestId, chatId }`（僅機器人 API；指定社群聊天室的全部管理員與共同管理員） |
+| `chat:admins:get` | `{ requestId, chatId }`（僅機器人 API；指定社群聊天室的全部管理員與共同管理員） |
 | `channels:refresh` | `{}` |
 | `api:token:create` / `api:token:revoke` | `{}`（產生或撤銷機器人 Token，並中斷所有機器人連線） |
 | `ping` | `{}` |
@@ -203,7 +205,7 @@
 ### 機器人 API（`/api/ws`）
 - 升級條件：`api.enabled`、**無 `Origin`**、`Authorization: Bearer linejs_…` 符合目前 Token；否則 403（同時超過 4 個連線回 429）。`Host` 不限制（同網頁）。
 - 連線時收到 `hello`、`auth:state`、`status`、`auth:ready`、僅含 `api.chats` 的 `channels`；之後只有這些聊天室的 `message`／`message:edit`。不重播、不給 `read`／`update:available`／`api:state`。
-- 可送：`message:send`（`requestId`、`chatId`、`text`、可選 `mentions`／`replyTo`；`mediaId`／`sticker` 回 `INVALID_REQUEST`）、`history:fetch`、`scam:check`（v1.16，回 `scam:result`）、`profile:get`（v1.17，回 `profile`）、`chat:admins`（v1.18，回同名影格）、`ping`；其餘 `UNKNOWN_TYPE`；`api.chats` 以外的聊天室回 `UNKNOWN_CHAT`。
+- 可送：`message:send`（`requestId`、`chatId`、`text`、可選 `mentions`／`replyTo`；`mediaId`／`sticker` 回 `INVALID_REQUEST`）、`history:fetch`、`scam:check`（v1.16，回 `scam:result`）、`profile:get`（v1.17，回 `profile`）、`chat:admins:get`（v1.18，回 `chat:admins`）、`ping`；其餘 `UNKNOWN_TYPE`；`api.chats` 以外的聊天室回 `UNKNOWN_CHAT`。
 - 限制：每連線 `limits.sendsPerSecond`，且全部機器人合計 `api.sendsPerMinute`（預設 20，≤120）。
 
 ### HTTP

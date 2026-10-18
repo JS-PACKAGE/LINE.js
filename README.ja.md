@@ -164,15 +164,19 @@ HTTP：`GET /media/:mediaId`（スタンプ、スタンプパックのアイコ�
 | ボット → サービス | `history:fetch` | `{ requestId, chatId, limit?, before? }`：Web ページと同じページ取得ですが、既読 snapshot は含みません |
 | ボット → サービス | `scam:check` | `{ requestId, chatId, messageId }`：`api.chats` 内の**相手から届いた**、サービスが表示済み（リアルタイム受信または `history:fetch` で取得）のテキストメッセージを Jev で分析します。サーバーは自身のキャッシュのテキストを送ります。`jev.token` の設定が必要で（未設定時は `SCAM_CHECK_UNAVAILABLE`）、全ボット合計で毎分 10 回、1 回ごとに TypeSafe の料金がかかります。成功時は `scam:result { requestId, chatId, messageId, analysis: { probability, tactic? } }` |
 | ボット → サービス | `profile:get` | `{ requestId }`：自分の ID と名前をいつでも取得できます。`profile { requestId, profile: { userId, displayName, pictureId? } }` を返します（`auth:ready` と同じ内容。LINE には問い合わせず、`history:fetch` と接続ごとに毎秒 10 回の枠を共有。未ログイン時は `INVALID_REQUEST`） |
-| ボット → サービス | `chat:admins` | `{ requestId, chatId }`：指定した OpenChat ルームの管理者・共同管理者全員を取得します（未発言者も含む）。`api.chats` 内のみで、`history:fetch`／`profile:get` と接続ごとに毎秒 10 回の枠を共有します。要求した接続にのみ `chat:admins { requestId, chatId, admins: [{ userId, displayName, role, pictureId? }] }` を返します。`role` は `admin`／`coAdmin`、`userId` は OpenChat メンバー ID です。通常のグループ／個人チャットは `CHAT_ADMINS_UNSUPPORTED`、未ログイン・不明・許可外のチャットは `UNKNOWN_CHAT`。LINE 問い合わせ失敗やページ取得が不完全な場合は `CHAT_ADMINS_FAILED` とし、一部だけの一覧は返しません。ブラウザーの `/ws` では利用不可 |
+| ボット → サービス | `chat:admins:get` | `{ requestId, chatId }`：指定した OpenChat ルームの現任管理者・共同管理者全員を取得します（未発言者も含む）。`api.chats` 内のみで、`history:fetch`／`profile:get` と接続ごとに毎秒 10 回の枠を共有します。要求した接続にのみ `chat:admins { requestId, chatId, ownMemberId, admins: [{ userId, displayName, role, pictureId? }] }` を返します。`role` は `admin`／`coAdmin`、`displayName` は文字列で、`ownMemberId`（そのチャットでの自分のメンバー ID）と `userId` はともに `/^p[A-Za-z0-9]{10,64}$/` に一致します。通常のグループ／個人チャットは `CHAT_ADMINS_UNSUPPORTED`、未ログイン・不明・許可外のチャットは `UNKNOWN_CHAT`。LINE 問い合わせ失敗、不正な ID、ページ取得が不完全な場合は `CHAT_ADMINS_FAILED` とし、一部だけの一覧は返しません。ブラウザーの `/ws` では利用不可 |
 | ボット → サービス | `ping` → `pong` | 接続維持。サービスは WebSocket プロトコルレベルの Ping でも 30 秒ごとに確認し、2 回続けて応答がなければ切断します（一般的な WebSocket ライブラリは自動で応答します） |
-| サービス → ボット | `hello`、`auth:state`、`status` | 接続時に送信。`auth:state` が `ready` でない場合（LINE 未ログイン）、まだ送受信できません |
-| サービス → ボット | `auth:ready` | 自分の `profile.userId` を含み、自分が送ったメッセージを除外するために使えます（スマートフォンから送ったメッセージもこの id です） |
+| サービス → ボット | `hello`、`auth:state`、`status` | 接続時に送信。`hello` は数値の `protocol: 2` と `serverVersion` を維持し、`capabilities: ["chat:admins"]` で拡張を宣言します。`auth:state` が `ready` でない場合（LINE 未ログイン）、まだ送受信できません |
+| サービス → ボット | `auth:ready` | 自分の `profile.userId` を含み、通常のチャットで自分が送ったメッセージを除外できます。OpenChat では代わりに `chat:admins` 応答の `ownMemberId` を使います |
 | サービス → ボット | `channels` | `api.chats` のチャットルームのみ。変更時に再送します |
 | サービス → ボット | `message`、`message:edit`、`message:unsend` | `api.chats` のチャットルームの**リアルタイム**メッセージ、編集、送信取消のみ。自分が送ったものも含みます |
 | サービス → ボット | `sent`、`history`、`scam:result`、`profile`、`chat:admins`、`error` | 対応するリクエストへの応答。エラーは汎用コードのみ（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`SCAM_CHECK_FAILED`、`CHAT_ADMINS_UNSUPPORTED`、`CHAT_ADMINS_FAILED`…） |
 
 それ以外はすべて `UNKNOWN_TYPE` を返します。ログイン／ログアウト、`chat:read`（既読通知）、`message:unsend`（送信取消）、`message:react`（リアクション）、`channels:refresh`、スタンプ一覧、Token 管理は利用できません。**過去のメッセージは再送しません**（ボットは「今」から開始し、履歴に重複して応答しません。履歴は `history:fetch` を使ってください）。`read`、`update:available`、`api:state`、`scam:state` は送信しません。画像／動画などのメディアのバイト列も取得できません（ボットにはメッセージの `contentType` のみ見えます）。
+
+**管理者のメンション権限**：取得成功後、同じ接続・同じチャットで `message:send.mentions` を使い、取得した未発言の管理者をメンションできます。形式は従来どおり `{ userId, start, end }`（`@` で始まる文字範囲の UTF-16 インデックス）で、1 メッセージにつき最大 20 人です。この追加権限は他の接続・チャット・Web ページに共有しません。再取得を開始した時点で旧権限を取り消し（レート制限や後続の失敗も含む）、最新の取得が成功した場合だけ新しい一覧を許可します。古い並行リクエストは `CHAT_ADMINS_FAILED` となります。切断・ログアウト・アカウント変更でも権限を消去し、処理中の古い結果を無効化します。表示済みメッセージの送信者は従来の規則で引き続きメンション可能です。旧 `chat:admins` **リクエスト**は受け付けず（`UNKNOWN_TYPE`）、応答名としてのみ残します。
+
+隔離した LINE 応答と実際の HTTP／WS Token 認証で、ハンドシェイク、全ページ取得、自分のメンバー ID、メンション権限の付与・取り消しを確認しました。実際の LINE アカウントや NekoGuard プロセスとの結合検証は未実施で、Gate 通過を意味しません。
 
 **頻度とリスク**
 - 各接続は `limits.sendsPerSecond`（≤5）の制限を受け、全ボット合計で毎分 `api.sendsPerMinute` を超えてはいけません。超過すると `RATE_LIMITED` を返します。

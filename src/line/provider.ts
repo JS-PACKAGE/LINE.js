@@ -3,7 +3,7 @@ import { BaseClient, type Device, type FetchLike } from "@evex/linejs/base";
 import { LINEStruct } from "@evex/linejs/thrift";
 import type { Message as LineMessage, SquareMessage as LineSquareMessage } from "@evex/linejs-types";
 import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
-import type { Channel, ChannelRef, ChatAdmin, HistoryPage, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
+import type { Channel, ChannelRef, ChatAdmin, ChatAdmins, HistoryPage, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
 import { withMyReaction } from "../model/store.js";
 import { memberRole, mentionMetadata, parseMentions, replyTarget } from "./members.js";
 import { parseEmojis } from "./emoji.js";
@@ -69,7 +69,7 @@ export interface LineProvider {
   /** Where other members have read up to; empty when LINE has none (or the chat type has no receipts). */
   fetchReadPositions(channel: ChannelRef): Promise<ReadPosition[]>;
   fetchChannels(): Promise<Channel[]>;
-  fetchChatAdmins(channel: ChannelRef): Promise<ChatAdmin[]>;
+  fetchChatAdmins(channel: ChannelRef): Promise<ChatAdmins>;
   fetchHistory(channel: ChannelRef, limit: number, before?: string): Promise<HistoryPage>;
   sendText(channel: ChannelRef, text: string, options?: SendTextOptions): Promise<Message>;
   sendSticker(channel: ChannelRef, packageId: number, stickerId: number): Promise<Message>;
@@ -104,6 +104,7 @@ const LOOKUP_RETRY_MS = 5 * 60 * 1000;
 // Past this many remembered failures, expired ones are dropped (they no longer block a retry anyway).
 const MAX_LOOKUP_MISSES = 2000;
 const TALK_USER_MID = /^u[0-9a-f]{32}$/;
+const SQUARE_MEMBER_MID = /^p[A-Za-z0-9]{10,64}$/;
 const STICKER_PACKS_CACHE_MS = 10 * 60 * 1000;
 const PACK_META_CONCURRENCY = 4;
 const UNREAD_MAX_PAGES = 20;
@@ -670,7 +671,7 @@ export class EvexLineProvider implements LineProvider {
     return this.client;
   }
 
-  async fetchChatAdmins(channel: ChannelRef): Promise<ChatAdmin[]> {
+  async fetchChatAdmins(channel: ChannelRef): Promise<ChatAdmins> {
     if (channel.kind !== "square") throw new Error("CHAT_ADMINS_UNSUPPORTED");
     const client = this.requireClient();
     const admins = new Map<string, ChatAdmin>();
@@ -688,7 +689,7 @@ export class EvexLineProvider implements LineProvider {
         throw new Error("CHAT_ADMINS_INVALID_RESPONSE");
       }
       for (const member of response.squareChatMembers) {
-        if (!member || typeof member.squareMemberMid !== "string" || !member.squareMemberMid
+        if (!member || typeof member.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(member.squareMemberMid)
           || typeof member.displayName !== "string"
           || (member.profileImageObsHash !== undefined && typeof member.profileImageObsHash !== "string")) {
           throw new Error("CHAT_ADMINS_INVALID_MEMBER");
@@ -708,7 +709,17 @@ export class EvexLineProvider implements LineProvider {
         }
       }
       continuationToken = response.continuationToken;
-      if (!continuationToken) return [...admins.values()];
+      if (!continuationToken) {
+        // getSquareChat returns the authenticated account's membership, not its ordinary account mid.
+        const chat = await client.base.square.getSquareChat({ squareChatMid: channel.channelId });
+        if (this.client !== client || this.stopped) throw new Error("SESSION_CHANGED");
+        const membership = chat?.squareChatMember;
+        if (membership?.squareChatMid !== channel.channelId
+          || typeof membership.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(membership.squareMemberMid)) {
+          throw new Error("CHAT_ADMINS_INVALID_MEMBERSHIP");
+        }
+        return { ownMemberId: membership.squareMemberMid, admins: [...admins.values()] };
+      }
       // Cycles and bounds must fail, rather than claim that a partial administrator list is complete.
       if (tokens.has(continuationToken)) throw new Error("CHAT_ADMINS_PAGINATION_LOOP");
       tokens.add(continuationToken);

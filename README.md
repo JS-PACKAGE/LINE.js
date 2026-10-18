@@ -164,15 +164,19 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 | 機器人 → 服務 | `history:fetch` | `{ requestId, chatId, limit?, before? }`：與網頁相同的分頁，但不附已讀快照 |
 | 機器人 → 服務 | `scam:check` | `{ requestId, chatId, messageId }`：以 Jev 分析 `api.chats` 內**別人傳來**、服務已顯示（即時收到或 `history:fetch` 取得）的文字訊息；伺服器送自己快取的文字。需設定 `jev.token`（否則 `SCAM_CHECK_UNAVAILABLE`），所有機器人合計每分鐘 10 次，每次依 TypeSafe 計費。成功回 `scam:result { requestId, chatId, messageId, analysis: { probability, tactic? } }` |
 | 機器人 → 服務 | `profile:get` | `{ requestId }`：隨時取得自己的 ID 與名稱，回 `profile { requestId, profile: { userId, displayName, pictureId? } }`（同 `auth:ready`；不呼叫 LINE，與 `history:fetch` 共用每連線每秒 10 次；未登入回 `INVALID_REQUEST`） |
-| 機器人 → 服務 | `chat:admins` | `{ requestId, chatId }`：取得指定社群聊天室的全部管理員與共同管理員（含未發言者）；只限 `api.chats`，與 `history:fetch`／`profile:get` 共用每連線每秒 10 次。只回要求者 `chat:admins { requestId, chatId, admins: [{ userId, displayName, role, pictureId? }] }`；`role` 為 `admin`／`coAdmin`，`userId` 是社群成員 ID。普通群組／私聊不支援（`CHAT_ADMINS_UNSUPPORTED`）；未登入或未知／未授權聊天室回 `UNKNOWN_CHAT`；LINE 查詢失敗或分頁不完整回 `CHAT_ADMINS_FAILED`，不回部分名單。網頁 `/ws` 不提供此操作 |
+| 機器人 → 服務 | `chat:admins:get` | `{ requestId, chatId }`：取得指定社群聊天室的全部現任管理員與共同管理員（含未發言者）；只限 `api.chats`，與 `history:fetch`／`profile:get` 共用每連線每秒 10 次。只回要求者 `chat:admins { requestId, chatId, ownMemberId, admins: [{ userId, displayName, role, pictureId? }] }`；`role` 為 `admin`／`coAdmin`，`displayName` 是字串，`ownMemberId`（自己在該聊天室的成員 ID）與 `userId` 均符合 `/^p[A-Za-z0-9]{10,64}$/`。普通群組／私聊不支援（`CHAT_ADMINS_UNSUPPORTED`）；未登入或未知／未授權聊天室回 `UNKNOWN_CHAT`；LINE 查詢失敗、ID 不合法或分頁不完整回 `CHAT_ADMINS_FAILED`，不回部分名單。網頁 `/ws` 不提供此操作 |
 | 機器人 → 服務 | `ping` → `pong` | 保活；服務另以 WebSocket 協定層 Ping 每 30 秒檢查，連續兩輪未回應即斷線（一般 WebSocket 函式庫會自動回應） |
-| 服務 → 機器人 | `hello`、`auth:state`、`status` | 連線即送；`auth:state` 不是 `ready`（LINE 尚未登入）時還不能收發 |
-| 服務 → 機器人 | `auth:ready` | 含自己的 `profile.userId`，用來略過自己發的訊息（你在手機上發的也會是這個 id） |
+| 服務 → 機器人 | `hello`、`auth:state`、`status` | 連線即送；`hello` 保留數字 `protocol: 2` 與 `serverVersion`，以 `capabilities: ["chat:admins"]` 宣告擴充。`auth:state` 不是 `ready`（LINE 尚未登入）時還不能收發 |
+| 服務 → 機器人 | `auth:ready` | 含自己的 `profile.userId`，可排除一般聊天室中自己發的訊息；OpenChat 須改用 `chat:admins` 回應的 `ownMemberId` |
 | 服務 → 機器人 | `channels` | 只含 `api.chats` 內的聊天室；有變動時重送 |
 | 服務 → 機器人 | `message`、`message:edit`、`message:unsend` | 只有 `api.chats` 內聊天室的**即時**訊息、編輯與收回；包含你自己發的 |
 | 服務 → 機器人 | `sent`、`history`、`scam:result`、`profile`、`chat:admins`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`SCAM_CHECK_FAILED`、`CHAT_ADMINS_UNSUPPORTED`、`CHAT_ADMINS_FAILED`…） |
 
 其餘一律回 `UNKNOWN_TYPE`：沒有登入／登出、`chat:read`（已讀回報）、`message:unsend`（收回）、`message:react`（回應）、`channels:refresh`、貼圖清單、Token 管理。**不重播舊訊息**（機器人從「現在」開始，不會重複回應歷史；要歷史請用 `history:fetch`）；不給 `read`、`update:available`、`api:state`、`scam:state`；圖片／影片等媒體位元組也無法取得（機器人只看到訊息的 `contentType`）。
+
+**管理員 mention 授權**：成功查詢後，同一連線可在同一聊天室以 `message:send.mentions` 標記剛查得、尚未發言的管理員；格式仍為 `{ userId, start, end }`（UTF-16 字串索引，指向以 `@` 開頭的文字範圍），每則最多 20 人。此額外授權不共享給其他連線、聊天室或網頁；重新查詢一開始即撤銷舊授權（包含限流或後續失敗），只有最新查詢成功才授予新名單；過期的並行查詢回 `CHAT_ADMINS_FAILED`。斷線、登出或換帳號清除授權及舊查詢結果；已顯示訊息的寄件者仍依原有規則可被標記。舊的 `chat:admins` **請求**不再接受（`UNKNOWN_TYPE`），只保留為回應名稱。
+
+已以隔離 LINE 回應、實際 HTTP／WS Token 認證驗證握手、完整分頁、自身成員 ID 與 mention 授權／撤銷；尚未使用真實 LINE 帳號或 NekoGuard 程序完成聯測，不宣稱 Gate 通過。
 
 **頻率與風險**
 - 每個連線受 `limits.sendsPerSecond`（≤5）限制，且所有機器人合計每分鐘不超過 `api.sendsPerMinute`；超過回 `RATE_LIMITED`。

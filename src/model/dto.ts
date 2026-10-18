@@ -40,6 +40,11 @@ export interface ChatAdmin {
   pictureId?: string;
 }
 
+export interface ChatAdmins {
+  ownMemberId: string;
+  admins: ChatAdmin[];
+}
+
 /** A tagged person inside a text message: `text.slice(start, end)` is "@name". */
 export interface Mention {
   userId: string;

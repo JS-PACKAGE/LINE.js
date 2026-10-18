@@ -1,4 +1,4 @@
-import type { AuthState, Channel, ChatAdmin, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, ScamAnalysis, StickerPackage } from "../model/dto.js";
+import type { AuthState, Channel, ChatAdmins, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, ScamAnalysis, StickerPackage } from "../model/dto.js";
 
 export type ListenState = "starting" | "listening" | "reconnecting";
 
@@ -6,7 +6,7 @@ export type ListenState = "starting" | "listening" | "reconnecting";
 export const PROTOCOL_VERSION = 2;
 
 export type ServerFrame =
-  | { type: "hello"; protocol: number; serverVersion: string }
+  | { type: "hello"; protocol: number; serverVersion: string; capabilities?: string[] }
   /** A newer release exists on GitHub. Public information only; sent to every connection, signed in or not. */
   | { type: "update:available"; version: string; current: string; url: string }
   | { type: "auth:state"; state: AuthState }
@@ -31,7 +31,7 @@ export type ServerFrame =
   | { type: "status"; state: ListenState }
   | { type: "history"; requestId: string; chatId: string; messages: Message[]; hasMore: boolean; cursor?: string }
   /** All administrators of the requested OpenChat, only to the bot connection that asked. */
-  | { type: "chat:admins"; requestId: string; chatId: string; admins: ChatAdmin[] }
+  | ({ type: "chat:admins"; requestId: string; chatId: string } & ChatAdmins)
   | { type: "sent"; requestId: string; messageId: string }
   | { type: "read"; chatId: string; positions: ReadPosition[] }
   | { type: "stickers"; requestId: string; packages: StickerPackage[] }
@@ -52,7 +52,7 @@ export type ClientFrame =
   | { type: "auth:logout" }
   | { type: "history:fetch"; requestId: string; chatId: string; limit?: number; before?: string }
   /** Bot API only; restricted to known OpenChats in `api.chats`. */
-  | { type: "chat:admins"; requestId: string; chatId: string }
+  | { type: "chat:admins:get"; requestId: string; chatId: string }
   | { type: "message:send"; requestId: string; chatId: string; text?: string; mentions?: Mention[]; mediaId?: string; sticker?: { packageId: number; stickerId: number } }
   | { type: "chat:read"; chatId: string; messageId: string }
   /** Take back one of this account's own messages (pages only; bots cannot). */

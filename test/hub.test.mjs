@@ -77,11 +77,12 @@ class FakeProvider {
     return this.history;
   }
   admins = [];
+  ownMemberId = `p${"f".repeat(32)}`;
   adminsError = undefined;
   async fetchChatAdmins(channel) {
     this.calls.push(["admins", channel]);
     if (this.adminsError) throw this.adminsError;
-    return this.admins;
+    return { ownMemberId: this.ownMemberId, admins: this.admins };
   }
   outgoing(channel, fields) {
     return { messageId: `sent-${this.calls.length}`, channelId: channel.channelId, channelKind: channel.kind, senderId: "u-me", senderName: "測試帳號", contentType: "NONE", createdAt: Date.now(), ...fields };
@@ -1319,15 +1320,19 @@ test("chat:admins returns every administrator only to the requesting bot, withou
   }));
   const first = await env.open();
   const second = await env.open();
-  first.socket.send(JSON.stringify({ type: "chat:admins", requestId: "admins-all", chatId: SQUARE }));
+  const hello = first.frames.find((frame) => frame.type === "hello");
+  assert.equal(hello.protocol === 2 && Array.isArray(hello.capabilities) && hello.capabilities.includes("chat:admins"), true);
+  assert.equal(hello.serverVersion, "test");
+  assert.equal(env.page.frames.find((frame) => frame.type === "hello").capabilities?.includes("chat:admins") ?? false, false);
+  first.socket.send(JSON.stringify({ type: "chat:admins:get", requestId: "admins-all", chatId: SQUARE }));
   assert.deepEqual(await first.until((frame) => frame.requestId === "admins-all"), {
-    type: "chat:admins", requestId: "admins-all", chatId: SQUARE, admins: env.provider.admins,
+    type: "chat:admins", requestId: "admins-all", chatId: SQUARE, ownMemberId: env.provider.ownMemberId, admins: env.provider.admins,
   });
   assert.deepEqual(env.provider.calls.filter(([kind]) => kind === "admins"), [["admins", { channelId: SQUARE, kind: "square" }]]);
   await settle();
   assert.equal(second.frames.some((frame) => frame.type === "chat:admins"), false);
   assert.equal(env.page.frames.some((frame) => frame.type === "chat:admins"), false);
-  env.page.socket.send(JSON.stringify({ type: "chat:admins", requestId: "browser", chatId: SQUARE }));
+  env.page.socket.send(JSON.stringify({ type: "chat:admins:get", requestId: "browser", chatId: SQUARE }));
   assert.equal((await env.page.until((frame) => frame.code === "UNKNOWN_TYPE")).code, "UNKNOWN_TYPE");
   assert.equal(env.provider.calls.filter(([kind]) => kind === "admins").length, 1);
 });
@@ -1343,7 +1348,7 @@ test("chat:admins validates requests, hides unknown or disallowed chats and reje
   ]);
   const bot = await env.open();
   const ask = async (frame) => {
-    bot.socket.send(JSON.stringify({ type: "chat:admins", ...frame }));
+    bot.socket.send(JSON.stringify({ type: "chat:admins:get", ...frame }));
     return bot.until((reply) => reply.type === "error" && reply.requestId === frame.requestId);
   };
   for (const frame of [
@@ -1353,11 +1358,11 @@ test("chat:admins validates requests, hides unknown or disallowed chats and reje
   ]) assert.equal((await ask(frame)).code, "INVALID_REQUEST");
   for (const requestId of [undefined, "invalid id", "a".repeat(65), 42]) {
     const before = bot.frames.filter((frame) => frame.type === "error").length;
-    bot.socket.send(JSON.stringify({ type: "chat:admins", requestId, chatId: SQUARE }));
+    bot.socket.send(JSON.stringify({ type: "chat:admins:get", requestId, chatId: SQUARE }));
     await bot.until(() => bot.frames.filter((frame) => frame.type === "error").length > before);
-    assert.deepEqual(bot.frames.filter((frame) => frame.type === "error").at(-1), {
-      type: "error", code: "INVALID_REQUEST", message: "請求格式不正確。",
-    });
+    const error = bot.frames.filter((frame) => frame.type === "error").at(-1);
+    assert.equal(error.code, "INVALID_REQUEST");
+    assert.equal(error.requestId, undefined);
   }
   const missing = await ask({ requestId: "unknown", chatId: unknown });
   const hidden = await ask({ requestId: "disallowed", chatId: disallowed });
@@ -1366,10 +1371,10 @@ test("chat:admins validates requests, hides unknown or disallowed chats and reje
   assert.equal(missing.message, hidden.message);
   // Use another connection so validation attempts do not consume this request's shared budget.
   const supportedCheck = await env.open();
-  supportedCheck.socket.send(JSON.stringify({ type: "chat:admins", requestId: "group", chatId: CHAT }));
+  supportedCheck.socket.send(JSON.stringify({ type: "chat:admins:get", requestId: "group", chatId: CHAT }));
   assert.equal((await supportedCheck.until((frame) => frame.requestId === "group")).code, "CHAT_ADMINS_UNSUPPORTED");
   await env.login.logout();
-  supportedCheck.socket.send(JSON.stringify({ type: "chat:admins", requestId: "signed-out", chatId: SQUARE }));
+  supportedCheck.socket.send(JSON.stringify({ type: "chat:admins:get", requestId: "signed-out", chatId: SQUARE }));
   assert.equal((await supportedCheck.until((frame) => frame.requestId === "signed-out")).code, "UNKNOWN_CHAT");
   assert.equal(env.provider.calls.some(([kind]) => kind === "admins"), false);
 });
@@ -1382,10 +1387,11 @@ test("chat:admins provider failures return only a generic requester-only error",
   env.provider.adminsError = new Error("private administrator and upstream credentials");
   const bot = await env.open();
   const other = await env.open();
-  bot.socket.send(JSON.stringify({ type: "chat:admins", requestId: "failed-admins", chatId: SQUARE }));
-  assert.deepEqual(await bot.until((frame) => frame.requestId === "failed-admins"), {
-    type: "error", requestId: "failed-admins", code: "CHAT_ADMINS_FAILED", message: "無法載入聊天室管理員，請稍後重試。",
-  });
+  bot.socket.send(JSON.stringify({ type: "chat:admins:get", requestId: "failed-admins", chatId: SQUARE }));
+  const error = await bot.until((frame) => frame.requestId === "failed-admins");
+  assert.equal(error.type, "error");
+  assert.equal(error.code, "CHAT_ADMINS_FAILED");
+  assert.equal(JSON.stringify(error).includes(env.provider.adminsError.message), false);
   await settle();
   assert.equal(other.frames.some((frame) => frame.requestId === "failed-admins"), false);
   assert.equal(env.page.frames.some((frame) => frame.requestId === "failed-admins"), false);
@@ -1403,13 +1409,13 @@ test("chat:admins drops delayed results and failures across logout and a later l
     let reject;
     const pending = new Promise((resolve, fail) => { finish = resolve; reject = fail; });
     env.provider.fetchChatAdmins = () => { started(); return pending; };
-    bot.socket.send(JSON.stringify({ type: "chat:admins", requestId: "old-admins", chatId: SQUARE }));
+    bot.socket.send(JSON.stringify({ type: "chat:admins:get", requestId: "old-admins", chatId: SQUARE }));
     await beginning;
     await env.login.logout();
     await env.login.restore();
     await settle();
     if (failure) reject(new Error("old account data"));
-    else finish([{ userId: "old-admin", displayName: "舊帳號管理員", role: "admin" }]);
+    else finish({ ownMemberId: env.provider.ownMemberId, admins: [{ userId: `p${"e".repeat(32)}`, displayName: "舊帳號管理員", role: "admin" }] });
     await settle();
     bot.socket.send(JSON.stringify({ type: "profile:get", requestId: "new-account" }));
     await bot.until((frame) => frame.requestId === "new-account");
@@ -1425,11 +1431,116 @@ test("chat:admins shares the per-connection history and profile rate limit", asy
   t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
   bot.socket.send(JSON.stringify({ type: "history:fetch", requestId: "budget-history", chatId: SQUARE }));
   for (let i = 0; i < 8; i += 1) bot.socket.send(JSON.stringify({ type: "profile:get", requestId: `budget-profile-${i}` }));
-  bot.socket.send(JSON.stringify({ type: "chat:admins", requestId: "budget-admins", chatId: SQUARE }));
-  bot.socket.send(JSON.stringify({ type: "chat:admins", requestId: "limited-admins", chatId: SQUARE }));
+  bot.socket.send(JSON.stringify({ type: "chat:admins:get", requestId: "budget-admins", chatId: SQUARE }));
   assert.equal((await bot.until((frame) => frame.requestId === "budget-admins")).type, "chat:admins");
+  bot.socket.send(JSON.stringify({ type: "chat:admins:get", requestId: "limited-admins", chatId: SQUARE }));
   assert.equal((await bot.until((frame) => frame.requestId === "limited-admins")).code, "RATE_LIMITED");
   assert.equal(env.provider.calls.filter(([kind]) => kind === "admins").length, 1);
+});
+
+const ADMIN = `p${"a".repeat(32)}`;
+const CO_ADMIN = `p${"b".repeat(32)}`;
+const SECOND_SQUARE = `m${"b".repeat(32)}`;
+const adminEntry = (userId = ADMIN) => ({ userId, displayName: "管理員", role: "admin" });
+
+async function adminBotEnv(t) {
+  const env = await botEnv(t, { chats: [SQUARE, SECOND_SQUARE] });
+  env.provider.channels = [SQUARE, SECOND_SQUARE].map((channelId) => ({ channelId, kind: "square", name: "社群" }));
+  env.store.setChannels(env.provider.channels);
+  env.provider.admins = [adminEntry()];
+  let nextId = 0;
+  const ask = async (bot, type, payload = {}) => {
+    const requestId = `admins-${++nextId}`;
+    bot.socket.send(JSON.stringify({ type, requestId, chatId: SQUARE, ...payload }));
+    return bot.until((frame) => frame.requestId === requestId);
+  };
+  const mention = (bot, userId = ADMIN, chatId = SQUARE) => ask(bot, "message:send", {
+    chatId, text: "@管理員", mentions: [{ userId, start: 0, end: 4 }],
+  });
+  return { ...env, ask, mention };
+}
+
+test("queried silent admins may be mentioned only by that bot in that chat, not by pages or reconnects", async (t) => {
+  const env = await adminBotEnv(t);
+  const bot = await env.open();
+  const other = await env.open();
+  assert.equal((await env.mention(bot)).code, "INVALID_REQUEST", "no grant before lookup");
+  assert.equal((await env.ask(bot, "chat:admins:get")).type, "chat:admins");
+  assert.equal((await env.mention(bot)).type, "sent");
+  assert.equal((await env.mention(other)).code, "INVALID_REQUEST");
+  assert.equal((await env.mention(env.page)).code, "INVALID_REQUEST");
+  assert.equal((await env.mention(bot, ADMIN, SECOND_SQUARE)).code, "INVALID_REQUEST");
+  assert.equal((await env.mention(bot, CO_ADMIN)).code, "INVALID_REQUEST", "arbitrary members stay forbidden");
+  await new Promise((resolve) => { bot.socket.once("close", resolve); bot.socket.close(); });
+  const reconnected = await env.open();
+  assert.equal((await env.mention(reconnected)).code, "INVALID_REQUEST");
+  assert.equal(env.provider.calls.filter(([kind]) => kind === "text").length, 1);
+});
+
+test("a refresh immediately revokes old admin mentions, including empty, failed and rate-limited lookups", async (t) => {
+  for (const mode of ["empty", "failure", "limited"]) await t.test(mode, async (t) => {
+    t.mock.method(console, "error", () => {});
+    const env = await adminBotEnv(t);
+    const bot = await env.open();
+    t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+    await env.ask(bot, "chat:admins:get");
+    assert.equal((await env.mention(bot)).type, "sent");
+    const pending = Promise.withResolvers();
+    const started = Promise.withResolvers();
+    env.provider.fetchChatAdmins = () => { started.resolve(); return pending.promise; };
+    if (mode === "limited") {
+      for (let i = 0; i < 9; i += 1) await env.ask(bot, "profile:get");
+    }
+    const refreshing = env.ask(bot, "chat:admins:get");
+    if (mode === "limited") assert.equal((await refreshing).code, "RATE_LIMITED");
+    else await started.promise;
+    assert.equal((await env.mention(bot)).code, "INVALID_REQUEST", "revoked before the lookup finishes");
+    if (mode === "failure") pending.reject(new Error("unavailable"));
+    else pending.resolve({ ownMemberId: env.provider.ownMemberId, admins: [] });
+    if (mode !== "limited") assert.equal((await refreshing).type, mode === "failure" ? "error" : "chat:admins");
+    assert.equal((await env.mention(bot)).code, "INVALID_REQUEST", "failure never restores the old grant");
+    assert.equal(env.provider.calls.filter(([kind]) => kind === "text").length, 1);
+  });
+});
+
+test("out-of-order admin results or failures cannot overwrite the newest grant", async (t) => {
+  for (const failure of [false, true]) await t.test(failure ? "old failure" : "old success", async (t) => {
+    t.mock.method(console, "error", () => {});
+    const env = await adminBotEnv(t);
+    const bot = await env.open();
+    const started = Promise.withResolvers();
+    const pending = Promise.withResolvers();
+    env.provider.fetchChatAdmins = () => { started.resolve(); return pending.promise; };
+    const old = env.ask(bot, "chat:admins:get");
+    await started.promise;
+    env.provider.fetchChatAdmins = async () => ({ ownMemberId: env.provider.ownMemberId, admins: [adminEntry(CO_ADMIN)] });
+    assert.equal((await env.ask(bot, "chat:admins:get")).type, "chat:admins");
+    if (failure) pending.reject(new Error("old lookup failed"));
+    else pending.resolve({ ownMemberId: env.provider.ownMemberId, admins: [adminEntry()] });
+    assert.equal((await old).code, "CHAT_ADMINS_FAILED");
+    assert.equal((await env.mention(bot)).code, "INVALID_REQUEST");
+    assert.equal((await env.mention(bot, CO_ADMIN)).type, "sent");
+    assert.equal(env.provider.calls.filter(([kind]) => kind === "text").length, 1);
+  });
+});
+
+test("logout and account replacement clear admin grants and require a fresh membership result", async (t) => {
+  const env = await adminBotEnv(t);
+  const bot = await env.open();
+  await env.ask(bot, "chat:admins:get");
+  assert.equal((await env.mention(bot)).type, "sent");
+  await env.login.logout();
+  assert.equal((await env.mention(bot)).code, "UNKNOWN_CHAT");
+  env.provider.getProfile = () => ({ userId: `u${"e".repeat(32)}`, displayName: "另一帳號" });
+  env.provider.ownMemberId = `p${"e".repeat(32)}`;
+  env.provider.admins = [adminEntry(CO_ADMIN)];
+  await env.login.restore();
+  await settle();
+  assert.equal((await env.mention(bot)).code, "INVALID_REQUEST");
+  const result = await env.ask(bot, "chat:admins:get");
+  assert.equal(result.ownMemberId, env.provider.ownMemberId);
+  assert.equal((await env.mention(bot)).code, "INVALID_REQUEST");
+  assert.equal((await env.mention(bot, CO_ADMIN)).type, "sent");
 });
 
 test("everything outside send, history, chat admins, scam check, profile and ping is unknown to a bot", async (t) => {
@@ -1440,6 +1551,7 @@ test("everything outside send, history, chat admins, scam check, profile and pin
     { type: "stickers:list", requestId: "s1" }, { type: "channels:refresh" }, { type: "api:token:create" }, { type: "api:token:revoke" },
     { type: "message:unsend", requestId: "u1", chatId: CHAT, messageId: "11" },
     { type: "message:react", requestId: "r1", chatId: CHAT, messageId: "11", reaction: "NICE" },
+    { type: "chat:admins", requestId: "obsolete", chatId: SQUARE },
   ];
   for (const frame of frames) bot.socket.send(JSON.stringify(frame));
   await bot.until(() => bot.frames.filter((frame) => frame.type === "error").length === frames.length);
