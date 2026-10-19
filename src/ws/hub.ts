@@ -420,9 +420,10 @@ export function createHub(options: HubOptions): Hub {
       readFetches.set(chatId, { at: Date.now(), done: fetching });
     }
     await fetching;
-    if (account !== generation) return;
-    const positions = [...(seenReads.get(chatId) ?? [])].map(([readerId, id]) => ({ readerId, messageId: String(id) }));
-    if (positions.length > 0 && login.state === "ready") send(socket, { type: "read", chatId, positions });
+    if (account !== generation || login.state !== "ready" || socket.readyState !== WebSocket.OPEN) return;
+    const positions: ReadPosition[] = [];
+    seenReads.get(chatId)?.forEach((id, readerId) => positions.push({ readerId, messageId: String(id) }));
+    if (positions.length > 0) send(socket, { type: "read", chatId, positions });
   }
 
   async function handleSend(socket: WebSocket, frame: Record<string, unknown>, scope?: ReadonlySet<string>): Promise<void> {
