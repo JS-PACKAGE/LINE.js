@@ -16,7 +16,8 @@ export interface WebServer {
 }
 
 export function createWebServer(config: Config, webRoot: string, media: MediaService, apiTokens: ApiTokenStore): WebServer {
-  const browserToken = randomBytes(32).toString("hex");
+  const browserTokenBytes = randomBytes(32);
+  const browserToken = browserTokenBytes.toString("hex");
   // The Host header is deliberately not pinned, on loopback binds too (owner's decision): the service is reached
   // under whatever name or IP the user uses (reverse proxy, LAN name, tunnel). Origin must still equal the Host
   // it came in under, the cookie is required and cross-site requests are refused, but a DNS-rebinding page
@@ -33,7 +34,7 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
 
   function hasBrowserCookie(request: IncomingMessage): boolean {
     const cookie = request.headers.cookie?.split(";").map((entry) => entry.trim()).find((entry) => entry.startsWith("linejs_browser="))?.slice("linejs_browser=".length) ?? "";
-    return /^[a-f0-9]{64}$/.test(cookie) && timingSafeEqual(Buffer.from(cookie), Buffer.from(browserToken));
+    return /^[a-f0-9]{64}$/.test(cookie) && timingSafeEqual(Buffer.from(cookie, "hex"), browserTokenBytes);
   }
 
   // Behind a TLS-terminating reverse proxy or tunnel the page (and so Origin) is https while this server only sees

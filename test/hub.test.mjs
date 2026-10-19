@@ -545,6 +545,9 @@ test("media route serves stickers only to the browser that holds the cookie and 
   assert.equal(await ok.text(), "png-123");
   assert.equal((await fetch(`${base}sticker-123`)).status, 404, "no cookie");
   assert.equal((await fetch(`${base}sticker-123`, { headers: { Cookie: "linejs_browser=" + "0".repeat(64) } })).status, 404, "wrong cookie");
+  for (const malformed of [cookie.slice(0, -1), cookie + "0", cookie + "zz", "linejs_browser=" + "A".repeat(64), cookie.slice(0, -1) + "g"]) {
+    assert.equal((await fetch(`${base}sticker-123`, { headers: { Cookie: malformed } })).status, 404, "malformed cookie");
+  }
   for (const bad of ["..%2F..%2Fsession.json", "sticker-12-x", "sticker-", "image-1"]) {
     assert.equal((await fetch(base + bad, { headers: { Cookie: cookie } })).status, 404, bad);
   }

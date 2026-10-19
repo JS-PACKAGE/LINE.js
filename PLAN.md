@@ -290,6 +290,8 @@
 
 > 空聊天室提示補強（2026-10）：空狀態沿用單一段落節點及既有 DOM reconcile，不再每次重畫建立段落、清空整個訊息區或重新掛載重試按鈕；提示內容只在改變時更新。實際瀏覽器於空聊天室的失敗、載入中及完成狀態各接收三次已讀更新，段落建立各由 3 次降為 0、DOM 變動由 6／3／3 次降為 0，重試按鈕焦點維持。typecheck、build 與 338 項測試通過；確認失敗→重試→載入→空結果，以及第一則即時訊息到達後移除空提示並正常顯示。使用隔離 HTTP／WS provider，未呼叫真實 LINE 或回報真實帳號已讀。
 
+> 瀏覽器 Cookie 比對補強（2026-10）：保留啟動時產生的 32-byte 隨機 Token，Cookie 仍傳送 64 位小寫 hex；先通過原本的嚴格格式檢查，再解碼為 32-byte 與原始 Token 做 `timingSafeEqual`，不再每次重新編碼固定 Token。隔離程序完成 100 次帶 Cookie 的媒體 GET，Token 編碼 Buffer 由 200 個／12,800 bytes 降為 100 個／3,200 bytes；實際 WS upgrade 由兩個／128 bytes 降為一個／32 bytes。typecheck、build 與 338 項測試通過；補強奇數長度、合法 Token 尾接額外 hex／非 hex、大小寫及非法字元的拒絕測試，原 Origin、Cookie、跨站與 API Token 規則不變。未輸出 Token 或呼叫真實 LINE。
+
 ### Server → Client
 
 | type | 負載 |
