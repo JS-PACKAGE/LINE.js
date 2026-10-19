@@ -62,9 +62,19 @@ export function parseReadRanges(result: unknown, myMid: string): ReadPosition[] 
   for (const [readerId, list] of Object.entries(ranges)) {
     if (readerId === myMid || !mid(readerId) || !list || typeof list !== "object") continue;
     let highest: string | undefined;
+    let highestValue: bigint | undefined;
     for (const entry of Object.values(list)) {
       const id = numericId((entry as Record<string, unknown> | undefined)?.["2"] ?? (entry as { endMessageId?: unknown } | undefined)?.endMessageId);
-      if (id && (highest === undefined || BigInt(id) > BigInt(highest))) highest = id;
+      if (!id || id === highest) continue;
+      if (highest === undefined) {
+        highest = id;
+        continue;
+      }
+      const value = BigInt(id);
+      if (value > (highestValue ??= BigInt(highest))) {
+        highest = id;
+        highestValue = value;
+      }
     }
     if (highest) positions.push({ readerId, messageId: highest });
   }

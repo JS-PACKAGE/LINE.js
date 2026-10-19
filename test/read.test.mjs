@@ -57,6 +57,20 @@ test("read ranges keep each other member's highest message id and skip me", () =
   ]);
 });
 
+test("read-range maxima keep integer precision and the first representation on numeric ties", () => {
+  const zeroReader = `u${"4".repeat(32)}`;
+  const paddedReader = `u${"5".repeat(32)}`;
+  assert.deepEqual(parseReadRanges({ ranges: {
+    [FRIEND]: [null, { 2: "bad" }, { 2: "9007199254740992" }, { endMessageId: "9007199254740993" }, { 2: "09007199254740993" }, { 2: "9007199254740992" }],
+    [zeroReader]: [{ 2: "000" }, { 2: "0" }, { 2: "000" }],
+    [paddedReader]: [{ 2: "00090071992547409929" }, { 2: "90071992547409929" }, { 2: "90071992547409928" }],
+  } }, ME), [
+    { readerId: FRIEND, messageId: "9007199254740993" },
+    { readerId: zeroReader, messageId: "000" },
+    { readerId: paddedReader, messageId: "00090071992547409929" },
+  ]);
+});
+
 test("unexpected read range answers yield no receipts", () => {
   for (const result of [undefined, null, [], {}, [{ ranges: null }], [{ ranges: "x" }], "nope"]) {
     assert.deepEqual(parseReadRanges(result, ME), [], JSON.stringify(result, (_, v) => (typeof v === "bigint" ? String(v) : v)));
