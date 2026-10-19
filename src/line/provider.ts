@@ -1186,6 +1186,7 @@ export class EvexLineProvider implements LineProvider {
   // LINE rejects above 100 mids ("max_size":100). Page it here instead.
   private async fetchFriends(client: Client): Promise<Channel[]> {
     const { userFriendMids } = await client.base.relation.getUserFriendIds({ request: { blockStatus: "ALL" } });
+    if (this.client !== client || this.stopped) return [];
     const batches: string[][] = [];
     for (let offset = 0; offset < (userFriendMids?.length ?? 0); offset += FRIEND_BATCH) batches.push(userFriendMids.slice(offset, offset + FRIEND_BATCH));
     const friends: Channel[] = [];
@@ -1193,6 +1194,7 @@ export class EvexLineProvider implements LineProvider {
     // and LINE is not hit with every batch at once.
     for (let wave = 0; wave < batches.length; wave += FRIEND_BATCH_CONCURRENCY) {
       const answers = await Promise.all(batches.slice(wave, wave + FRIEND_BATCH_CONCURRENCY).map((mids) => client.base.relation.getContactsV3({ mids })));
+      if (this.client !== client || this.stopped) return [];
       for (const { responses } of answers) {
         for (const contact of responses) {
           const name = contact.friendDetail?.user?.overriddenName || contact.targetProfileDetail?.profileName || UNKNOWN_MEMBER;

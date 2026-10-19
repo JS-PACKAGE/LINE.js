@@ -129,6 +129,63 @@ test("friends are fetched in batches of 100, a few at a time, in LINE's order", 
   assert.deepEqual(channels.map((channel) => channel.channelId), friends);
 });
 
+test("late friend lookups cannot overwrite a replacement account's names or start more batches", async (t) => {
+  for (const phase of ["ids", "contacts"]) {
+    await t.test(phase, async () => {
+      const friends = Array.from({ length: 750 }, (_, index) => mid(1000 + index));
+      const gate = Promise.withResolvers();
+      const started = Promise.withResolvers();
+      const requests = [];
+      const base = fakeBase({ relation: {
+        async getUserFriendIds() {
+          if (phase === "ids") { started.resolve(); await gate.promise; }
+          return { userFriendMids: friends };
+        },
+        async getContactsV3({ mids }) {
+          requests.push([...mids]);
+          if (phase === "contacts") { started.resolve(); await gate.promise; }
+          return { responses: mids.map((mid) => ({ targetUserMid: mid, targetProfileDetail: { profileName: "舊帳號稱呼" } })) };
+        },
+      } });
+      const { provider } = await activeProvider(base, {
+        async fetchJoinedChats() { return []; },
+        async fetchJoinedSquares() { return []; },
+        async fetchJoinedSquareChats() { return []; },
+      });
+      const loading = provider.fetchChannels();
+      try {
+        await started.promise;
+        const pendingRequests = [...requests];
+        await provider.teardown();
+        let freshLookups = 0;
+        const replacement = fakeBase({ talk: {
+          async getRecentMessagesV2() { return [talk("1001", GROUP_A, friends[0], "新帳號的訊息").raw]; },
+          async getContactsV2({ mids }) {
+            freshLookups += 1;
+            return { contacts: Object.fromEntries(mids.map((mid) => [mid, { contact: { mid, displayName: "新帳號稱呼" } }])) };
+          },
+        } });
+        replacement.profile.mid = mid(9000);
+        provider.base = replacement;
+        await provider.activate(replacement);
+        const channel = { channelId: GROUP_A, kind: "group" };
+        const before = (await provider.fetchHistory(channel, 1)).messages[0];
+        assert.equal(before.senderName, "新帳號稱呼");
+        gate.resolve();
+        await loading;
+        const after = (await provider.fetchHistory(channel, 1)).messages[0];
+        assert.equal(after.senderName, before.senderName);
+        assert.deepEqual(requests, pendingRequests, "only the requests already in flight may finish");
+        assert.equal(freshLookups, 1, "the new profile is retained, not discarded and fetched again");
+      } finally {
+        gate.resolve();
+        await loading.catch(() => {});
+        await provider.close();
+      }
+    });
+  }
+});
+
 test("the chat list carries LINE's unread count, activity time and last message; E2EE previews decrypt once and register no media", async () => {
   const at = (n) => String(1_700_000_000_000 + n);
   let boxRequests = 0;
