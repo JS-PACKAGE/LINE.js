@@ -197,6 +197,7 @@ function applyAuthState(state: AuthState): void {
     searchText = new WeakMap();
     searchWindow.clear();
     renderedSearchQuery = undefined;
+    renderedSearchHits = [];
     searching = false;
     searchQuery = "";
     messageSearch.value = "";
@@ -644,6 +645,7 @@ interface SearchHit {
 
 const searchWindow = new SearchWindow<SearchHit>(messageList, ({ message, channel }) => searchRow(message, channel), ({ message }) => JSON.stringify([message.channelId, message.messageId]));
 let renderedSearchQuery: string | undefined;
+let renderedSearchHits: readonly SearchHit[] = [];
 let searchText = new WeakMap<Message, { sender: string; body: string }>();
 
 function searchHits(): SearchHit[] {
@@ -684,9 +686,12 @@ function renderSearch(): void {
   const query = searchQuery.trim();
   jump.hidden = true;
   const hits = searchHits();
+  if (renderedSearchQuery === query && hits.length === renderedSearchHits.length &&
+    hits.every((hit, index) => hit.message === renderedSearchHits[index]!.message && hit.channel === renderedSearchHits[index]!.channel)) return;
   searchCount.textContent = query === "" ? "" : hits.length + " 則";
   searchWindow.set(hits, query === "" ? "輸入文字；只搜尋目前保留訊息。" : hits.length === 0 ? "目前保留訊息沒有符合結果。" : `${hits.length} 則符合（只搜尋目前保留訊息）`, renderedSearchQuery !== query);
   renderedSearchQuery = query;
+  renderedSearchHits = hits;
 }
 
 function searchRow(message: Message, channel: Channel | undefined): HTMLElement {
@@ -737,6 +742,7 @@ function closeSearch(): void {
   searching = false;
   searchWindow.clear();
   renderedSearchQuery = undefined;
+  renderedSearchHits = [];
   searchQuery = "";
   messageSearch.value = "";
   searchBar.hidden = true;
@@ -1379,6 +1385,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       clearTimeout(readTimer);
       searchWindow.clear();
       renderedSearchQuery = undefined;
+      renderedSearchHits = [];
       messageDays = new WeakMap();
       searchText = new WeakMap();
       messageIndices = {};
