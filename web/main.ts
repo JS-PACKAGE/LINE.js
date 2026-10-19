@@ -140,6 +140,7 @@ let readTimer: ReturnType<typeof setTimeout> | undefined;
 
 // Searching looks through what is already loaded (every chat's messages) and jumps to a hit on click.
 let searching = false;
+// Canonical matching/highlighting query; the input retains the user's original text.
 let searchQuery = "";
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -685,7 +686,7 @@ let renderedSearchHits: readonly SearchHit[] = [];
 let searchText = new WeakMap<Message, { sender: string; body: string }>();
 
 function searchHits(): SearchHit[] {
-  const query = searchQuery.trim().toLocaleLowerCase();
+  const query = searchQuery;
   if (query === "") return [];
   const hits: SearchHit[] = [];
   for (const channelId of Object.keys(messages)) {
@@ -718,7 +719,7 @@ function jumpToMessage(message: Message): void {
 }
 
 function renderSearch(): void {
-  const query = searchQuery.trim();
+  const query = searchQuery;
   jump.hidden = true;
   const hits = searchHits();
   if (renderedSearchQuery === query && hits.length === renderedSearchHits.length &&
@@ -730,7 +731,7 @@ function renderSearch(): void {
 }
 
 function searchRow(message: Message, channel: Channel | undefined): HTMLElement {
-    const hit = searchQuery.trim().toLocaleLowerCase();
+    const hit = searchQuery;
     const row = document.createElement("article");
     row.className = "message search-result";
     row.dataset.messageId = message.messageId;
@@ -800,7 +801,7 @@ searchClose.addEventListener("click", closeSearch);
 messageSearch.addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
-    searchQuery = messageSearch.value;
+    searchQuery = messageSearch.value.trim().toLocaleLowerCase();
     renderMessages("keep");
   }, 120);
 });
