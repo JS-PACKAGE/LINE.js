@@ -97,11 +97,17 @@ function updateRetentionNote(): void {
     "引用跳轉與提及候選僅涵蓋目前保留範圍。";
 }
 
+function indexMessages(list: readonly Message[]): Map<string, number> {
+  const indices = new Map<string, number>();
+  for (let index = 0; index < list.length; index += 1) indices.set(list[index]!.messageId, index);
+  return indices;
+}
+
 function orderedMessages(channelId: string): Message[] {
   const list = messages[channelId] ?? [];
   if (unorderedChats.delete(channelId)) {
     list.sort((a, b) => a.createdAt - b.createdAt);
-    messageIndices[channelId] = new Map(list.map((message, index) => [message.messageId, index]));
+    messageIndices[channelId] = indexMessages(list);
   }
   return list;
 }
@@ -1224,7 +1230,7 @@ function enforceRetention(channelId: string, anchorId: string | undefined, older
     const { start, end } = retainedRange(list.length, index, older);
     const kept = list.slice(start, end);
     messages[channelId] = kept;
-    messageIndices[channelId] = new Map(kept.map((message, at) => [message.messageId, at]));
+    messageIndices[channelId] = indexMessages(kept);
     retainedCount -= list.length - kept.length;
     evictedCount += list.length - kept.length;
     if (end < list.length) trimmedNewer.add(channelId);
