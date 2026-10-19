@@ -414,8 +414,13 @@ export function createComposer(send: (frame: ClientFrame) => boolean, mentions: 
       const count = suggesting.options.length;
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
+        if (count === 1) return;
+        // Keep the existing avatars and mouse handlers when only selection changes.
+        mentionList.children[suggesting.active]!.ariaSelected = "false";
         suggesting.active = (suggesting.active + (event.key === "ArrowDown" ? 1 : count - 1)) % count;
-        return renderSuggestions();
+        mentionList.children[suggesting.active]!.ariaSelected = "true";
+        draft.setAttribute("aria-activedescendant", `mention-option-${suggesting.active}`);
+        return;
       }
       if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
         event.preventDefault();
