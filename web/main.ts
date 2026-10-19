@@ -79,6 +79,8 @@ let channels: Channel[] = [];
 const channelsById = new Map<string, Channel>();
 let channelOrderDirty = false;
 let orderedFriends: Channel[] | undefined;
+// Channel frames replace objects, so renamed channels receive a fresh search key.
+let channelSearchNames = new WeakMap<Channel, string>();
 let messages: Record<string, Message[]> = {};
 let messageIndices: Record<string, Map<string, number>> = {};
 const unorderedChats = new Set<string>();
@@ -197,6 +199,7 @@ function applyAuthState(state: AuthState): void {
     cancelMessageRender();
     messageDays = new WeakMap();
     searchText = new WeakMap();
+    channelSearchNames = new WeakMap();
     searchWindow.clear();
     renderedSearchQuery = undefined;
     renderedSearchHits = [];
@@ -360,7 +363,14 @@ function renderChannels(): void {
   const inTab = tab === "friends"
     ? (orderedFriends ?? channels.filter((channel) => channel.kind === "user"))
     : channels.filter(hasConversation);
-  const visible = keyword ? inTab.filter((channel) => channel.name.toLocaleLowerCase().includes(keyword)) : inTab;
+  const visible = keyword ? inTab.filter((channel) => {
+    let name = channelSearchNames.get(channel);
+    if (name === undefined) {
+      name = channel.name.toLocaleLowerCase();
+      channelSearchNames.set(channel, name);
+    }
+    return name.includes(keyword);
+  }) : inTab;
   if (tab === "friends" && !orderedFriends) {
     visible.sort((a, b) => friendOrder.compare(a.name, b.name));
     if (!keyword) orderedFriends = visible;
@@ -1390,6 +1400,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       renderedSearchHits = [];
       messageDays = new WeakMap();
       searchText = new WeakMap();
+      channelSearchNames = new WeakMap();
       messageIndices = {};
       unorderedChats.clear();
       unread = {};
