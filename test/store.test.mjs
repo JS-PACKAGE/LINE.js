@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ChatStore } from "../dist/model/store.js";
+import { REACTION_KINDS } from "../dist/model/dto.js";
 
 const message = (id, createdAt, overrides = {}) => ({
   messageId: id, channelId: "c1", channelKind: "group", senderId: "u1", senderName: "小明", text: `text-${id}`, contentType: "NONE", createdAt, ...overrides,
@@ -149,4 +150,57 @@ test("scoped channel snapshots preserve activity, name and stable tie ordering w
   assert.deepEqual(ids(), []);
   store.setChannels([{ channelId: "c2", kind: "group", name: "new account" }]);
   assert.deepEqual(store.snapshotChannels(scope), [{ channelId: "c2", kind: "group", name: "new account" }]);
+});
+
+test("equivalent reactions ignore object key order without replacing messages or channel previews", () => {
+  const store = new ChatStore(500);
+  const original = store.upsert(message("m1", 10, { reactions: { counts: { NICE: 2, LOVE: 1, OMG: 3 }, mine: "LOVE" } }), false);
+  const channel = store.channelOf("c1");
+  assert.equal(store.setReactions("m1", "c1", { mine: "LOVE", counts: { OMG: 3, LOVE: 1, NICE: 2 } }), undefined);
+  assert.equal(store.setReactions("m1", "c1", { counts: { NICE: 2, LOVE: 1, OMG: 3 }, mine: "LOVE" }), undefined);
+  assert.equal(store.get("m1", "c1"), original);
+  assert.equal(store.messagesOf("c1")[0], original);
+  assert.equal(store.channelOf("c1"), channel);
+  assert.equal(channel.lastMessage, original);
+});
+
+test("reaction count and mine changes update the message and preview without editing content", () => {
+  const store = new ChatStore(500);
+  const initial = store.upsert(message("m1", 10, { reactions: { counts: { NICE: 2, LOVE: 1 }, mine: "NICE" }, editedAt: 7 }), false);
+  const expectUpdate = (reactions) => {
+    const previous = store.get("m1", "c1");
+    const updated = store.setReactions("m1", "c1", reactions);
+    assert.ok(updated);
+    assert.notEqual(updated, previous);
+    assert.deepEqual(updated.reactions, reactions);
+    assert.equal(updated.text, initial.text);
+    assert.equal(updated.editedAt, initial.editedAt);
+    assert.equal(store.get("m1", "c1"), updated);
+    assert.equal(store.messagesOf("c1")[0], updated);
+    assert.equal(store.channelOf("c1").lastMessage, updated);
+  };
+  expectUpdate({ counts: { NICE: 2, LOVE: 1 }, mine: "LOVE" });
+  expectUpdate({ counts: { NICE: 2, LOVE: 1 } });
+  for (const kind of REACTION_KINDS) {
+    expectUpdate({ counts: { NICE: 2, LOVE: 1, [kind]: 3 } });
+    expectUpdate({ counts: { NICE: 2, LOVE: 1 } });
+  }
+  expectUpdate(undefined);
+  assert.equal(Object.hasOwn(store.get("m1", "c1"), "reactions"), false);
+  assert.equal(store.setReactions("m1", "c1", undefined), undefined);
+});
+
+test("absent and empty reactions stay distinct, while unknown and taken-back messages never change", () => {
+  const store = new ChatStore(500);
+  store.upsert(message("m1", 10), false);
+  assert.equal(store.setReactions("missing", "c1", { counts: {} }), undefined);
+  assert.equal(store.setReactions("m1", "missing", { counts: {} }), undefined);
+  assert.deepEqual(store.setReactions("m1", "c1", { counts: {} }).reactions, { counts: {} });
+  assert.equal(store.setReactions("m1", "c1", { counts: {} }), undefined);
+  assert.ok(store.setReactions("m1", "c1", undefined));
+  const placeholder = store.unsend("m1", "c1");
+  const channel = store.channelOf("c1");
+  assert.equal(store.setReactions("m1", "c1", { counts: { NICE: 1 } }), undefined);
+  assert.equal(store.get("m1", "c1"), placeholder);
+  assert.equal(store.channelOf("c1"), channel);
 });

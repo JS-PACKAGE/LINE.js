@@ -23,6 +23,15 @@ export function withMyReaction(current: Reactions | undefined, mine: ReactionKin
   return Object.keys(counts).length > 0 ? { counts, ...(mine ? { mine } : {}) } : undefined;
 }
 
+function sameReactions(current: Reactions | undefined, next: Reactions | undefined): boolean {
+  if (current === next) return true;
+  if (!current || !next || current.mine !== next.mine) return false;
+  for (const kind of REACTION_KINDS) {
+    if (current.counts[kind] !== next.counts[kind]) return false;
+  }
+  return true;
+}
+
 /** In-memory only: messages are never persisted (plan §5). */
 export class ChatStore {
   private channels: Record<string, Channel> = {};
@@ -170,7 +179,7 @@ export class ChatStore {
    */
   setReactions(messageId: string, channelId: string, reactions: Reactions | undefined): Message | undefined {
     const known = this.byId[channelId]?.get(messageId);
-    if (!known || known.unsent || JSON.stringify(known.reactions) === JSON.stringify(reactions)) return undefined;
+    if (!known || known.unsent || sameReactions(known.reactions, reactions)) return undefined;
     const { reactions: _old, ...rest } = known;
     const stored: Message = reactions ? { ...rest, reactions } : rest;
     const list = this.messages[channelId]!;
