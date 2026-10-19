@@ -181,6 +181,137 @@ test("the chat list carries LINE's unread count, activity time and last message;
   assert.equal(decrypts, 1, "the same last message is not decrypted again on the next refresh");
 });
 
+test("chat summaries overlap talk pagination and keep five square workers busy despite slow or failed chats", async () => {
+  const ids = Array.from({ length: 8 }, (_, index) => `m${String(index).repeat(32)}`);
+  const gates = ids.map(() => Promise.withResolvers());
+  const talkGate = Promise.withResolvers();
+  const starts = [];
+  const boxRequests = [];
+  let active = 0;
+  let peak = 0;
+  const at = 1_700_000_000_123;
+  const base = fakeBase({
+    relation: { async getUserFriendIds() { return { userFriendMids: [] }; } },
+    talk: {
+      async getMessageBoxes({ messageBoxListRequest }) {
+        boxRequests.push(messageBoxListRequest.minChatId);
+        if (messageBoxListRequest.minChatId) throw new Error("later talk page unavailable");
+        await talkGate.promise;
+        return {
+          hasNext: true,
+          messageBoxes: [{ id: GROUP_A, unreadCount: 20000, lastDeliveredMessageId: { deliveredTime: String(at) }, lastMessages: [talk("123", GROUP_A, ME, "talk preview").raw] }],
+        };
+      },
+    },
+    square: {
+      async getSquareChatStatus({ request }) {
+        const index = ids.indexOf(request.squareChatMid);
+        starts.push(index);
+        active += 1;
+        peak = Math.max(peak, active);
+        try {
+          await gates[index].promise;
+          if (index === 2) throw new Error("one square unavailable");
+          return { chatStatus: {
+            otherStatus: { unreadMessageCount: index === 3 ? -1 : 20000, memberCount: index === 3 ? 0 : 42 },
+            senderDisplayName: "社群成員",
+            lastMessage: { message: { id: String(200 + index), to: ids[index], from: `pSender${index}`, contentType: "NONE", text: `square-${index}`, createdTime: String(at + index), contentMetadata: {} } },
+          } };
+        } finally {
+          active -= 1;
+        }
+      },
+    },
+  });
+  const { provider } = await activeProvider(base, {
+    async fetchJoinedChats() { return [{ mid: GROUP_A, name: "群A", raw: { type: "GROUP" } }]; },
+    async fetchJoinedSquares() { return []; },
+    async fetchJoinedSquareChats() { return ids.map((id) => ({ raw: { squareChatMid: id, name: id } })); },
+  });
+  const loading = provider.fetchChannels();
+  const drain = () => new Promise((resolve) => setImmediate(resolve));
+  await drain();
+  assert.deepEqual(boxRequests, [undefined]);
+  assert.deepEqual(starts, [0, 1, 2, 3, 4], "square summaries start while the talk first page remains pending");
+  gates[1].resolve();
+  await drain();
+  assert.deepEqual(starts, [0, 1, 2, 3, 4, 5], "a spare worker starts the next chat without waiting for slow chat zero");
+  gates[2].resolve();
+  await drain();
+  assert.deepEqual(starts, [0, 1, 2, 3, 4, 5, 6], "a failed chat also releases its worker");
+  gates[5].resolve();
+  await drain();
+  assert.equal(starts.length, 8, "work continues even while talk pagination and the slow square remain pending");
+  talkGate.resolve();
+  for (const gate of gates) gate.resolve();
+  const channels = await loading;
+  assert.equal(peak, 5);
+  assert.equal(active, 0);
+  assert.deepEqual(boxRequests, [undefined, GROUP_A]);
+  assert.deepEqual(channels.map((channel) => channel.channelId), [GROUP_A, ...ids], "completion order does not reorder the channel list");
+  assert.equal(channels[0].unreadCount, 9999);
+  assert.equal(channels[0].lastMessage.text, "talk preview", "successful earlier talk pages survive a later page failure");
+  assert.equal(channels[0].lastMessageAt, at);
+  for (let index = 0; index < ids.length; index += 1) {
+    const channel = channels[index + 1];
+    if (index === 2) {
+      assert.equal(channel.unreadCount, undefined);
+      assert.equal(channel.memberCount, undefined);
+      assert.equal(channel.lastMessage, undefined);
+      assert.equal(channel.lastMessageAt, undefined);
+    } else {
+      assert.equal(channel.unreadCount, index === 3 ? undefined : 9999);
+      assert.equal(channel.memberCount, index === 3 ? undefined : 42);
+      assert.equal(channel.lastMessage.text, `square-${index}`);
+      assert.equal(channel.lastMessage.senderName, "社群成員");
+      assert.equal(channel.lastMessageAt, at + index);
+    }
+  }
+});
+
+test("replacing the account stops queued summary work and discards old badges, members and previews", async () => {
+  const talkGate = Promise.withResolvers();
+  const squareGate = Promise.withResolvers();
+  let talks = 0;
+  let squares = 0;
+  const base = fakeBase({
+    relation: { async getUserFriendIds() { return { userFriendMids: [] }; } },
+    talk: { async getMessageBoxes() {
+      talks += 1;
+      await talkGate.promise;
+      return { hasNext: true, messageBoxes: [{ id: GROUP_A, unreadCount: 3 }] };
+    } },
+    square: { async getSquareChatStatus() {
+      squares += 1;
+      await squareGate.promise;
+      return { chatStatus: { otherStatus: { unreadMessageCount: 3, memberCount: 42 } } };
+    } },
+  });
+  const { provider } = await activeProvider(base, {
+    async fetchJoinedChats() { return [{ mid: GROUP_A, name: "群A", raw: { type: "GROUP" } }]; },
+    async fetchJoinedSquares() { return []; },
+    async fetchJoinedSquareChats() { return Array.from({ length: 8 }, (_, index) => ({ raw: { squareChatMid: `m${String(index).repeat(32)}`, name: "社群" } })); },
+  });
+  const loading = provider.fetchChannels();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(talks, 1);
+  assert.equal(squares, 5);
+  await provider.teardown();
+  const replacement = fakeBase();
+  provider.base = replacement;
+  await provider.activate(replacement);
+  talkGate.resolve();
+  squareGate.resolve();
+  const channels = await loading;
+  assert.equal(talks, 1, "no later talk page is fetched for the old account");
+  assert.equal(squares, 5, "queued square summaries never start for the old account");
+  for (const channel of channels) {
+    assert.equal(channel.unreadCount, undefined);
+    assert.equal(channel.memberCount, undefined);
+    assert.equal(channel.lastMessage, undefined);
+  }
+});
+
 test("OpenChat history stays current with live and own messages without walking LINE's events again", async () => {
   let walks = 0;
   const event = (id, text) => ({ payload: { receiveMessage: { squareMessage: { message: { id, to: SQUARE, from: "p-member", contentType: "NONE", text, createdTime: String(1_700_000_000_000 + Number(id)), contentMetadata: {} } }, senderDisplayName: "社群成員" } } });
@@ -686,6 +817,106 @@ test("OpenChat administrators enumerate the actual chat across pages, map named/
     ],
   });
   assert.deepEqual(calls, [undefined, "next", "last"].map((continuationToken) => ({ squareChatMid: SQUARE, limit: 100, continuationToken })));
+});
+
+test("concurrent administrator consumers share the whole query only for the same chat, then refresh after settlement", async () => {
+  const firstPage = Promise.withResolvers();
+  const membership = Promise.withResolvers();
+  const membershipStarted = Promise.withResolvers();
+  const other = `m${"t".repeat(32)}`;
+  const calls = [];
+  let ownCalls = 0;
+  let refreshed = false;
+  const { provider } = await activeProvider(fakeBase({ square: {
+    async getSquareChatMembers({ squareChatMid, continuationToken }) {
+      calls.push([squareChatMid, continuationToken]);
+      if (squareChatMid === other) return { squareChatMembers: [] };
+      if (refreshed) return { squareChatMembers: [squareMember("pNewAdmin0000", "CO_ADMIN")] };
+      if (!continuationToken) {
+        await firstPage.promise;
+        return { squareChatMembers: [squareMember("pAdmin0000000", "ADMIN")], continuationToken: "next" };
+      }
+      return { squareChatMembers: [] };
+    },
+    async getSquareChat({ squareChatMid }) {
+      if (squareChatMid === SQUARE) {
+        ownCalls += 1;
+        if (!refreshed) { membershipStarted.resolve(); await membership.promise; }
+      }
+      return { squareChatMember: { squareChatMid, squareMemberMid: OWN_MEMBER } };
+    },
+  } }));
+  const channel = { channelId: SQUARE, kind: "square" };
+  const one = provider.fetchChatAdmins(channel);
+  const two = provider.fetchChatAdmins(channel);
+  assert.deepEqual(await provider.fetchChatAdmins({ channelId: other, kind: "square" }), { ownMemberId: OWN_MEMBER, admins: [] }, "another chat finishes while this chat is still enumerating");
+  firstPage.resolve();
+  await membershipStarted.promise;
+  const three = provider.fetchChatAdmins(channel);
+  assert.equal(ownCalls, 1, "membership lookup is part of the shared in-flight query");
+  membership.resolve();
+  const answers = await Promise.all([one, two, three]);
+  for (const answer of answers) assert.deepEqual(answer, { ownMemberId: OWN_MEMBER, admins: [{ userId: "pAdmin0000000", displayName: "名-pAdmin0000000", role: "admin" }] });
+  assert.deepEqual(calls, [[SQUARE, undefined], [other, undefined], [SQUARE, "next"]]);
+  refreshed = true;
+  assert.deepEqual((await provider.fetchChatAdmins(channel)).admins, [{ userId: "pNewAdmin0000", displayName: "名-pNewAdmin0000", role: "coAdmin" }], "a settled query never retains stale administrators");
+  assert.equal(calls.length, 4);
+  assert.equal(ownCalls, 2);
+});
+
+test("a failed shared administrator query rejects all consumers and allows a fresh retry", async () => {
+  const failed = Promise.withResolvers();
+  let calls = 0;
+  const { provider } = await activeProvider(fakeBase({ square: {
+    async getSquareChatMembers() {
+      calls += 1;
+      if (calls === 1) return failed.promise;
+      return { squareChatMembers: [] };
+    },
+  } }));
+  const channel = { channelId: SQUARE, kind: "square" };
+  const results = Promise.allSettled([provider.fetchChatAdmins(channel), provider.fetchChatAdmins(channel)]);
+  failed.reject(new Error("offline"));
+  for (const result of await results) {
+    assert.equal(result.status, "rejected");
+    assert.match(result.reason.message, /offline/);
+  }
+  assert.equal(calls, 1);
+  assert.deepEqual(await provider.fetchChatAdmins(channel), { ownMemberId: OWN_MEMBER, admins: [] });
+  assert.equal(calls, 2);
+});
+
+test("late administrator completion cannot erase a replacement account's shared query", async (t) => {
+  for (const teardown of [false, true]) await t.test(teardown ? "logout then activate" : "replace active client", async () => {
+    const oldPage = Promise.withResolvers();
+    const newPage = Promise.withResolvers();
+    const channel = { channelId: SQUARE, kind: "square" };
+    let newCalls = 0;
+    const { provider } = await activeProvider(fakeBase({ square: {
+      getSquareChatMembers() { return oldPage.promise; },
+    } }));
+    const oldResult = assert.rejects(provider.fetchChatAdmins(channel), /SESSION_CHANGED/);
+    if (teardown) await provider.teardown();
+    const replacement = fakeBase({ square: {
+      async getSquareChatMembers() {
+        newCalls += 1;
+        await newPage.promise;
+        return { squareChatMembers: [squareMember("pNewAdmin0000", "ADMIN")] };
+      },
+    } });
+    provider.base = replacement;
+    await provider.activate(replacement);
+    const current = provider.fetchChatAdmins(channel);
+    oldPage.resolve({ squareChatMembers: [], continuationToken: "must-not-fetch" });
+    await oldResult;
+    const joined = provider.fetchChatAdmins(channel);
+    assert.equal(newCalls, 1, "old cleanup must not delete the new account's pending query");
+    newPage.resolve();
+    for (const result of await Promise.all([current, joined])) {
+      assert.equal(result.ownMemberId, OWN_MEMBER);
+      assert.deepEqual(result.admins.map((admin) => admin.userId), ["pNewAdmin0000"]);
+    }
+  });
 });
 
 test("OpenChat administrators reject malformed later pages and never retain a partial list for retries", async (t) => {

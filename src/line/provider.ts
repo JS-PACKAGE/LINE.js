@@ -168,6 +168,7 @@ export class EvexLineProvider implements LineProvider {
   // Per chat, the tail of its delivery chain: one slow member lookup holds back only its own chat.
   private deliveries = new Map<string, Promise<void>>();
   private squareCache = new Map<string, SquareHistory>();
+  private adminFlights = new Map<string, { client: Client; promise: Promise<ChatAdmins> }>();
   private stickerPackages?: { at: number; packages: StickerPackage[] };
   // Messages whose media the browser may ask for, newest last. Requests are only honoured for
   // messages seen here, so the browser cannot use this session to probe arbitrary LINE objects.
@@ -249,6 +250,7 @@ export class EvexLineProvider implements LineProvider {
     if (this.stopped) throw new Error("LOGIN_STOPPED");
     const client = new Client(base);
     this.client = client;
+    this.adminFlights.clear();
     const profile = this.getProfile();
     this.rememberProfile(profile.userId, profile.displayName, profile.pictureId, true);
     // Sender lookups are asynchronous; chaining per chat keeps each chat's messages in arrival order.
@@ -720,12 +722,22 @@ export class EvexLineProvider implements LineProvider {
   async fetchChatAdmins(channel: ChannelRef): Promise<ChatAdmins> {
     if (channel.kind !== "square") throw new Error("CHAT_ADMINS_UNSUPPORTED");
     const client = this.requireClient();
+    const existing = this.adminFlights.get(channel.channelId);
+    if (existing?.client === client) return existing.promise;
+    const promise = this.loadChatAdmins(client, channel.channelId).finally(() => {
+      if (this.adminFlights.get(channel.channelId)?.promise === promise) this.adminFlights.delete(channel.channelId);
+    });
+    this.adminFlights.set(channel.channelId, { client, promise });
+    return promise;
+  }
+
+  private async loadChatAdmins(client: Client, chatId: string): Promise<ChatAdmins> {
     const admins = new Map<string, ChatAdmin>();
     const tokens = new Set<string>();
     let continuationToken: string | undefined;
     for (let page = 0; page < SQUARE_MEMBER_MAX_PAGES; page += 1) {
       const response = await client.base.square.getSquareChatMembers({
-        squareChatMid: channel.channelId,
+        squareChatMid: chatId,
         limit: SQUARE_PAGE_SIZE,
         continuationToken,
       });
@@ -757,10 +769,10 @@ export class EvexLineProvider implements LineProvider {
       continuationToken = response.continuationToken;
       if (!continuationToken) {
         // getSquareChat returns the authenticated account's membership, not its ordinary account mid.
-        const chat = await client.base.square.getSquareChat({ squareChatMid: channel.channelId });
+        const chat = await client.base.square.getSquareChat({ squareChatMid: chatId });
         if (this.client !== client || this.stopped) throw new Error("SESSION_CHANGED");
         const membership = chat?.squareChatMember;
-        if (membership?.squareChatMid !== channel.channelId
+        if (membership?.squareChatMid !== chatId
           || typeof membership.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(membership.squareMemberMid)) {
           throw new Error("CHAT_ADMINS_INVALID_MEMBERSHIP");
         }
@@ -1179,33 +1191,39 @@ export class EvexLineProvider implements LineProvider {
     const activeAt = new Map<string, number>();
     const talkLast = new Map<string, LineMessage>();
     const squareLast = new Map<string, { raw: LineSquareMessage; name?: string }>();
-    try {
-      const seen = new Set<string>();
-      let minChatId: string | undefined;
-      for (let page = 0; page < UNREAD_MAX_PAGES; page += 1) {
-        const { messageBoxes, hasNext } = await client.base.talk.getMessageBoxes({
-          messageBoxListRequest: { withUnreadCount: true, lastMessagesPerMessageBoxCount: 1, ...(minChatId ? { minChatId } : {}) },
-        });
-        const fresh = (messageBoxes ?? []).filter((box) => !seen.has(box.id));
-        for (const box of fresh) {
-          seen.add(box.id);
-          counts.set(box.id, Number(box.unreadCount));
-          const delivered = Number(box.lastDeliveredMessageId?.deliveredTime);
-          if (Number.isFinite(delivered) && delivered > 0) activeAt.set(box.id, delivered);
-          const last = box.lastMessages?.[0];
-          if (last && typeof last.id === "string") talkLast.set(box.id, last);
+    const talkLoading = (async () => {
+      try {
+        const seen = new Set<string>();
+        let minChatId: string | undefined;
+        for (let page = 0; page < UNREAD_MAX_PAGES && this.client === client && !this.stopped; page += 1) {
+          const { messageBoxes, hasNext } = await client.base.talk.getMessageBoxes({
+            messageBoxListRequest: { withUnreadCount: true, lastMessagesPerMessageBoxCount: 1, ...(minChatId ? { minChatId } : {}) },
+          });
+          if (this.client !== client || this.stopped) return;
+          const fresh = (messageBoxes ?? []).filter((box) => !seen.has(box.id));
+          for (const box of fresh) {
+            seen.add(box.id);
+            counts.set(box.id, Number(box.unreadCount));
+            const delivered = Number(box.lastDeliveredMessageId?.deliveredTime);
+            if (Number.isFinite(delivered) && delivered > 0) activeAt.set(box.id, delivered);
+            const last = box.lastMessages?.[0];
+            if (last && typeof last.id === "string") talkLast.set(box.id, last);
+          }
+          if (!hasNext || fresh.length === 0) break;
+          minChatId = fresh.at(-1)!.id;
         }
-        if (!hasNext || fresh.length === 0) break;
-        minChatId = fresh.at(-1)!.id;
+      } catch {
+        // Talk chats just show no badge or preview this time.
       }
-    } catch {
-      // Talk chats just show no badge or preview this time.
-    }
+    })();
     const squares = channels.filter((channel) => channel.kind === "square");
-    for (let offset = 0; offset < squares.length; offset += SQUARE_LOOKUP_CONCURRENCY) {
-      await Promise.all(squares.slice(offset, offset + SQUARE_LOOKUP_CONCURRENCY).map(async (channel) => {
+    let nextSquare = 0;
+    const squareWorker = async (): Promise<void> => {
+      while (nextSquare < squares.length && this.client === client && !this.stopped) {
+        const channel = squares[nextSquare++]!;
         try {
           const { chatStatus } = await client.base.square.getSquareChatStatus({ request: { squareChatMid: channel.channelId } });
+          if (this.client !== client || this.stopped) return;
           counts.set(channel.channelId, Number(chatStatus.otherStatus.unreadMessageCount));
           const members = Number(chatStatus.otherStatus.memberCount);
           if (Number.isInteger(members) && members > 0) channel.memberCount = members;
@@ -1214,9 +1232,12 @@ export class EvexLineProvider implements LineProvider {
         } catch {
           // This OpenChat shows no badge or preview this time.
         }
-      }));
-    }
+      }
+    };
+    await Promise.all([talkLoading, ...Array.from({ length: Math.min(SQUARE_LOOKUP_CONCURRENCY, squares.length) }, squareWorker)]);
+    if (this.client !== client || this.stopped) return;
     const previews = await this.previewMessages(client, talkLast, squareLast);
+    if (this.client !== client || this.stopped) return;
     for (const channel of channels) {
       const count = counts.get(channel.channelId);
       if (count && Number.isFinite(count) && count > 0) channel.unreadCount = Math.min(count, MAX_UNREAD_SHOWN);
@@ -1307,6 +1328,7 @@ export class EvexLineProvider implements LineProvider {
     this.lookupQueue.clear();
     this.lookupJobs.clear();
     this.lookupFlights.clear();
+    this.adminFlights.clear();
     this.deliveries.clear();
     this.mediaOrigins.clear();
     this.previewDecrypts.clear();
