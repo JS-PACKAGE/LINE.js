@@ -994,7 +994,7 @@ function reconcile(parent: HTMLElement, nodes: readonly Node[]): void {
 }
 
 // What is on screen for the open chat, keyed by message id; dropped when another chat is opened.
-let rendered = new Map<string, RenderedMessage>();
+const rendered = new Map<string, RenderedMessage>();
 let renderedChannel: string | undefined;
 const historyMarker = document.createElement("div");
 historyMarker.className = "history-note";
@@ -1101,24 +1101,14 @@ function drawMessages(anchor: MessageAnchor = "bottom"): void {
   const list = selected ? orderedMessages(selected) : [];
   const state = selected ? historyOf[selected] : undefined;
   if (renderedChannel !== selected) {
-    rendered = new Map();
+    rendered.clear();
     renderedChannel = selected;
   }
   const previousHeight = messageList.scrollHeight;
   const previousTop = messageList.scrollTop;
   // Re-renders that add a line (a read label, a divider) must not push the newest message out of view.
   const atBottom = previousHeight - previousTop - messageList.clientHeight < 8;
-  const viewportTop = messageList.getBoundingClientRect().top;
-  let retainedAnchor: { messageId: string; top: number } | undefined;
-  if (anchor !== "bottom" && !atBottom) {
-    for (const [messageId, { node }] of rendered) {
-      const rect = node.getBoundingClientRect();
-      if (rect.bottom > viewportTop) {
-        retainedAnchor = { messageId, top: rect.top };
-        break;
-      }
-    }
-  }
+  const retainedAnchor = anchor !== "bottom" && !atBottom ? visibleMessageAnchor() : undefined;
   if (!channel || list.length === 0) {
     let label: string;
     if (!channel) label = "從左側選擇聊天室；新的訊息會即時出現在這裡。";
@@ -1143,7 +1133,6 @@ function drawMessages(anchor: MessageAnchor = "bottom"): void {
   const indices = messageIndices[channel.channelId];
   const labels = readLabels(channel.channelId, list);
   const divider = unreadFrom?.channelId === selected ? unreadFrom : undefined;
-  const next = new Map<string, RenderedMessage>();
   const nextDays = new Map<string, HTMLElement>();
   list.forEach((message, index) => {
     const previous = list[index - 1];
@@ -1176,10 +1165,12 @@ function drawMessages(anchor: MessageAnchor = "bottom"): void {
       if (entry.read.hidden !== hidden) entry.read.hidden = hidden;
       if (entry.read.textContent !== (label ?? "")) entry.read.textContent = label ?? "";
     }
-    next.set(message.messageId, entry);
+    if (entry !== known) rendered.set(message.messageId, entry);
     nodes.push(entry.node);
   });
-  rendered = next;
+  if (rendered.size !== list.length) {
+    for (const messageId of rendered.keys()) if (!indices?.has(messageId)) rendered.delete(messageId);
+  }
   dayDividers = nextDays;
   reconcile(messageList, nodes);
   if (anchor === "bottom" || (anchor === "keep" && atBottom)) messageList.scrollTop = messageList.scrollHeight;
@@ -1220,14 +1211,24 @@ function mergeMessages(channelId: string, incoming: readonly Message[], older = 
   enforceRetention(channelId, anchorId, older);
 }
 
+function visibleMessageAnchor(): { messageId: string; top: number } | undefined {
+  const top = messageList.getBoundingClientRect().top;
+  // The index is updated in place; its insertion order need not match the timeline.
+  for (let node = messageList.firstElementChild; node; node = node.nextElementSibling) {
+    const messageId = node.getAttribute("data-message-id");
+    if (messageId === null || rendered.get(messageId)?.node !== node) continue;
+    const rect = node.getBoundingClientRect();
+    if (rect.bottom > top) return { messageId, top: rect.top };
+  }
+  return undefined;
+}
+
 function retentionAnchor(): string | undefined {
   const selection = window.getSelection();
   const element = selection?.anchorNode?.parentElement?.closest<HTMLElement>("[data-message-id]");
   if (selection && !selection.isCollapsed && element && messageList.contains(element)) return element.dataset.messageId;
   if (pinnedToBottom) return undefined;
-  const top = messageList.getBoundingClientRect().top;
-  for (const [id, entry] of rendered) if (entry.node.getBoundingClientRect().bottom > top) return id;
-  return undefined;
+  return visibleMessageAnchor()?.messageId;
 }
 
 function resetRetention(): void {
