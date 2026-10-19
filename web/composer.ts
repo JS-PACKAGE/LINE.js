@@ -229,8 +229,15 @@ export function createComposer(send: (frame: ClientFrame) => boolean, mentions: 
     }
     if (options.length === 0) return closeSuggestions();
     const start = caret - match[1]!.length - 1;
-    const keep = suggesting?.start === start ? options.findIndex((person) => person.userId === suggesting!.options[suggesting!.active]?.userId) : -1;
+    const previous = suggesting;
+    const keep = previous?.start === start ? options.findIndex((person) => person.userId === previous.options[previous.active]?.userId) : -1;
     suggesting = { start, options, active: Math.max(keep, 0) };
+    // The insertion start may move even when the displayed options do not.
+    if (previous && previous.active === suggesting.active && previous.options.length === options.length &&
+      options.every((person, index) => {
+        const before = previous.options[index]!;
+        return person.userId === before.userId && person.name === before.name && person.pictureId === before.pictureId;
+      })) return;
     renderSuggestions();
   }
 
