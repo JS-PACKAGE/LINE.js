@@ -461,7 +461,8 @@ function updateJump(): void {
   const away = selected !== undefined && (trimmedNewer.has(selected) || messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight > 200);
   if (!away) unseenBelow = 0;
   jump.hidden = searching || !away;
-  jump.textContent = unseenBelow > 0 ? `↓ ${unseenBelow} 則新訊息` : "↓ 最新訊息";
+  const label = unseenBelow > 0 ? `↓ ${unseenBelow} 則新訊息` : "↓ 最新訊息";
+  if (jump.textContent !== label) jump.textContent = label;
 }
 jump.addEventListener("click", () => {
   scrollToLatest();
