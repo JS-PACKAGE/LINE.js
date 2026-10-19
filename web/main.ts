@@ -689,8 +689,7 @@ function searchHits(): SearchHit[] {
 function jumpToMessage(message: Message): void {
   closeSearch();
   if (selected !== message.channelId) openChat(message.channelId);
-  const find = (): HTMLElement | undefined =>
-    [...messageList.querySelectorAll<HTMLElement>(".message, .system-event")].find((node) => node.dataset.messageId === message.messageId);
+  const find = (): HTMLElement | undefined => rendered.get(message.messageId)?.node;
   const node = find() ?? (drawMessages(), find());
   if (!node) return;
   node.scrollIntoView({ block: "center", behavior: "smooth" });
