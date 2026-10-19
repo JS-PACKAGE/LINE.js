@@ -1134,10 +1134,12 @@ function drawMessages(anchor: MessageAnchor = "bottom"): void {
   }
   const nodes: Node[] = [];
   if (state) {
-    if (state.loading) historyMarker.textContent = "載入更早的訊息…";
-    else if (state.failed) historyMarker.replaceChildren(historyRetry);
-    else if (state.hasMore) historyMarker.textContent = "向上捲動以載入更早的訊息";
-    else historyMarker.textContent = "— 已經是最早的訊息 —";
+    if (!state.loading && state.failed) {
+      if (historyRetry.parentNode !== historyMarker) historyMarker.replaceChildren(historyRetry);
+    } else {
+      const label = state.loading ? "載入更早的訊息…" : state.hasMore ? "向上捲動以載入更早的訊息" : "— 已經是最早的訊息 —";
+      if (historyMarker.textContent !== label) historyMarker.textContent = label;
+    }
     nodes.push(historyMarker);
   }
   const indices = messageIndices[channel.channelId];
