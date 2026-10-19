@@ -27,11 +27,12 @@ function summary(counts: Partial<Record<ReactionKind, number>>, mine: ReactionKi
  * Custom and unknown reactions are skipped, never guessed.
  */
 export function talkReactions(list: unknown, myMid: string): Reactions | undefined {
-  if (!Array.isArray(list)) return undefined;
+  if (!Array.isArray(list) || list.length === 0) return undefined;
   const counts: Partial<Record<ReactionKind, number>> = {};
   let mine: ReactionKind | undefined;
-  for (const entry of list.slice(0, MAX_COUNT)) {
-    const reaction = record(entry);
+  const end = Math.min(list.length, MAX_COUNT);
+  for (let index = 0; index < end; index += 1) {
+    const reaction = record(list[index]);
     const kind = reactionKind(record(reaction?.reactionType)?.predefinedReactionType);
     if (!kind) continue;
     counts[kind] = (counts[kind] ?? 0) + 1;

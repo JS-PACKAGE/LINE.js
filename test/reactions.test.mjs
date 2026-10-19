@@ -13,6 +13,14 @@ test("talk reactions are counted per kind in LINE's order, mine is marked, and c
   assert.equal(talkReactions([reaction("u1", "UNDO")], ME), undefined);
 });
 
+test("talk reaction limits count raw entries, including malformed entries, without including the next person's reaction", () => {
+  const list = new Array(1_000_001);
+  list[0] = reaction(ME, "LOVE");
+  list[999_999] = reaction("u2", "NICE");
+  list[1_000_000] = reaction(ME, "OMG");
+  assert.deepEqual(talkReactions(list, ME), { counts: { NICE: 1, LOVE: 1 }, mine: "LOVE" });
+});
+
 test("OpenChat status: named fields and the field-id form of the untyped live event read the same; bad counts are dropped", () => {
   const named = squareReactions({ totalCount: 3, countByReactionType: { 7: 1, 2: 2 }, myReaction: { type: "OMG" } });
   assert.deepEqual(named, { counts: { NICE: 2, OMG: 1 }, mine: "OMG" });
