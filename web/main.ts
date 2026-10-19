@@ -998,6 +998,8 @@ let rendered = new Map<string, RenderedMessage>();
 let renderedChannel: string | undefined;
 const historyMarker = document.createElement("div");
 historyMarker.className = "history-note";
+const emptyMessages = document.createElement("p");
+emptyMessages.className = "empty";
 const historyRetry = document.createElement("button");
 historyRetry.type = "button";
 historyRetry.className = "ghost";
@@ -1116,19 +1118,13 @@ function drawMessages(anchor: MessageAnchor = "bottom"): void {
     }
   }
   if (!channel || list.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "empty";
-    if (!channel) empty.textContent = "從左側選擇聊天室；新的訊息會即時出現在這裡。";
-    else if (state?.loading || !state?.loaded) empty.textContent = state?.failed ? "無法載入歷史訊息。" : "載入訊息中…";
-    else empty.textContent = "這個聊天室還沒有訊息。";
-    if (channel && state?.failed) {
-      messageList.replaceChildren(empty, historyRetry);
-      rendered.clear();
-      updateJump();
-      return;
-    }
-    messageList.replaceChildren(empty);
-    rendered = new Map();
+    let label: string;
+    if (!channel) label = "從左側選擇聊天室；新的訊息會即時出現在這裡。";
+    else if (state?.loading || !state?.loaded) label = state?.failed ? "無法載入歷史訊息。" : "載入訊息中…";
+    else label = "這個聊天室還沒有訊息。";
+    if (emptyMessages.textContent !== label) emptyMessages.textContent = label;
+    reconcile(messageList, channel && state?.failed ? [emptyMessages, historyRetry] : [emptyMessages]);
+    rendered.clear();
     updateJump();
     return;
   }
