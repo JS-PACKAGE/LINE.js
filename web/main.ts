@@ -453,7 +453,7 @@ const CONTINUE_WITHIN_MS = 5 * 60_000;
 // True while the reader is at the newest message; media that finishes loading then keeps it in view.
 let pinnedToBottom = true;
 function keepPinned(): void {
-  if (pinnedToBottom) messageList.scrollTop = messageList.scrollHeight;
+  if (!searching && pinnedToBottom) messageList.scrollTop = messageList.scrollHeight;
 }
 
 // "↓ 最新訊息" while the reader is away from the newest line; counts what arrived below meanwhile.
