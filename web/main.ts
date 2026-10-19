@@ -1380,16 +1380,19 @@ function reportRead(): void {
       reportRead();
       return;
     }
-    const newest = [...orderedMessages(chatId)].reverse().find((message) => /^\d{1,24}$/.test(message.messageId));
+    const list = orderedMessages(chatId);
+    let index = list.length - 1;
+    while (index >= 0 && !/^\d{1,24}$/.test(list[index]!.messageId)) index--;
+    const newest = list[index];
     if (!newest) return;
     const node = rendered.get(newest.messageId)?.node;
     if (!node) return;
-    const viewport = messageList.getBoundingClientRect();
-    const rect = node.getBoundingClientRect();
-    if (rect.top >= viewport.bottom || rect.bottom <= viewport.top) return;
     const id = BigInt(newest.messageId);
     const known = reportedRead[chatId];
     if (known !== undefined && id <= known) return;
+    const viewport = messageList.getBoundingClientRect();
+    const rect = node.getBoundingClientRect();
+    if (rect.top >= viewport.bottom || rect.bottom <= viewport.top) return;
     if (send({ type: "chat:read", chatId, messageId: newest.messageId })) {
       reportedRead[chatId] = id;
       notifier.clear(chatId);
