@@ -1142,7 +1142,8 @@ function drawMessages(anchor: MessageAnchor = "bottom"): void {
     const entry = known && known.message === message && known.continued === continued && known.quoted === quoted ? known : messageNode(message, continued, quoted);
     if (entry.read) {
       const label = labels[index];
-      entry.read.hidden = label === undefined;
+      const hidden = label === undefined;
+      if (entry.read.hidden !== hidden) entry.read.hidden = hidden;
       if (entry.read.textContent !== (label ?? "")) entry.read.textContent = label ?? "";
     }
     next.set(message.messageId, entry);
