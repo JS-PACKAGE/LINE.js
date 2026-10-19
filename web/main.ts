@@ -1110,7 +1110,7 @@ function drawMessages(anchor: MessageAnchor = "bottom"): void {
     else historyMarker.textContent = "— 已經是最早的訊息 —";
     nodes.push(historyMarker);
   }
-  const byId = new Map(list.map((message) => [message.messageId, message]));
+  const indices = messageIndices[channel.channelId];
   const labels = readLabels(channel.channelId, list);
   const divider = unreadFrom?.channelId === selected ? unreadFrom : undefined;
   const next = new Map<string, RenderedMessage>();
@@ -1136,7 +1136,8 @@ function drawMessages(anchor: MessageAnchor = "bottom"): void {
       nodes.push(unreadDivider);
     }
     const continued = previous !== undefined && !newDay && previous.contentType !== "CHATEVENT" && previous.senderId === message.senderId && message.createdAt - previous.createdAt < CONTINUE_WITHIN_MS;
-    const quoted = message.replyTo ? byId.get(message.replyTo) : undefined;
+    const quoteIndex = message.replyTo ? indices?.get(message.replyTo) : undefined;
+    const quoted = quoteIndex === undefined ? undefined : list[quoteIndex];
     const known = rendered.get(message.messageId);
     const entry = known && known.message === message && known.continued === continued && known.quoted === quoted ? known : messageNode(message, continued, quoted);
     if (entry.read) {
