@@ -1166,7 +1166,6 @@ function drawMessages(anchor: MessageAnchor = "bottom"): void {
 function mergeMessages(channelId: string, incoming: readonly Message[], older = false): void {
   const list = messages[channelId] ?? [];
   const previousLength = list.length;
-  const anchorId = list.length + incoming.length > CHAT_MESSAGE_LIMIT && channelId === selected && !searching ? retentionAnchor() : undefined;
   const at = (messageIndices[channelId] ??= new Map());
   for (const message of incoming) {
     const index = at.get(message.messageId);
@@ -1180,6 +1179,7 @@ function mergeMessages(channelId: string, incoming: readonly Message[], older = 
       list.push(message);
     }
   }
+  const anchorId = list.length > CHAT_MESSAGE_LIMIT && channelId === selected && !searching ? retentionAnchor() : undefined;
   messages[channelId] = list;
   retainedCount += list.length - previousLength;
   retainedChats.delete(channelId);
