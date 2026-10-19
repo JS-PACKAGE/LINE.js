@@ -44,13 +44,26 @@ export function isMediaId(id: string): boolean {
   return STICKER_ID.test(id) || STICKER_PACK_ID.test(id) || EMOJI_ID.test(id) || AVATAR_ID.test(id) || MESSAGE_ID.test(id) || FILE_ID.test(id);
 }
 
+const MAX_ACTIVE_DOWNLOADS = 4;
+const MAX_QUEUED_DOWNLOADS = 64;
+
+interface Download {
+  id: string;
+  promise: Promise<MediaBytes | undefined>;
+  resolve: (media: MediaBytes | undefined) => void;
+  reject: (error: unknown) => void;
+}
+
 /**
- * Byte-budgeted LRU in front of the LINE adapter. Concurrent requests for the same
- * id share one upstream fetch; failures are never cached.
+ * Byte-budgeted LRU in front of the LINE adapter. Four downloads run at once, with
+ * a FIFO queue of at most 64 distinct ids; overflow returns undefined (HTTP 404).
+ * Concurrent requests for the same id share work; failures are never cached.
  */
 export class MediaService {
   private cache = new Map<string, MediaBytes>();
-  private inflight = new Map<string, Promise<MediaBytes | undefined>>();
+  private inflight = new Map<string, Download>();
+  private queue: Download[] = [];
+  private active = 0;
   private uploads = new Map<string, { media: MediaBytes; expires: number }>();
   private size = 0;
 
@@ -65,18 +78,42 @@ export class MediaService {
       this.cache.set(id, hit);
       return hit;
     }
-    let pending = this.inflight.get(id);
-    if (!pending) {
-      const load = this.load(id).then((media) => {
-        // Forgotten (the message was taken back) while downloading: hand the bytes to whoever was
-        // already waiting, but never keep them. A later request starts from the adapter, which refuses.
-        if (media && this.inflight.get(id) === load) this.remember(id, media);
-        return media;
-      }).finally(() => { if (this.inflight.get(id) === load) this.inflight.delete(id); });
-      pending = load;
-      this.inflight.set(id, load);
+    const pending = this.inflight.get(id);
+    if (pending) return pending.promise;
+    if (this.active >= MAX_ACTIVE_DOWNLOADS && this.queue.length >= MAX_QUEUED_DOWNLOADS) return undefined;
+    let resolve!: Download["resolve"];
+    let reject!: Download["reject"];
+    const promise = new Promise<MediaBytes | undefined>((yes, no) => { resolve = yes; reject = no; });
+    const download = { id, promise, resolve, reject };
+    this.inflight.set(id, download);
+    this.queue.push(download);
+    this.drain();
+    return promise;
+  }
+
+  private drain(): void {
+    while (this.active < MAX_ACTIVE_DOWNLOADS && this.queue.length > 0) {
+      const download = this.queue.shift()!;
+      this.active += 1;
+      void this.run(download);
     }
-    return pending;
+  }
+
+  private async run(download: Download): Promise<void> {
+    try {
+      const media = await this.load(download.id);
+      if (this.inflight.get(download.id) !== download) return;
+      if (media) this.remember(download.id, media);
+      download.resolve(media);
+    } catch (error) {
+      if (this.inflight.get(download.id) === download) download.reject(error);
+    } finally {
+      if (this.inflight.get(download.id) === download) this.inflight.delete(download.id);
+      // Invalidating a running request settles its consumers, not its upstream work:
+      // keep its slot until the real download finishes, even across logout.
+      this.active -= 1;
+      this.drain();
+    }
   }
 
   private load(id: string): Promise<MediaBytes | undefined> {
@@ -136,7 +173,13 @@ export class MediaService {
 
   /** Drops one cached item, finished or still downloading (a message taken back must not stay downloadable). */
   forget(id: string): void {
-    this.inflight.delete(id);
+    const download = this.inflight.get(id);
+    if (download) {
+      this.inflight.delete(id);
+      const queued = this.queue.indexOf(download);
+      if (queued !== -1) this.queue.splice(queued, 1);
+      download.resolve(undefined);
+    }
     const entry = this.cache.get(id);
     if (!entry) return;
     this.cache.delete(id);
@@ -145,7 +188,9 @@ export class MediaService {
 
   clear(): void {
     this.cache.clear();
+    for (const download of this.inflight.values()) download.resolve(undefined);
     this.inflight.clear();
+    this.queue.length = 0;
     this.uploads.clear();
     this.size = 0;
   }
