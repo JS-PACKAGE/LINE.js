@@ -185,6 +185,7 @@ export function createComposer(send: (frame: ClientFrame) => boolean, mentions: 
   }
 
   function closeSuggestions(): void {
+    if (!suggesting) return;
     suggesting = undefined;
     mentionList.hidden = true;
     mentionList.replaceChildren();
