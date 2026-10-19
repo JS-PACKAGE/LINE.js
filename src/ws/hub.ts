@@ -438,10 +438,18 @@ export function createHub(options: HubOptions): Hub {
     if (request.kind === "text") {
       // Cached speakers remain taggable; a bot may also tag admins it just queried in this chat.
       if (request.mentions.length > 0) {
-        const speakers = new Set(store.messagesOf(request.chatId).map((message) => message.senderId));
+        if (channel.kind === "user") return fail(socket, "INVALID_REQUEST", request.requestId);
         const admins = scope && channel.kind === "square" ? adminMentions.get(socket)?.get(request.chatId) : undefined;
-        if (channel.kind === "user" || !request.mentions.every((mention) => speakers.has(mention.userId) || admins?.has(mention.userId))) {
-          return fail(socket, "INVALID_REQUEST", request.requestId);
+        let missing: Set<string> | undefined;
+        for (const { userId } of request.mentions) {
+          if (!admins?.has(userId)) (missing ??= new Set<string>()).add(userId);
+        }
+        if (missing) {
+          for (const message of store.messagesOf(request.chatId)) {
+            missing.delete(message.senderId);
+            if (missing.size === 0) break;
+          }
+          if (missing.size > 0) return fail(socket, "INVALID_REQUEST", request.requestId);
         }
       }
       // A reply must point at a message this server has shown in the same chat.

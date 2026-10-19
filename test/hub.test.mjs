@@ -1938,6 +1938,28 @@ test("queried silent admins may be mentioned only by that bot in that chat, not 
   assert.equal(env.provider.calls.filter(([kind]) => kind === "text").length, 1);
 });
 
+test("mixed mentions require every target and cached-speaker permission ends on eviction", async (t) => {
+  const env = await adminBotEnv(t);
+  const bot = await env.open();
+  const speaker = `p${"c".repeat(32)}`;
+  const unknown = `p${"d".repeat(32)}`;
+  env.store.upsert({ ...older("1001", 10), channelId: SQUARE, channelKind: "square", senderId: speaker }, false);
+  await env.ask(bot, "chat:admins:get");
+  const mentionMany = (ids) => env.ask(bot, "message:send", {
+    text: ids.map(() => "@人").join(" "),
+    mentions: ids.map((userId, index) => ({ userId, start: index * 3, end: index * 3 + 2 })),
+  });
+  assert.equal((await mentionMany([ADMIN, speaker, speaker])).type, "sent");
+  assert.equal((await mentionMany([ADMIN, unknown])).code, "INVALID_REQUEST");
+  assert.equal((await mentionMany([speaker, unknown])).code, "INVALID_REQUEST");
+  for (let index = 0; index < 500; index++) {
+    env.store.upsert({ ...older(String(2000 + index), 20 + index), channelId: SQUARE, channelKind: "square", senderId: unknown }, false);
+  }
+  assert.equal((await mentionMany([ADMIN, speaker])).code, "INVALID_REQUEST");
+  assert.equal((await env.mention(bot)).type, "sent", "eviction does not revoke this connection's administrator grant");
+  assert.equal(env.provider.calls.filter(([kind]) => kind === "text").length, 2);
+});
+
 test("a refresh immediately revokes old admin mentions, including empty, failed and rate-limited lookups", async (t) => {
   for (const mode of ["empty", "failure", "limited"]) await t.test(mode, async (t) => {
     t.mock.method(console, "error", () => {});
