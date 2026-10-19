@@ -5,6 +5,7 @@ import type { Message as LineMessage, SquareMessage as LineSquareMessage } from 
 import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
 import type { Channel, ChannelRef, ChatAdmin, ChatAdmins, HistoryPage, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
 import { withMyReaction } from "../model/store.js";
+import { readResponseText } from "../response.js";
 import { memberRole, mentionMetadata, parseMentions, replyTarget } from "./members.js";
 import { parseEmojis } from "./emoji.js";
 import { parseCheckedOperation, parseReadOperation, parseReadRanges, parseUnsendOperation } from "./read.js";
@@ -528,8 +529,8 @@ export class EvexLineProvider implements LineProvider {
         redirect: "error",
       });
       if (!response.ok) return undefined;
-      const text = await response.text();
-      return text.length > 1_000_000 ? undefined : parsePackageMeta(JSON.parse(text));
+      const text = await readResponseText(response, 1_000_000);
+      return parsePackageMeta(JSON.parse(text));
     } catch {
       // The id ranges from the product list still give a usable (if untitled) package.
       return undefined;

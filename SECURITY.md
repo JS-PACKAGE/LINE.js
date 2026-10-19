@@ -166,6 +166,7 @@ approval, and a regression against any of them is treated as a vulnerability.
 | Taking a message back (`message:unsend`) is page-only and shares the send rate limit. The server sends it to LINE only for a message it has shown that this account sent (its own mid, or in OpenChat the member id its own sends came back with); bots cannot. | `src/ws/hub.ts`, `src/ws/requests.ts` |
 | Reacting (`message:react`) is page-only and shares the send rate limit. Only LINE's six predefined reactions are accepted, and only for a message the server has shown that was not taken back; bots cannot. | `src/ws/hub.ts`, `src/ws/requests.ts` |
 | Uploaded media types are decided from the bytes, never from the client-supplied type or file name. | `src/media/service.ts` |
+| Outbound JSON response limits are enforced during UTF-8 decoding, before parsing: Jev 65,536 UTF-16 code units, release metadata 1,048,576, sticker package metadata 1,000,000. Oversized streams are cancelled; existing declared-length checks remain in place. | `src/response.ts`, `src/jev/client.ts`, `src/update/checker.ts`, `src/line/provider.ts` |
 | Binary data never travels over the WebSocket; it is served over HTTP. | design rule |
 
 ### Media and content

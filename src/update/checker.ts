@@ -1,4 +1,5 @@
 import { isNewer, parseVersion } from "./version.js";
+import { readResponseText } from "../response.js";
 
 export interface UpdateInfo {
   /** Newest published release, without a leading `v`. */
@@ -98,9 +99,11 @@ export class UpdateChecker {
     if (response.status === 404) return undefined;
     if (!response.ok) throw new Error("status");
     const declared = Number(response.headers.get("content-length") ?? 0);
-    if (declared > MAX_BODY_CHARS) throw new Error("size");
-    const text = await response.text();
-    if (text.length > MAX_BODY_CHARS) throw new Error("size");
+    if (declared > MAX_BODY_CHARS) {
+      await response.body?.cancel();
+      throw new Error("size");
+    }
+    const text = await readResponseText(response, MAX_BODY_CHARS);
     const release: unknown = JSON.parse(text);
     if (!release || typeof release !== "object") throw new Error("shape");
     const { tag_name: tag, html_url: url, draft, prerelease } = release as Record<string, unknown>;

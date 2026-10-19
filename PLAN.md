@@ -206,6 +206,8 @@
 
 > CDN 圖片下載重用一般訊息媒體的串流限額讀取器：大頭照、貼圖、貼圖包圖示與 LINE emoji 維持既有 2 MiB 上限，但不再先讀完整回應才拒絕；宣告過大先取消，未宣告／低報則於實際串流超限時取消，原有格式檢查與 generic 失敗不變。32 MiB 隔離串流原本全部讀完，現在有宣告時消費 0 bytes，無宣告時消費 2 MiB＋64 KiB 的首個超限 chunk 即停止。實際雙 HTTP 服務驗證：宣告超大僅上游送出 64 KiB 即取消、chunked 超大送出 2 MiB＋64 KiB 即取消，兩者仍回 502 `MEDIA_UNAVAILABLE`；剛好 2 MiB 正常回 200。typecheck、build、321 項測試通過，含四個 CDN 入口的宣告／低報／缺少長度、精確邊界與空 body。無真實 LINE/CDN 請求；實際網路可能預取額外資料，不將消費量當作絕對傳輸上限。
 
+> 貼圖 metadata、Jev 與 Release JSON 回應共用漸進 UTF-8 解碼，在串流中依既有 UTF-16 字數上限取消超大回應，不再先累積完整內容；原本的 Content-Length 前置檢查、模型／題目、metadata fallback 與 generic 錯誤均保留。隔離 32 MiB ASCII 串流原本無宣告時全數讀完，現在分別於 1,015,808／81,920／1,064,960 bytes 的首個超限 chunk 停止；Jev／Release 宣告超大也會取消 body。實際 HTTP 驗證三個入口提早關閉上游，並以剛好字數上限的多位元組中文 JSON 驗證正常解析，不誤改成 byte 上限。typecheck、build、325 項測試通過，新增跨 chunk BOM／多位元組／EOF 不完整 UTF-8、精確上限、取消與中斷回應不得回傳部分 JSON 的回歸。未呼叫真實 LINE、付費模型或 GitHub API；上游實際傳輸可含預取資料。
+
 ### Server → Client
 
 | type | 負載 |
