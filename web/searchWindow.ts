@@ -81,8 +81,12 @@ export class SearchWindow<T> {
   }
 
   private reindex(): void {
-    this.offsets = [0];
-    for (const height of this.heights) this.offsets.push(this.offsets.at(-1)! + height);
+    let offset = 0;
+    for (let index = 0; index < this.heights.length; index++) {
+      offset += this.heights[index]!;
+      this.offsets[index + 1] = offset;
+    }
+    this.offsets.length = this.heights.length + 1;
   }
 
   private indexAt(offset: number): number {
