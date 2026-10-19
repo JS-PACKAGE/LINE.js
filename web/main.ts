@@ -157,16 +157,16 @@ function send(frame: ClientFrame): boolean {
 
 // Who the "@" list offers: people who have spoken in the open chat (the server only accepts those), newest first.
 const composer = createComposer(send, {
-  candidates() {
-    const seen = new Map<string, MentionCandidate>();
+  *candidates(): Iterable<MentionCandidate> {
+    const seen = new Set<string>();
     const messages = orderedMessages(selected ?? "");
     for (let index = messages.length - 1; index >= 0; index--) {
       const message = messages[index]!;
       if (taggable(message) && !seen.has(message.senderId)) {
-        seen.set(message.senderId, { userId: message.senderId, name: message.senderName, ...(message.senderPictureId ? { pictureId: message.senderPictureId } : {}) });
+        seen.add(message.senderId);
+        yield { userId: message.senderId, name: message.senderName, ...(message.senderPictureId ? { pictureId: message.senderPictureId } : {}) };
       }
     }
-    return [...seen.values()];
   },
   avatar: (person) => createAvatar(person.pictureId, person.name),
 });

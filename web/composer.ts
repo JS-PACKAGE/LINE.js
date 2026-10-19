@@ -55,7 +55,7 @@ export interface Composer {
 
 /** Who can be tagged in the open chat (newest speaker first) and how to draw their avatar in the "@" list. */
 export interface MentionSource {
-  candidates(): MentionCandidate[];
+  candidates(): Iterable<MentionCandidate>;
   avatar(person: MentionCandidate): HTMLElement;
 }
 
