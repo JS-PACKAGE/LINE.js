@@ -46,6 +46,8 @@ const SELECTORS = [
 
 function withShims(run) {
   const nodes = new Map(SELECTORS.map((id) => [id, makeElement(id)]));
+  // Match the page markup before the composer attaches its event handlers.
+  nodes.get("#mention-list").hidden = true;
   const globals = {
     document: { querySelector: (s) => nodes.get(s) ?? makeElement(s), createElement: () => makeElement("created"), createTextNode: (text) => ({ textContent: text }) },
     window: { addEventListener() {} },
@@ -201,5 +203,7 @@ test("typing @ offers the chat's people; picking one with Enter tags them instea
     draft.fire("keydown", { key: "Enter", shiftKey: false, isComposing: false });
     const frame = sent.find((entry) => entry.type === "message:send");
     assert.deepEqual(frame.mentions, [{ userId: people[1].userId, start: 2, end: 5 }]);
+    // Complete the exchange so its send timeout cannot outlive the DOM fixture.
+    composer.handleSent(frame.requestId);
   });
 });
