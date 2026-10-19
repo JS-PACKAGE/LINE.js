@@ -406,14 +406,15 @@ export class EvexLineProvider implements LineProvider {
     const emojis = isText && text ? parseEmojis(fields.metadata, text) : [];
     const parsed = isText ? undefined : messageCard(contentType, fields.metadata, fields.location);
     const card = parsed?.kind === "file" && fileId ? { ...parsed, fileId } : parsed;
+    const profile = this.profiles.get(fields.senderId);
     return {
       messageId: String(fields.id),
       channelId: fields.channelId,
       channelKind: fields.channelKind,
       senderId: fields.senderId,
-      senderName: this.profiles.get(fields.senderId)?.name ?? UNKNOWN_MEMBER,
-      ...(this.profiles.get(fields.senderId)?.pictureId ? { senderPictureId: this.profiles.get(fields.senderId)!.pictureId } : {}),
-      ...(this.profiles.get(fields.senderId)?.role ? { senderRole: this.profiles.get(fields.senderId)!.role } : {}),
+      senderName: profile?.name ?? UNKNOWN_MEMBER,
+      ...(profile?.pictureId ? { senderPictureId: profile.pictureId } : {}),
+      ...(profile?.role ? { senderRole: profile.role } : {}),
       ...(isText && text ? { text } : fields.eventText ? { text: fields.eventText } : {}),
       contentType: isChatEvent(contentType) ? "CHATEVENT" : contentType,
       createdAt: Number.isFinite(created) && created > 0 ? created : Date.now(),
