@@ -1512,14 +1512,16 @@ async function handle(frame: ServerFrame): Promise<void> {
       return;
     case "read": {
       const known = (readPositions[frame.chatId] ??= {});
+      let changed = false;
       for (const position of frame.positions) {
         const id = BigInt(position.messageId);
         if (!(position.readerId in known) || id > known[position.readerId]!) {
           known[position.readerId] = id;
           sortedReadPositions.delete(known);
+          changed = true;
         }
       }
-      if (!searching && frame.chatId === selected) renderMessages("keep");
+      if (changed && !searching && frame.chatId === selected) renderMessages("keep");
       return;
     }
     case "sent": {
