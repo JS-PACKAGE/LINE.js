@@ -1014,9 +1014,14 @@ export class EvexLineProvider implements LineProvider {
     const cached = this.squareCache.get(message.channelId);
     if (!cached) return;
     const previous = cached.byId.get(message.messageId);
-    if (previous) cached.messages.splice(this.squareLowerBound(cached.messages, previous), 1);
-    const index = this.squareLowerBound(cached.messages, message);
-    cached.messages.splice(index, 0, message);
+    const previousIndex = previous ? this.squareLowerBound(cached.messages, previous) : -1;
+    if (previous && previous.createdAt === message.createdAt) {
+      cached.messages[previousIndex] = message;
+    } else {
+      if (previous) cached.messages.splice(previousIndex, 1);
+      const index = this.squareLowerBound(cached.messages, message);
+      cached.messages.splice(index, 0, message);
+    }
     cached.byId.set(message.messageId, message);
     const origin = this.mediaOrigins.get(message.messageId);
     if (origin?.square) cached.origins.set(message.messageId, origin.raw);

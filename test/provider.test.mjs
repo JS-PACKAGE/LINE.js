@@ -1177,6 +1177,15 @@ test("OpenChat ID index follows duplicate moves, equal-time cursors, eviction an
   const { provider, emit } = await activeProvider(base);
   const channel = { channelId: SQUARE, kind: "square" };
   await provider.fetchHistory(channel, 50);
+  const replaced = squareRaw(10);
+  replaced.message.text = "原位置更新";
+  emit("square:message", { raw: replaced });
+  await provider.deliveries.get(SQUARE);
+  provider.updateSquareMessage(SQUARE, "10", { reactions: { counts: { LIKE: 1 } } });
+  const unchangedOrder = (await provider.fetchHistory(channel, 50)).messages;
+  assert.deepEqual(unchangedOrder.map((message) => message.messageId), ["9", "10", "11"]);
+  assert.equal(unchangedOrder[1].text, "原位置更新");
+  assert.deepEqual(unchangedOrder[1].reactions, { counts: { LIKE: 1 } });
   const moved = squareRaw(11);
   moved.message.createdTime = squareRaw(9).message.createdTime;
   emit("square:message", { raw: moved });
