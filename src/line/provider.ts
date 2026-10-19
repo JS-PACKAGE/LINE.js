@@ -665,7 +665,10 @@ export class EvexLineProvider implements LineProvider {
     if (this.client !== client) return;
     const now = Date.now();
     const pending: string[] = [];
-    for (const mid of new Set(mids)) {
+    const seen = new Set<string>();
+    for (const mid of mids) {
+      if (seen.has(mid)) continue;
+      seen.add(mid);
       if (!(source === "square" ? mid.length > 0 : TALK_USER_MID.test(mid))) continue;
       if (!this.profiles.get(mid)?.settled && (this.lookupMisses.get(`${source}:${mid}`) ?? 0) <= now) {
         pending.push(mid);
