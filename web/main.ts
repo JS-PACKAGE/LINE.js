@@ -78,6 +78,7 @@ let signedIn = false;
 let channels: Channel[] = [];
 const channelsById = new Map<string, Channel>();
 let channelOrderDirty = false;
+let orderedFriends: Channel[] | undefined;
 let messages: Record<string, Message[]> = {};
 let messageIndices: Record<string, Map<string, number>> = {};
 const unorderedChats = new Set<string>();
@@ -222,6 +223,7 @@ function applyAuthState(state: AuthState): void {
     unseenBelow = 0;
     pinnedToBottom = true;
     channels = [];
+    orderedFriends = undefined;
     channelsById.clear();
     channelOrderDirty = false;
     messages = {};
@@ -347,13 +349,19 @@ const friendOrder = new Intl.Collator("zh-TW");
 function renderChannels(): void {
   if (channelOrderDirty) {
     sortChannels();
+    orderedFriends = undefined;
     channelOrderDirty = false;
   }
   const keyword = filter.value.trim().toLocaleLowerCase();
-  const inTab = channels.filter((channel) => (tab === "friends" ? channel.kind === "user" : hasConversation(channel)));
+  // Reuse full friend ordering, but keep a narrow search cheap after channel data changes.
+  const inTab = tab === "friends"
+    ? (orderedFriends ?? channels.filter((channel) => channel.kind === "user"))
+    : channels.filter(hasConversation);
   const visible = keyword ? inTab.filter((channel) => channel.name.toLocaleLowerCase().includes(keyword)) : inTab;
-  // Conversations are ordered by activity (see sortChannels); the friend list reads alphabetically.
-  if (tab === "friends") visible.sort((a, b) => friendOrder.compare(a.name, b.name));
+  if (tab === "friends" && !orderedFriends) {
+    visible.sort((a, b) => friendOrder.compare(a.name, b.name));
+    if (!keyword) orderedFriends = visible;
+  }
   const day = new Date().toDateString();
   const nodes = visible.map((channel) => {
     const count = unread[channel.channelId];
@@ -1361,6 +1369,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       if (halted) return;
       // The server replays the full snapshot after every (re)connect.
       channels = [];
+      orderedFriends = undefined;
       channelsById.clear();
       channelOrderDirty = false;
       readPositions = {};
