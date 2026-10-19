@@ -518,14 +518,21 @@ function decorate(text: string, mentions: readonly TextMention[], hit: string, e
     }
     nodes.push(...linkifiedNodes(part));
   };
-  const ranges = [...mentions.map((mention) => ({ start: mention.start, end: mention.end, mention })), ...emojis.map((emoji) => ({ start: emoji.start, end: emoji.end, emoji }))]
-    .sort((a, b) => a.start - b.start);
+  // Both DTO lists are sorted; mentions retain precedence when ranges start together.
+  let mentionIndex = 0;
+  let emojiIndex = 0;
   let at = 0;
-  for (const range of ranges) {
+  while (mentionIndex < mentions.length || emojiIndex < emojis.length) {
+    const mention = mentions[mentionIndex];
+    const emoji = emojis[emojiIndex];
+    const useMention = mention !== undefined && (emoji === undefined || mention.start <= emoji.start);
+    const range = useMention ? mention! : emoji!;
+    if (useMention) mentionIndex++;
+    else emojiIndex++;
     if (range.start < at || range.end > text.length) continue;
     emit(text.slice(at, range.start));
-    if ("emoji" in range) nodes.push(emojiImage(range.emoji.emojiId, text.slice(range.start, range.end)));
-    else emit(text.slice(range.start, range.end), range.mention);
+    if (useMention) emit(text.slice(range.start, range.end), mention);
+    else nodes.push(emojiImage(emoji!.emojiId, text.slice(range.start, range.end)));
     at = range.end;
   }
   emit(text.slice(at));
