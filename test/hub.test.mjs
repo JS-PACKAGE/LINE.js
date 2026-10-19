@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, stat, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile, rm, symlink } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -489,6 +489,50 @@ test("built assets may be kept by the browser for good; the page and anything ou
   const page = await fetch(`http://127.0.0.1:${port}/`);
   assert.equal(page.headers.get("cache-control"), "no-store");
   assert.equal((await fetch(`http://127.0.0.1:${port}/assets/..%2F..%2Fetc%2Fpasswd`)).status, 404);
+});
+
+test("static HEAD preserves page and asset headers without a response body", async (t) => {
+  const { port, root, cookie } = await start(t);
+  await mkdir(join(root, "assets"));
+  await writeFile(join(root, "assets", "index-abc123.js"), "console.log(1)");
+  for (const path of ["/", "/index.html", "/assets/index-abc123.js"]) {
+    const url = `http://127.0.0.1:${port}${path}`;
+    const get = await fetch(url);
+    assert.equal(get.status, 200);
+    await get.arrayBuffer();
+    const head = await fetch(url, { method: "HEAD" });
+    assert.equal(head.status, 200, path);
+    assert.equal(await head.text(), "", path);
+    for (const header of ["content-type", "cache-control", "set-cookie", "x-content-type-options", "referrer-policy", "content-security-policy"]) {
+      assert.equal(head.headers.get(header), get.headers.get(header), `${path}: ${header}`);
+    }
+    assert.equal(head.headers.get("content-type"), path.startsWith("/assets/") ? "text/javascript; charset=utf-8" : "text/html; charset=utf-8");
+    assert.equal(head.headers.get("cache-control"), path.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-store");
+    assert.equal(head.headers.get("set-cookie"), path.startsWith("/assets/") ? null : `${cookie}; HttpOnly; SameSite=Strict; Path=/`);
+  }
+});
+
+test("static HEAD rejects missing files, directories, escaped symlinks and cross-site requests", async (t) => {
+  const { port, root } = await start(t);
+  await mkdir(join(root, "directory.js"));
+  const outside = await mkdtemp(join(tmpdir(), "linejs-static-outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await writeFile(join(outside, "secret.js"), "private");
+  await symlink(join(outside, "secret.js"), join(root, "escape.js"));
+  for (const path of ["/missing.js", "/directory.js", "/escape.js"]) {
+    for (const method of ["GET", "HEAD"]) {
+      const response = await fetch(`http://127.0.0.1:${port}${path}`, { method });
+      assert.equal(response.status, 404, `${method} ${path}`);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      assert.equal(response.headers.get("set-cookie"), null);
+      if (method === "HEAD") assert.equal(await response.text(), "");
+      else assert.deepEqual(await response.json(), { code: "NOT_FOUND" });
+    }
+  }
+  const forbidden = await fetch(`http://127.0.0.1:${port}/`, { method: "HEAD", headers: { "Sec-Fetch-Site": "cross-site" } });
+  assert.equal(forbidden.status, 403);
+  assert.equal(forbidden.headers.get("set-cookie"), null);
+  assert.equal(await forbidden.text(), "");
 });
 
 test("media route serves stickers only to the browser that holds the cookie and only for valid ids", async (t) => {

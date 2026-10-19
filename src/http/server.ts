@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { readFile, realpath } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import type { Config } from "../config.js";
 import { SlidingWindowLimiter } from "../limit.js";
@@ -188,7 +188,15 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
         json(response, 404, { code: "NOT_FOUND" });
         return;
       }
-      const body = await readFile(path);
+      let body: Buffer | undefined;
+      if (request.method === "HEAD") {
+        if (!(await stat(path)).isFile()) {
+          json(response, 404, { code: "NOT_FOUND" });
+          return;
+        }
+      } else {
+        body = await readFile(path);
+      }
       response.setHeader("Content-Type", mime[extname(path)]!);
       // Vite names every built asset after its content hash, so a given URL never changes: the
       // browser may keep it for good. Everything else (the page itself sets the cookie) stays no-store.
@@ -197,7 +205,7 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
         response.setHeader("Set-Cookie", `linejs_browser=${browserToken}; HttpOnly; SameSite=Strict; Path=/`);
       }
       response.writeHead(200);
-      response.end(request.method === "HEAD" ? undefined : body);
+      response.end(body);
     } catch {
       json(response, 404, { code: "NOT_FOUND" });
     }
