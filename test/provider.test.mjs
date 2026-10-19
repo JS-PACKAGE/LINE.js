@@ -1181,11 +1181,11 @@ test("OpenChat ID index follows duplicate moves, equal-time cursors, eviction an
   replaced.message.text = "原位置更新";
   emit("square:message", { raw: replaced });
   await provider.deliveries.get(SQUARE);
-  provider.updateSquareMessage(SQUARE, "10", { reactions: { counts: { LIKE: 1 } } });
+  provider.updateSquareMessage(SQUARE, "10", { reactions: { counts: { NICE: 1 } } });
   const unchangedOrder = (await provider.fetchHistory(channel, 50)).messages;
   assert.deepEqual(unchangedOrder.map((message) => message.messageId), ["9", "10", "11"]);
   assert.equal(unchangedOrder[1].text, "原位置更新");
-  assert.deepEqual(unchangedOrder[1].reactions, { counts: { LIKE: 1 } });
+  assert.deepEqual(unchangedOrder[1].reactions, { counts: { NICE: 1 } });
   const moved = squareRaw(11);
   moved.message.createdTime = squareRaw(9).message.createdTime;
   emit("square:message", { raw: moved });
@@ -1204,9 +1204,9 @@ test("OpenChat ID index follows duplicate moves, equal-time cursors, eviction an
   assert.equal(entry.byId.size, 5000);
   assert.equal(entry.byId.has("8"), false);
   assert.ok(entry.messages.every((message) => entry.byId.get(message.messageId) === message));
-  provider.updateSquareMessage(SQUARE, "5015", { reactions: { counts: { LIKE: 2 } } });
+  provider.updateSquareMessage(SQUARE, "5015", { reactions: { counts: { NICE: 2 } } });
   provider.updateSquareMessage(SQUARE, "8", { reactions: { counts: { LOVE: 1 } } });
-  assert.deepEqual((await provider.fetchHistory(channel, 1)).messages[0].reactions, { counts: { LIKE: 2 } });
+  assert.deepEqual((await provider.fetchHistory(channel, 1)).messages[0].reactions, { counts: { NICE: 2 } });
   assert.equal(entry.byId.has("8"), false);
   await provider.close();
 });
