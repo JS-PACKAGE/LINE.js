@@ -1795,21 +1795,23 @@ channelList.addEventListener("click", (event) => {
   if (id) openChat(id);
 });
 channelList.addEventListener("keydown", (event) => {
-  const id = chatAt(event.target);
-  if (!id) return;
+  const current = (event.target as Element).closest<HTMLLIElement>("li");
+  const id = current?.dataset.channelId;
+  if (!current || !id) return;
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
     openChat(id);
     return;
   }
   // Listbox keys: move between rows without opening them; Enter opens.
-  const rows = [...channelList.querySelectorAll<HTMLLIElement>("li")];
-  const index = rows.findIndex((row) => row.dataset.channelId === id);
-  const target = event.key === "ArrowDown" ? rows[index + 1] : event.key === "ArrowUp" ? rows[index - 1] : event.key === "Home" ? rows[0] : event.key === "End" ? rows.at(-1) : undefined;
-  if (event.key === "ArrowUp" && index === 0) {
+  const target = event.key === "ArrowDown" ? current.nextElementSibling
+    : event.key === "ArrowUp" ? current.previousElementSibling
+    : event.key === "Home" ? channelList.firstElementChild
+    : event.key === "End" ? channelList.lastElementChild : undefined;
+  if (event.key === "ArrowUp" && !current.previousElementSibling) {
     event.preventDefault();
     filter.focus();
-  } else if (target) {
+  } else if (target instanceof HTMLLIElement) {
     event.preventDefault();
     target.focus();
   }
