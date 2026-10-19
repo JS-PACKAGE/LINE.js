@@ -117,3 +117,36 @@ test("channels are ordered by latest activity, unnamed group placeholders are ne
   store.upsert(message("m2", 6, { channelId: "unlisted", senderName: "某人" }), false);
   assert.equal(store.snapshotChannels().find((channel) => channel.channelId === "unlisted").name, "未命名聊天");
 });
+
+test("scoped channel snapshots preserve activity, name and stable tie ordering without retaining old state", () => {
+  const store = new ChatStore(500);
+  store.setChannels([
+    { channelId: "c1", kind: "group", name: "B", lastMessageAt: 10 },
+    { channelId: "c2", kind: "group", name: "A", lastMessageAt: 10 },
+    { channelId: "c3", kind: "group", name: "A", lastMessageAt: 10 },
+    { channelId: "private", kind: "group", name: "secret", lastMessageAt: 100 },
+    { channelId: "c4", kind: "group", name: "Z", lastMessageAt: 20 },
+  ]);
+  const scope = new Set(["c3", "c1", "missing", "c4", "c2", "toString"]);
+  const ids = () => store.snapshotChannels(scope).map((channel) => channel.channelId);
+  assert.deepEqual(ids(), ["c4", "c2", "c3", "c1"]);
+  assert.deepEqual(store.snapshotChannels(new Set()), []);
+  store.upsert(message("latest", 30), false);
+  assert.deepEqual(ids(), ["c1", "c4", "c2", "c3"]);
+  store.unsend("latest", "c1");
+  assert.equal(store.snapshotChannels(scope)[0].lastMessage.unsent, true);
+  store.setChannels([
+    { channelId: "c3", kind: "group", name: "A", lastMessageAt: 10 },
+    { channelId: "c2", kind: "group", name: "A", lastMessageAt: 10 },
+  ]);
+  assert.deepEqual(ids(), ["c1", "c3", "c2"], "refresh order replaces old tie ranks while live-only chats survive");
+  scope.add("c5");
+  scope.add("c6");
+  store.upsert(message("live6", 10, { channelId: "c6" }), false);
+  store.upsert(message("live5", 10, { channelId: "c5" }), false);
+  assert.deepEqual(ids().filter((id) => id === "c5" || id === "c6"), ["c6", "c5"], "live-only ties use arrival order, not scope order");
+  store.clear();
+  assert.deepEqual(ids(), []);
+  store.setChannels([{ channelId: "c2", kind: "group", name: "new account" }]);
+  assert.deepEqual(store.snapshotChannels(scope), [{ channelId: "c2", kind: "group", name: "new account" }]);
+});

@@ -190,13 +190,17 @@ export function createHub(options: HubOptions): Hub {
 
   /** A bot sees only the chats listed in `api.chats`. */
   function botChannels(): Channel[] {
-    return store.snapshotChannels().filter((channel) => botScope.has(channel.channelId));
+    return store.snapshotChannels(botScope);
   }
 
   function broadcastChannels(): void {
-    const channels = store.snapshotChannels();
-    broadcast({ type: "channels", channels });
-    if (botWss.clients.size > 0) broadcastBots({ type: "channels", channels: channels.filter((channel) => botScope.has(channel.channelId)) });
+    // API-only services need no full, sorted browser snapshot.
+    const channels = wss.clients.size > 0 ? store.snapshotChannels() : undefined;
+    if (channels) broadcast({ type: "channels", channels });
+    if (botWss.clients.size > 0) broadcastBots({
+      type: "channels",
+      channels: channels ? channels.filter((channel) => botScope.has(channel.channelId)) : botChannels(),
+    });
   }
 
   function apiState(): ServerFrame {

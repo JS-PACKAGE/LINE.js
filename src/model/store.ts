@@ -26,6 +26,8 @@ export function withMyReaction(current: Reactions | undefined, mine: ReactionKin
 /** In-memory only: messages are never persisted (plan §5). */
 export class ChatStore {
   private channels: Record<string, Channel> = {};
+  // Stable tie order for scoped snapshots without scanning unrelated channels.
+  private channelOrder = new Map<string, number>();
   private messages: Record<string, Message[]> = {};
   // Per chat, messageId → message: duplicate checks and lookups without scanning the list.
   private byId: Record<string, Map<string, Message>> = {};
@@ -36,6 +38,7 @@ export class ChatStore {
   /** Drops every cached channel and message (used on logout). */
   clear(): void {
     this.channels = {};
+    this.channelOrder.clear();
     this.messages = {};
     this.byId = {};
     this.unsentIds.clear();
@@ -57,6 +60,8 @@ export class ChatStore {
       if (!next[id] && this.messages[id]?.length) next[id] = channel;
     }
     this.channels = next;
+    this.channelOrder.clear();
+    for (const id in next) this.channelOrder.set(id, this.channelOrder.size);
   }
 
   hasChannel(channelId: string): boolean {
@@ -126,6 +131,7 @@ export class ChatStore {
         lastMessageAt: stored.createdAt,
         lastMessage: stored,
       };
+      this.channelOrder.set(message.channelId, this.channelOrder.size);
     }
     return stored;
   }
@@ -175,8 +181,17 @@ export class ChatStore {
     return stored;
   }
 
-  snapshotChannels(): Channel[] {
-    return Object.values(this.channels).sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0) || a.name.localeCompare(b.name));
+  snapshotChannels(scope?: ReadonlySet<string>): Channel[] {
+    const channels: Channel[] = [];
+    if (scope) {
+      for (const id of scope) {
+        if (this.channelOrder.has(id)) channels.push(this.channels[id]!);
+      }
+    } else {
+      for (const id in this.channels) channels.push(this.channels[id]!);
+    }
+    return channels.sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0)
+      || a.name.localeCompare(b.name) || this.channelOrder.get(a.channelId)! - this.channelOrder.get(b.channelId)!);
   }
 
   /** One chat's cached messages, oldest first. Read-only view of the cache: copy before keeping it. */

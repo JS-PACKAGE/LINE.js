@@ -1450,6 +1450,26 @@ test("a bot sees its sign-in state and only the chats it is allowed, with no rep
   assert.equal(bot.frames.filter((frame) => frame.type === "message:unsend").length, 1, "nothing from chats outside api.chats");
 });
 
+test("API-only channel synchronization stays scoped and current after a new chat arrives", async (t) => {
+  const SECOND = `c${"b".repeat(32)}`;
+  const env = await botEnv(t, { chats: [SECOND, CHAT] });
+  env.store.setChannels([
+    { channelId: CHAT, kind: "group", name: "B", lastMessageAt: 1 },
+    { channelId: SECOND, kind: "group", name: "A", lastMessageAt: 1 },
+    { channelId: "c1", kind: "group", name: "private", lastMessageAt: 100 },
+  ]);
+  const closed = new Promise((resolve) => env.page.socket.once("close", resolve));
+  env.page.socket.close();
+  await closed;
+  const bot = await env.open();
+  assert.deepEqual(bot.frames.find((f) => f.type === "channels").channels.map((c) => c.channelId), [SECOND, CHAT]);
+  env.hub.handleMessage({ messageId: "100", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "member", contentType: "NONE", text: "latest", createdAt: 200 }, "new");
+  env.hub.handleMessage({ messageId: "101", channelId: "new-private", channelKind: "group", senderId: "u1", senderName: "member", contentType: "NONE", text: "private", createdAt: 300 }, "new");
+  const refreshed = await bot.until((f) => f.type === "channels" && f.channels[0]?.lastMessage?.messageId === "100");
+  assert.deepEqual(refreshed.channels.map((c) => c.channelId), [CHAT, SECOND]);
+  assert.equal(refreshed.channels[0].lastMessage.text, "latest");
+});
+
 test("broadcast bursts stay ordered UTF-8 text and preserve bot scope with any recipient group empty", async (t) => {
   for (const mode of ["page", "bot", "mixed"]) await t.test(mode, async (t) => {
     const env = await botEnv(t);
