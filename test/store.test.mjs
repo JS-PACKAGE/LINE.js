@@ -204,3 +204,30 @@ test("absent and empty reactions stay distinct, while unknown and taken-back mes
   assert.equal(store.get("m1", "c1"), placeholder);
   assert.equal(store.channelOf("c1"), channel);
 });
+
+test("edits, reactions and take-backs still target the same message after insertion and eviction move its array position", () => {
+  const store = new ChatStore(3);
+  store.upsert(message("m2", 20), false);
+  store.upsert(message("m3", 30), false);
+  store.upsert(message("m1", 10), false);
+  store.upsert(message("m2", 20, { text: "edited", editedAt: 40 }), true);
+  store.setReactions("m2", "c1", { counts: { NICE: 1 }, mine: "NICE" });
+  assert.equal(store.get("m2", "c1").text, "edited");
+  assert.equal(store.get("m2", "c1").editedAt, 40);
+
+  store.upsert(message("m4", 40), false);
+  assert.equal(store.get("m1", "c1"), undefined);
+  assert.equal(store.setReactions("m1", "c1", { counts: { LOVE: 1 } }), undefined);
+  const placeholder = store.unsend("m2", "c1");
+  const edited = store.upsert(message("m3", 30, { text: "third edited", editedAt: 50 }), true);
+  assert.deepEqual(store.messagesOf("c1").map(({ messageId, text, unsent }) => ({ messageId, text, unsent })), [
+    { messageId: "m2", text: undefined, unsent: true },
+    { messageId: "m3", text: "third edited", unsent: undefined },
+    { messageId: "m4", text: "text-m4", unsent: undefined },
+  ]);
+  assert.equal(placeholder.reactions, undefined);
+  assert.equal(store.get("m2", "c1"), placeholder);
+  assert.equal(store.get("m3", "c1"), edited);
+  for (const entry of store.messagesOf("c1")) assert.equal(store.get(entry.messageId, "c1"), entry);
+  assert.equal(store.channelOf("c1").lastMessage.messageId, "m4");
+});

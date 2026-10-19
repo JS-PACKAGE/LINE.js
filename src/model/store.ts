@@ -98,12 +98,13 @@ export class ChatStore {
     const message = this.unsentIds.has(incoming.messageId) ? unsentPlaceholder(incoming) : incoming;
     const list = this.messages[message.channelId] ?? [];
     const ids = this.byId[message.channelId] ?? new Map<string, Message>();
+    const known = ids.get(message.messageId);
     let stored = message;
-    if (ids.has(message.messageId)) {
+    if (known) {
       // A late edit must not bring back what the sender took back.
-      if (!edited || ids.get(message.messageId)!.unsent) return undefined;
+      if (!edited || known.unsent) return undefined;
       stored = { ...message, editedAt: message.editedAt ?? Date.now() };
-      list[list.findIndex((entry) => entry.messageId === message.messageId)] = stored;
+      list[list.indexOf(known)] = stored;
       ids.set(message.messageId, stored);
     } else {
       // Oldest first. Live messages land at the end; history and late arrivals are slotted in
@@ -166,7 +167,7 @@ export class ChatStore {
     if (known.unsent) return undefined;
     const placeholder = unsentPlaceholder(known);
     const list = this.messages[channelId]!;
-    list[list.findIndex((entry) => entry.messageId === messageId)] = placeholder;
+    list[list.indexOf(known)] = placeholder;
     ids.set(messageId, placeholder);
     const channel = this.channels[channelId];
     if (channel?.lastMessage?.messageId === messageId) this.channels[channelId] = { ...channel, lastMessage: placeholder };
@@ -183,7 +184,7 @@ export class ChatStore {
     const { reactions: _old, ...rest } = known;
     const stored: Message = reactions ? { ...rest, reactions } : rest;
     const list = this.messages[channelId]!;
-    list[list.findIndex((entry) => entry.messageId === messageId)] = stored;
+    list[list.indexOf(known)] = stored;
     this.byId[channelId]!.set(messageId, stored);
     const channel = this.channels[channelId];
     if (channel?.lastMessage?.messageId === messageId) this.channels[channelId] = { ...channel, lastMessage: stored };
