@@ -220,7 +220,12 @@ export function createComposer(send: (frame: ClientFrame) => boolean, mentions: 
     const match = draft.selectionEnd === caret ? MENTION_QUERY.exec(draft.value.slice(0, caret)) : null;
     if (!match) return closeSuggestions();
     const typed = match[1]!.toLocaleLowerCase();
-    const options = mentions.candidates().filter((person) => person.name.toLocaleLowerCase().includes(typed)).slice(0, MAX_SUGGESTIONS);
+    const options: MentionCandidate[] = [];
+    for (const person of mentions.candidates()) {
+      if (typed && !person.name.toLocaleLowerCase().includes(typed)) continue;
+      options.push(person);
+      if (options.length === MAX_SUGGESTIONS) break;
+    }
     if (options.length === 0) return closeSuggestions();
     const start = caret - match[1]!.length - 1;
     const keep = suggesting?.start === start ? options.findIndex((person) => person.userId === suggesting!.options[suggesting!.active]?.userId) : -1;

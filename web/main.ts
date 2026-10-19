@@ -157,7 +157,9 @@ function send(frame: ClientFrame): boolean {
 const composer = createComposer(send, {
   candidates() {
     const seen = new Map<string, MentionCandidate>();
-    for (const message of [...orderedMessages(selected ?? "")].reverse()) {
+    const messages = orderedMessages(selected ?? "");
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index]!;
       if (taggable(message) && !seen.has(message.senderId)) {
         seen.set(message.senderId, { userId: message.senderId, name: message.senderName, ...(message.senderPictureId ? { pictureId: message.senderPictureId } : {}) });
       }
