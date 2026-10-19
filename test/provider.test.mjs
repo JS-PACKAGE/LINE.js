@@ -1295,29 +1295,42 @@ test("CDN images stop oversized bodies early but accept the exact byte limit", a
   }
 });
 
-test("OpenChat history member lookups retain the 100-member cap and share the global request bound", async () => {
-  let calls = 0;
+test("OpenChat member lookup eligibility precedes the 100-member cap and preserves the global request bound", async () => {
+  const member = (id) => `p${String(id).padStart(32, "0")}`;
+  const senders = ["", member(21), member(21), ...Array.from({ length: 150 }, (_, index) => member(index + 1))];
+  const events = senders.map((sender, index) => {
+    const event = squareEvent(index + 1);
+    event.payload.receiveMessage.squareMessage.message.from = sender;
+    delete event.payload.receiveMessage.senderDisplayName;
+    return event;
+  });
+  const queried = [];
   let active = 0;
   let peak = 0;
   const base = fakeBase({ square: {
-    async fetchSquareChatEvents() {
-      return { events: Array.from({ length: 150 }, (_, index) => {
-        const event = squareEvent(index + 1);
-        event.payload.receiveMessage.squareMessage.message.from = `p-${index}`;
-        return event;
-      }) };
+    async fetchSquareChatEvents({ continuationToken }) {
+      const offset = Number(continuationToken ?? 0);
+      return { events: events.slice(offset, offset + 100), ...(offset === 0 ? { continuationToken: "100" } : {}) };
     },
-    async getSquareMember() {
-      calls += 1;
+    async getSquareMember({ squareMemberMid }) {
+      queried.push(squareMemberMid);
       peak = Math.max(peak, ++active);
       await new Promise(setImmediate);
       active -= 1;
-      return { squareMember: { displayName: "resolved" } };
+      return { squareMember: { displayName: `resolved-${squareMemberMid}` } };
     },
   } });
   const { provider } = await activeProvider(base);
-  assert.equal((await provider.fetchHistory({ channelId: SQUARE, kind: "square" }, 50)).messages.length, 50);
-  assert.equal(calls, 100);
+  for (let id = 1; id <= 10; id += 1) provider.profiles.set(member(id), { name: `cached-${id}`, settled: true });
+  for (let id = 11; id <= 20; id += 1) provider.lookupMisses.set(`square:${member(id)}`, Date.now() + 60_000);
+  const channel = { channelId: SQUARE, kind: "square" };
+  const page = await provider.fetchHistory(channel, 100);
+  assert.deepEqual(queried, Array.from({ length: 100 }, (_, index) => member(index + 21)));
+  assert.equal(page.messages.find((message) => message.senderId === member(120)).senderName, `resolved-${member(120)}`);
+  assert.notEqual(page.messages.find((message) => message.senderId === member(121)).senderName, `resolved-${member(121)}`);
+  const older = await provider.fetchHistory(channel, 100, page.cursor);
+  assert.equal(older.messages.find((message) => message.senderId === member(5)).senderName, "cached-5");
+  assert.equal(queried.length, 100);
   assert.equal(peak, 5);
   await provider.close();
 });
