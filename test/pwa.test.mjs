@@ -179,8 +179,11 @@ test("pages come from the network first and the cached shell is only the offline
 test("hashed build files are served from the cache and filled on first use", async () => {
   const worker = await loadWorker();
   const asset = { ok: true, type: "basic", clone() { return this; } };
-  worker.state.fetch = async () => asset;
+  let fetches = 0;
+  worker.state.fetch = async () => { fetches += 1; return asset; };
   assert.equal(await worker.dispatchFetch(req("/assets/index-abc.js")), asset, "first use goes to the network");
+  assert.equal(await worker.dispatchFetch(req("/assets/index-abc.js")), asset, "online cache hits also reuse the immutable build");
+  assert.equal(fetches, 1, "a cached content hash must not cause another network request");
   worker.state.fetch = async () => { throw new Error("offline"); };
   assert.equal(await worker.dispatchFetch(req("/assets/index-abc.js")), asset, "later (even offline) from the cache");
   const opaque = { ok: true, type: "opaque", clone() { return this; } };
@@ -188,6 +191,21 @@ test("hashed build files are served from the cache and filled on first use", asy
   worker.cacheCalls.length = 0;
   await worker.dispatchFetch(req("/icons/never-seen.png"));
   assert.deepEqual(worker.cacheCalls, [], "only same-origin responses are stored");
+});
+
+test("unhashed public files refresh in the background without delaying the cached response", async () => {
+  for (const path of ["/manifest.webmanifest", "/icons/icon-192.png", "/favicon.ico"]) {
+    const worker = await loadWorker();
+    const old = { ok: true, type: "basic", version: "old", clone() { return this; } };
+    const fresh = { ...old, version: "fresh" };
+    worker.state.fetch = async () => old;
+    assert.equal(await worker.dispatchFetch(req(path)), old);
+    worker.state.fetch = async () => fresh;
+    assert.equal(await worker.dispatchFetch(req(path)), old, "the cached response remains immediately available");
+    await new Promise((resolve) => setImmediate(resolve));
+    worker.state.fetch = async () => { throw new Error("offline"); };
+    assert.equal(await worker.dispatchFetch(req(path)), fresh, "the successful background refresh replaces the old content");
+  }
 });
 
 test("a new release's worker keeps only its own cache and removes every other release's, never anyone else's", async () => {

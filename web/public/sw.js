@@ -57,6 +57,7 @@ self.addEventListener("fetch", (event) => {
     // unhashed files (manifest, icons) are refreshed in the background each time.
     event.respondWith(
       caches.match(request).then((cached) => {
+        if (cached && url.pathname.startsWith("/assets/")) return cached;
         const network = fetch(request).then((response) => remember(request, response));
         if (cached) {
           network.catch(() => {});
