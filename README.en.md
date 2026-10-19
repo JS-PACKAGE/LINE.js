@@ -325,6 +325,36 @@ The same checks run automatically in GitHub Actions (`.github/workflows/ci.yml`)
 
 Tests use `node --test` and a Mock Provider; mocks do not replace real LINE acceptance. Gate 1 requires scanning with a secondary account and receiving a real message within 60 seconds; Gates 2–4 additionally verify web synchronization, history, sending, and media. See [PLAN.md](PLAN.md) for all Gates and acceptance criteria.
 
+Current performance-audit fixes:
+
+- Member lookups share in-flight requests for the same source/ID and prefetch concurrently while preserving per-chat delivery order. At most 5 real requests run globally; timed-out requests retain their slots until they settle, and late or old-account results cannot populate profiles.
+- The web UI batches rendering by animation frame without merging or dropping events. It retains message ID indexes, date/search-text caches and sorted read positions, and reuses search nodes. History prepends anchor by message ID even when new messages arrive concurrently or grouping replaces DOM nodes.
+- OpenChat caches add an ID index and binary-search cursors/insertion points, preserving unsends, reactions, live-event precedence and existing bounds.
+- API channel snapshots directly look up authorized IDs instead of scanning every chat, preserving stable timestamp/name ties.
+- Single-chunk media uploads/downloads avoid an extra copy; multi-chunk paths use the already-counted length. E2EE, content detection, actual-byte limits and Range rules remain unchanged; downloads are not converted to streaming.
+
+Local isolated measurements: member lookups use a fixed 80ms upstream delay. API preparation compares the previous full scan against indexed lookup for 5,000 chats/3 authorized IDs, using 200 operations per round and the median of 5 rounds after warmup. Chromium uses the production HTTP/WS server, injecting 100 messages after the initial 50 messages and history have settled; the Layout counts below are a single controlled observation:
+
+| Measurement | Before | After |
+|---|---:|---:|
+| 3 distinct members in one chat: last delivery (ms) | 245.08 | 82.09 |
+| Same member in 3 chats: upstream requests | 3 | 1 |
+| API channel preparation, 200 operations (ms) | 22.48 | 0.12 |
+| 100 messages: browser Layout count | 206 | 3 |
+
+Typecheck, build and all 285 tests passed. Actual browser checks covered complete ordered delivery, image DOM preservation, concurrent edits/reactions, scroll anchoring with simultaneous history/live messages, search updates/node reuse, own-send bottom scrolling, read updates, chat switching and logout cleanup, plus the actual image-upload route. Main-world visibility simulation verified no read receipt while hidden and acknowledgement after returning; this does not verify every browser's background throttling. Upstreams were isolated; no real LINE account or paid AI API was used, and these results do not establish real-network latency or Gate acceptance.
+
+API channel synchronization verified: API connections filter by `api.chats` before sorting. Bot-only services skip the full browser snapshot; mixed connections reuse the browser's sorted result. Ordering, fields, payload size and protocol remain unchanged, with no new potentially stale cache. Typecheck, build and all 279 tests passed, covering stable ties, empty scopes, live updates, unsends, clearing and API-only synchronization.
+
+Local production HTTP/WS hub with Bearer Token authentication and an isolated provider, 5,000 chats with 3 allowed for the API: median of 30 connections after 5 warmups. Data preparation uses the median of 5 rounds of 200 operations, checking contents throughout:
+
+| Measurement | Before (ms) | After (ms) |
+|---|---:|---:|
+| API connection start to receiving channels | 3.18 | 0.52 |
+| Channel data preparation, 200 operations | 591.77 | 25.92 |
+
+This improves channel synchronization processing latency, not bandwidth or every API request by the same ratio. No real LINE account was used; this does not establish Gate acceptance.
+
 Packet-processing optimization verified: each broadcast is JSON/UTF-8 encoded once and shared by web and authorized API connections; channel-list broadcasts sort once before filtering API-visible chats. Text frames and protocol version 2 remain unchanged, with no event coalescing or dropping and no changes to validation, rate limits or slow-client backpressure protection. Typecheck, build and all 277 tests passed, including new burst coverage for web-only, API-only and mixed connections, Unicode, edit/unsend ordering, deduplication and chat isolation.
 
 Actual local HTTP/WS cookie/Token-authenticated measurement: 1 web-protocol connection and 4 bots, 4,000 messages containing Chinese/emoji per round, waiting for each connection's pong every 40 messages; medians of 5 rounds after warmup. Backend processing is cumulative synchronous `handleMessage` time; completion includes receipt and parsing of messages and pongs by all connections (milliseconds):
