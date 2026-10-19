@@ -1001,7 +1001,19 @@ function reconcile(parent: HTMLElement, nodes: readonly Node[]): void {
     current = current.nextSibling;
     matched++;
   }
-  if (matched === nodes.length && current === null) return;
+  // Appends and trailing removals do not need a full membership set or child-node snapshot.
+  if (current === null) {
+    while (matched < nodes.length) parent.appendChild(nodes[matched++]!);
+    return;
+  }
+  if (matched === nodes.length) {
+    while (current !== null) {
+      const next: ChildNode | null = current.nextSibling;
+      current.remove();
+      current = next;
+    }
+    return;
+  }
 
   const keep = new Set(nodes);
   for (const child of [...parent.childNodes]) if (!keep.has(child)) child.remove();
