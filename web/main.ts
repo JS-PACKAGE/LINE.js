@@ -76,6 +76,7 @@ let reconnectDelay = 1000;
 let authState: AuthState | undefined;
 let signedIn = false;
 let channels: Channel[] = [];
+const channelsById = new Map<string, Channel>();
 let channelOrderDirty = false;
 let messages: Record<string, Message[]> = {};
 let messageIndices: Record<string, Map<string, number>> = {};
@@ -214,6 +215,7 @@ function applyAuthState(state: AuthState): void {
     unseenBelow = 0;
     pinnedToBottom = true;
     channels = [];
+    channelsById.clear();
     channelOrderDirty = false;
     messages = {};
     messageIndices = {};
@@ -360,8 +362,7 @@ function renderChannels(): void {
   });
   // Rows of channels that are gone (logout, another account) are not kept around.
   if (channelRows.size > channels.length) {
-    const current = new Set(channels.map((channel) => channel.channelId));
-    for (const id of channelRows.keys()) if (!current.has(id)) channelRows.delete(id);
+    for (const id of channelRows.keys()) if (!channelsById.has(id)) channelRows.delete(id);
   }
   reconcile(channelList, nodes);
   filter.placeholder = tab === "friends" ? "搜尋好友" : "搜尋聊天";
@@ -375,7 +376,7 @@ function renderChannels(): void {
 
 channelList.addEventListener("contextmenu", (event) => {
   const id = chatAt(event.target);
-  const channel = channels.find((entry) => entry.channelId === id);
+  const channel = id ? channelsById.get(id) : undefined;
   if (!channel) return;
   event.preventDefault();
   showMenu(event.clientX, event.clientY, [{
@@ -634,9 +635,8 @@ function searchHits(): SearchHit[] {
   const query = searchQuery.trim().toLocaleLowerCase();
   if (query === "") return [];
   const hits: SearchHit[] = [];
-  const byChannel = new Map(channels.map((channel) => [channel.channelId, channel]));
   for (const channelId of Object.keys(messages)) {
-    const channel = byChannel.get(channelId);
+    const channel = channelsById.get(channelId);
     for (const message of orderedMessages(channelId)) {
       let text = searchText.get(message);
       if (!text) {
@@ -1044,7 +1044,7 @@ function renderMessages(anchor: MessageAnchor = "bottom"): void {
 function drawMessages(anchor: MessageAnchor = "bottom"): void {
   cancelMessageRender();
   updateRetentionNote();
-  const channel = channels.find((entry) => entry.channelId === selected);
+  const channel = selected ? channelsById.get(selected) : undefined;
   channelTitle.textContent = channel?.name ?? "選擇一個聊天室";
   // The header avatar is redrawn only when it would look different.
   const avatarKey = channel ? `${channel.channelId}\n${channel.pictureId ?? ""}\n${channel.name}` : "";
@@ -1352,6 +1352,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       if (halted) return;
       // The server replays the full snapshot after every (re)connect.
       channels = [];
+      channelsById.clear();
       channelOrderDirty = false;
       readPositions = {};
       unreadFrom = undefined;
@@ -1401,8 +1402,12 @@ async function handle(frame: ServerFrame): Promise<void> {
     case "channels":
       channels = frame.channels;
       channelOrderDirty = true;
-      for (const channel of channels) applyUnread(channel);
-      if (selected && !channels.some((channel) => channel.channelId === selected)) {
+      channelsById.clear();
+      for (const channel of channels) {
+        channelsById.set(channel.channelId, channel);
+        applyUnread(channel);
+      }
+      if (selected && !channelsById.has(selected)) {
         selected = undefined;
         composer.setChannel(undefined);
       }
@@ -1413,9 +1418,11 @@ async function handle(frame: ServerFrame): Promise<void> {
       return;
     case "channel": {
       // Update data and unread state now; activity ordering joins the next channel render.
-      const index = channels.findIndex((channel) => channel.channelId === frame.channel.channelId);
+      const previous = channelsById.get(frame.channel.channelId);
+      const index = previous ? channels.indexOf(previous) : -1;
       if (index < 0) channels.push(frame.channel);
       else channels[index] = frame.channel;
+      channelsById.set(frame.channel.channelId, frame.channel);
       channelOrderDirty = true;
       applyUnread(frame.channel);
       scheduleChannels();
@@ -1436,7 +1443,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       if (frame.type === "message" && !isMine(message) && (message.channelId !== selected || document.visibilityState !== "visible")) {
         unread[message.channelId] = (unread[message.channelId] ?? 0) + 1;
         liveCounted.add(message.channelId);
-        notifier.notify(message, channels.find((channel) => channel.channelId === message.channelId)?.name ?? "", previewOf(message));
+        notifier.notify(message, channelsById.get(message.channelId)?.name ?? "", previewOf(message));
       }
       scheduleChannels();
       return;
