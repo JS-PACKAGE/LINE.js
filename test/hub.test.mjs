@@ -220,6 +220,163 @@ test("a restored session receives ready state, profile, channels and cached mess
   assert.equal(client.frames[0].protocol, 2);
 });
 
+function seedLargeReplay(env) {
+  env.provider.channels = Array.from({ length: 20 }, (_, index) => ({ channelId: `replay-${index}`, kind: "group", name: `Chat ${index}` }));
+  env.store.setChannels(env.provider.channels);
+  for (const { channelId } of env.provider.channels) {
+    for (let index = 0; index < 500; index += 1) {
+      env.store.upsert({
+        messageId: `${channelId}-${index}`, channelId, channelKind: "group",
+        senderId: "u1", senderName: "Sender", text: "x".repeat(2000), contentType: "NONE", createdAt: index,
+      }, false);
+    }
+  }
+}
+
+test("large reconnect replay is chunked and completes before concurrent live edits and take-backs", async (t) => {
+  const env = await start(t);
+  await env.login.restore();
+  seedLargeReplay(env);
+  const client = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => client.socket.close());
+  let changed = false;
+  client.socket.on("message", (data) => {
+    if (changed || JSON.parse(data.toString()).type !== "messages") return;
+    changed = true;
+    const original = env.store.get("replay-19-0", "replay-19");
+    env.hub.handleMessage({ ...original, text: "edited during replay" }, "edit");
+    env.hub.handleUnsend("replay-19", "replay-19-1");
+    env.hub.handleMessage({ ...original, messageId: "live", text: "live during replay", createdAt: 501 }, "new");
+  });
+  await client.opened;
+  await client.until((frame) => frame.type === "message" && frame.message.messageId === "live", 15_000);
+  const snapshots = client.frames.filter((frame) => frame.type === "messages");
+  assert.equal(snapshots.reduce((sum, frame) => sum + frame.messages.length, 0), 10_000);
+  assert.equal(new Set(snapshots.flatMap((frame) => frame.messages.map((message) => message.messageId))).size, 10_000);
+  assert.ok(snapshots.length > 20, "a chat's megabyte snapshot must be split into bounded batches");
+  assert.ok(snapshots.every((frame) => Buffer.byteLength(JSON.stringify(frame)) <= 256 * 1024));
+  assert.ok(snapshots.reduce((sum, frame) => sum + Buffer.byteLength(JSON.stringify(frame)), 0) > 20_000_000);
+  assert.equal(client.socket.readyState, WebSocket.OPEN);
+  const lastSnapshot = client.frames.findLastIndex((frame) => frame.type === "messages");
+  assert.ok(client.frames.findIndex((frame) => frame.type === "message:edit") > lastSnapshot);
+  assert.ok(client.frames.findIndex((frame) => frame.type === "message:unsend") > lastSnapshot);
+  // Apply the browser's merge/replace semantics, rather than merely asserting frame wiring.
+  const messages = new Map();
+  for (const frame of client.frames) {
+    if (frame.type === "messages") for (const message of frame.messages) messages.set(message.messageId, message);
+    if (frame.type === "message" || frame.type === "message:edit") messages.set(frame.message.messageId, frame.message);
+    if (frame.type === "message:unsend") messages.set(frame.messageId, { messageId: frame.messageId, unsent: true });
+  }
+  assert.equal(messages.size, 10_001);
+  assert.equal(messages.get("replay-19-0").text, "edited during replay");
+  assert.equal(messages.get("replay-19-1").unsent, true);
+  assert.equal(messages.get("replay-19-1").text, undefined);
+  assert.equal(messages.get("live").text, "live during replay");
+  assert.equal(client.frames.filter((frame) => frame.type === "message:edit").length, 1);
+  assert.equal(client.frames.filter((frame) => frame.type === "message:unsend").length, 1);
+});
+
+test("logout cancels pending replay and events before a new account becomes ready", async (t) => {
+  const env = await start(t);
+  await env.login.restore();
+  seedLargeReplay(env);
+  const client = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => client.socket.close());
+  let logout;
+  client.socket.on("message", (data) => {
+    if (logout || JSON.parse(data.toString()).type !== "messages") return;
+    const original = env.store.get("replay-19-0", "replay-19");
+    env.hub.handleMessage({ ...original, text: "must be discarded" }, "edit");
+    logout = env.login.logout();
+  });
+  await client.opened;
+  await client.until((frame) => frame.type === "auth:state" && frame.state === "idle", 10_000);
+  await logout;
+  await env.login.restore();
+  const fresh = { messageId: "fresh", channelId: "c1", channelKind: "group", senderId: "u1", senderName: "Sender", text: "new account", contentType: "NONE", createdAt: 1 };
+  env.hub.handleMessage(fresh, "new");
+  await client.until((frame) => frame.type === "message" && frame.message.messageId === "fresh");
+  const idle = client.frames.findIndex((frame) => frame.type === "auth:state" && frame.state === "idle");
+  assert.equal(client.frames.slice(idle + 1).some((frame) => frame.type === "messages" || frame.type === "message:edit"), false);
+  assert.ok(client.frames.filter((frame) => frame.type === "messages").reduce((sum, frame) => sum + frame.messages.length, 0) < 10_000);
+  assert.equal(env.store.get("replay-19-0", "replay-19"), undefined);
+});
+
+test("server close cancels a large replay instead of flushing the remaining snapshots", async (t) => {
+  const env = await start(t);
+  await env.login.restore();
+  seedLargeReplay(env);
+  const client = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  let stopped = false;
+  client.socket.on("message", (data) => {
+    if (stopped || JSON.parse(data.toString()).type !== "messages") return;
+    stopped = true;
+    env.hub.close();
+  });
+  const closed = new Promise((resolve) => client.socket.once("close", resolve));
+  await client.opened;
+  assert.equal(await closed, 1001);
+  assert.ok(client.frames.filter((frame) => frame.type === "messages").reduce((sum, frame) => sum + frame.messages.length, 0) < 10_000);
+});
+
+test("a paused replay consumer cannot build an unbounded live-event queue", async (t) => {
+  const env = await start(t);
+  await env.login.restore();
+  seedLargeReplay(env);
+  const client = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => client.socket.terminate());
+  let flooded = false;
+  client.socket.on("message", (data) => {
+    if (flooded || JSON.parse(data.toString()).type !== "messages") return;
+    flooded = true;
+    client.socket.pause();
+    const original = env.store.get("replay-19-499", "replay-19");
+    for (let index = 0; index < 2500; index += 1) {
+      env.hub.handleMessage({ ...original, text: `${index}:${"y".repeat(2000)}` }, "edit");
+    }
+    client.socket.resume();
+  });
+  const closed = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("slow consumer was not disconnected")), 10_000);
+    client.socket.once("close", (code) => { clearTimeout(timer); resolve(code); });
+  });
+  await client.opened;
+  assert.equal(await closed, 1006);
+  assert.ok(client.frames.filter((frame) => frame.type === "messages").reduce((sum, frame) => sum + frame.messages.length, 0) < 10_000);
+});
+
+test("a receiver that stops reading replay is disconnected when its write makes no progress", async (t) => {
+  const env = await start(t);
+  await env.login.restore();
+  seedLargeReplay(env);
+  const realTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const client = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => client.socket.terminate());
+  const paused = new Promise((resolve) => {
+    const onMessage = (data) => {
+      if (JSON.parse(data.toString()).type !== "messages") return;
+      client.socket.off("message", onMessage);
+      client.socket.pause();
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      resolve();
+    };
+    client.socket.on("message", onMessage);
+  });
+  const closed = new Promise((resolve, reject) => {
+    const timer = realTimeout(() => reject(new Error("stalled replay was not disconnected")), 10_000);
+    client.socket.once("close", (code) => { realClearTimeout(timer); resolve(code); });
+  });
+  await client.opened;
+  await paused;
+  // Real I/O must first fill the receiver's TCP window; advancing time alone does not do that.
+  await new Promise((resolve) => realTimeout(resolve, 500));
+  t.mock.timers.tick(30_001);
+  client.socket.resume();
+  assert.equal(await closed, 1006);
+  assert.ok(client.frames.filter((frame) => frame.type === "messages").reduce((sum, frame) => sum + frame.messages.length, 0) < 10_000);
+});
+
 test("live messages broadcast once; duplicates are suppressed and edits arrive as message:edit", async (t) => {
   const { port, cookie, login, hub } = await start(t);
   await login.restore();

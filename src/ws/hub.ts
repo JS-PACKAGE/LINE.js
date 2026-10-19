@@ -16,6 +16,8 @@ import { PROTOCOL_VERSION, type ClientFrame, type ListenState, type ServerFrame 
 import { parseChatRead, parseChatRequest, parseHistory, parseMessageRequest, parseReact, parseSend, requestIdOf } from "./requests.js";
 
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
+const REPLAY_FRAME_BYTES = 256 * 1024;
+const REPLAY_STALL_MS = 30_000;
 const HISTORY_PER_SECOND = 10;
 const NEW_CHANNEL_REFRESH_MS = 1000;
 const MAX_BOT_CONNECTIONS = 4;
@@ -123,6 +125,17 @@ export function createHub(options: HubOptions): Hub {
   // Exact text only, shared after authorization; hashes avoid retaining another copy of private text.
   // Pending and completed entries share a bounded LRU, cleared at every account boundary.
   const scamCache = new Map<string, { result: Promise<ScamAnalysis>; expires: number }>();
+  // Replay snapshots precede every later event on that socket. Only live encoded output is queued,
+  // with the same byte budget as ws; cached snapshots are references, encoded one chunk at a time.
+  const replays = new Map<WebSocket, {
+    frames: Generator<string>;
+    pending: (string | Buffer)[];
+    head: number;
+    bytes: number;
+    account: number;
+    timer?: NodeJS.Timeout;
+    next?: NodeJS.Immediate;
+  }>();
   // Sockets that answered the last ping (browsers and the ws client both reply to pings on their own).
   const alive = new WeakSet<WebSocket>();
   const timedOut = new WeakSet<WebSocket>();
@@ -148,6 +161,7 @@ export function createHub(options: HubOptions): Hub {
     // code and a length-capped reason: no headers, cookies or tokens.
     const openedAt = Date.now();
     socket.on("close", (code, reason) => {
+      cancelReplay(socket);
       const why = timedOut.has(socket) ? "heartbeat-timeout" : `code=${code}${reason.length > 0 ? ` reason=${reason.toString("utf8").slice(0, 100).replace(/\s+/g, " ")}` : ""}`;
       console.info(`WS_CLOSED ${kind} ${why} after=${Math.round((Date.now() - openedAt) / 1000)}s`);
     });
@@ -160,11 +174,96 @@ export function createHub(options: HubOptions): Hub {
   /** Buffers hold UTF-8 JSON, but the wire protocol remains text (not binary). */
   function sendData(socket: WebSocket, data: string | Buffer): void {
     if (socket.readyState !== WebSocket.OPEN) return;
-    if (socket.bufferedAmount > MAX_BUFFERED_BYTES) {
+    const replay = replays.get(socket);
+    const bytes = typeof data === "string" ? Buffer.byteLength(data) : data.length;
+    if (socket.bufferedAmount + (replay?.bytes ?? 0) + bytes > MAX_BUFFERED_BYTES) {
+      cancelReplay(socket);
       socket.terminate();
       return;
     }
-    socket.send(data, { binary: false });
+    if (replay) {
+      replay.pending.push(data);
+      replay.bytes += bytes;
+    } else {
+      socket.send(data, { binary: false });
+    }
+  }
+
+  function cancelReplay(socket: WebSocket): void {
+    const replay = replays.get(socket);
+    if (!replay) return;
+    replays.delete(socket);
+    clearTimeout(replay.timer);
+    clearImmediate(replay.next);
+    replay.frames.return(undefined);
+  }
+
+  /** Keep `messages` merge semantics, but bound each batch rather than each chat. */
+  function* replayFrames(chats: { chatId: string; messages: readonly Message[] }[]): Generator<string> {
+    for (const { chatId, messages } of chats) {
+      const prefix = `{"type":"messages","chatId":${JSON.stringify(chatId)},"messages":[`;
+      let parts: string[] = [];
+      let bytes = Buffer.byteLength(prefix) + 2;
+      for (const message of messages) {
+        const part = JSON.stringify(message);
+        const size = Buffer.byteLength(part);
+        if (parts.length > 0 && bytes + size + 1 > REPLAY_FRAME_BYTES) {
+          yield `${prefix}${parts.join(",")}]}`;
+          parts = [];
+          bytes = Buffer.byteLength(prefix) + 2;
+        }
+        bytes += size + (parts.length > 0 ? 1 : 0);
+        parts.push(part);
+      }
+      if (parts.length > 0) yield `${prefix}${parts.join(",")}]}`;
+    }
+  }
+
+  function pumpReplay(socket: WebSocket): void {
+    const replay = replays.get(socket);
+    if (!replay) return;
+    if (socket.readyState !== WebSocket.OPEN || replay.account !== generation || login.state !== "ready") {
+      cancelReplay(socket);
+      return;
+    }
+    const snapshot = replay.frames.next();
+    let data: string | Buffer;
+    if (!snapshot.done) {
+      data = snapshot.value;
+    } else if (replay.head < replay.pending.length) {
+      data = replay.pending[replay.head++]!;
+      replay.bytes -= typeof data === "string" ? Buffer.byteLength(data) : data.length;
+      // Release consumed buffers without letting a long-lived producer grow the backing array forever.
+      if (replay.head >= 1024 || replay.head === replay.pending.length) {
+        replay.pending.splice(0, replay.head);
+        replay.head = 0;
+      }
+    } else {
+      cancelReplay(socket);
+      return;
+    }
+    const bytes = typeof data === "string" ? Buffer.byteLength(data) : data.length;
+    if (socket.bufferedAmount + replay.bytes + bytes > MAX_BUFFERED_BYTES) {
+      cancelReplay(socket);
+      socket.terminate();
+      return;
+    }
+    // A paused receiver may never complete a write; do not pin snapshots indefinitely.
+    replay.timer = setTimeout(() => {
+      if (replays.get(socket) !== replay) return;
+      cancelReplay(socket);
+      socket.terminate();
+    }, REPLAY_STALL_MS);
+    socket.send(data, { binary: false }, (error) => {
+      if (replays.get(socket) !== replay) return;
+      clearTimeout(replay.timer);
+      if (error) {
+        cancelReplay(socket);
+        socket.terminate();
+        return;
+      }
+      replay.next = setImmediate(() => pumpReplay(socket));
+    });
   }
 
   /** Reuse one encoding across recipients; the returned buffer belongs only to this broadcast. */
@@ -600,15 +699,19 @@ export function createHub(options: HubOptions): Hub {
   function sendReady(socket: WebSocket): void {
     send(socket, { type: "auth:ready", profile: provider.getProfile() });
     sendChannels(socket);
-    // One frame per chat (at most `cache.messagesPerChannel` messages), not one per message: a reconnect
-    // with thousands of cached messages must not cost the page thousands of frames and re-renders.
-    for (const chatId of store.chatsWithMessages()) send(socket, { type: "messages", chatId, messages: store.messagesOf(chatId) });
+    // Copy the bounded cache's arrays now: later upserts mutate them. Live/edit/unsend frames are
+    // delivered after this snapshot, in arrival order, so no stale snapshot can undo a newer event.
+    cancelReplay(socket);
+    const chats = store.chatsWithMessages().map((chatId) => ({ chatId, messages: store.messagesOf(chatId).slice() }));
+    replays.set(socket, { frames: replayFrames(chats), pending: [], head: 0, bytes: 0, account: generation });
+    pumpReplay(socket);
   }
 
   login.subscribe((state) => {
     if (state !== "ready") {
       // Logged out or failed: nothing from the previous account may stay in memory or on screen.
       generation += 1;
+      for (const socket of replays.keys()) cancelReplay(socket);
       refreshing = undefined;
       lastListChange = 0;
       clearTimeout(refreshTimer);
@@ -828,6 +931,7 @@ export function createHub(options: HubOptions): Hub {
       if (info) broadcast(updateFrame(info));
     },
     close() {
+      for (const socket of replays.keys()) cancelReplay(socket);
       clearInterval(heartbeat);
       clearTimeout(refreshTimer);
       clearTimeout(listChangeTimer);
