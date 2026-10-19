@@ -354,7 +354,8 @@ function renderChannels(): void {
       row = { node: channelRow(channel, count, latest), channel, count, latest, tab, day };
       channelRows.set(channel.channelId, row);
     }
-    row.node.ariaSelected = String(channel.channelId === selected);
+    const ariaSelected = String(channel.channelId === selected);
+    if (row.node.ariaSelected !== ariaSelected) row.node.ariaSelected = ariaSelected;
     return row.node;
   });
   // Rows of channels that are gone (logout, another account) are not kept around.
