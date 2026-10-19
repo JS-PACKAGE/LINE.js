@@ -402,8 +402,8 @@ export class EvexLineProvider implements LineProvider {
     const fileId = fields.mediaId?.startsWith("file-") ? fields.mediaId : undefined;
     // Only a numeric id may become a sticker media id: it is later spliced into a CDN URL path.
     const mediaId = fileId ? undefined : fields.mediaId ?? (stickerId && /^\d{1,12}$/.test(stickerId) ? `sticker-${stickerId}${fields.metadata?.STKOPT === "A" ? "-a" : ""}` : undefined);
-    const mentions = isText && text ? parseMentions(fields.metadata, text) : [];
-    const emojis = isText && text ? parseEmojis(fields.metadata, text) : [];
+    const mentions = isText && text && fields.metadata?.MENTION ? parseMentions(fields.metadata, text) : undefined;
+    const emojis = isText && text && fields.metadata?.REPLACE ? parseEmojis(fields.metadata, text) : undefined;
     const parsed = isText ? undefined : messageCard(contentType, fields.metadata, fields.location);
     const card = parsed?.kind === "file" && fileId ? { ...parsed, fileId } : parsed;
     const profile = this.profiles.get(fields.senderId);
@@ -420,8 +420,8 @@ export class EvexLineProvider implements LineProvider {
       createdAt: Number.isFinite(created) && created > 0 ? created : Date.now(),
       ...(mediaId ? { mediaId } : {}),
       ...(fields.replyTo ? { replyTo: fields.replyTo } : {}),
-      ...(mentions.length > 0 ? { mentions } : {}),
-      ...(emojis.length > 0 ? { emojis } : {}),
+      ...(mentions?.length ? { mentions } : {}),
+      ...(emojis?.length ? { emojis } : {}),
       ...(card ? { card } : {}),
       ...(fields.reactions ? { reactions: fields.reactions } : {}),
       // Fail closed: an E2EE payload without readable text is a placeholder, never a guess.
