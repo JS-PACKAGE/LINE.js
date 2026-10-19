@@ -303,7 +303,11 @@ function renderTabs(): void {
     button.ariaSelected = String(tab === name);
     button.tabIndex = tab === name ? 0 : -1;
   }
-  const total = channels.filter(hasConversation).reduce((sum, channel) => sum + (unread[channel.channelId] ?? 0), 0);
+  let total = 0;
+  for (const id in unread) {
+    const channel = channelsById.get(id);
+    if (channel && hasConversation(channel)) total += unread[id]!;
+  }
   chatsUnread.hidden = total === 0;
   chatsUnread.textContent = total > 99 ? "99+" : String(total);
 }
