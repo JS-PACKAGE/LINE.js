@@ -1545,7 +1545,8 @@ async function handle(frame: ServerFrame): Promise<void> {
       return;
     }
     case "sent": {
-      const echo = selected ? messages[selected]?.find((message) => message.messageId === frame.messageId) : undefined;
+      const index = selected ? messageIndices[selected]?.get(frame.messageId) : undefined;
+      const echo = selected && index !== undefined ? messages[selected]?.[index] : undefined;
       if (echo?.channelKind === "square") mySquareSenders[echo.channelId] = echo.senderId;
       if (composer.handleSent(frame.requestId)) scrollToLatest();
       return;
