@@ -186,6 +186,55 @@ test("late friend lookups cannot overwrite a replacement account's names or star
   }
 });
 
+test("obsolete sticker lookups stop queued metadata work and preserve the replacement account's cache", async (t) => {
+  for (const phase of ["owned", "metadata"]) {
+    await t.test(phase, async () => {
+      const gate = Promise.withResolvers();
+      const started = Promise.withResolvers();
+      const requests = [];
+      const base = fakeBase();
+      base.request = { async request() {
+        if (phase === "owned") { started.resolve(); await gate.promise; }
+        return { 1: Array.from({ length: 12 }, (_, index) => ({ 1: String(index + 1) })) };
+      } };
+      const { provider } = await activeProvider(base);
+      provider.fetchPackageMeta = async (packageId) => {
+        requests.push(packageId);
+        if (packageId !== 9999 && phase === "metadata") { started.resolve(); await gate.promise; }
+        return { name: packageId === 9999 ? "新帳號貼圖" : "舊帳號貼圖", stickerIds: [packageId * 10], animated: false };
+      };
+      const loading = provider.fetchStickerPackages();
+      try {
+        await started.promise;
+        const pendingRequests = [...requests];
+        await provider.teardown();
+        let freshLookups = 0;
+        const replacement = fakeBase();
+        replacement.profile.mid = mid(9000);
+        replacement.request = { async request() {
+          freshLookups += 1;
+          return { 1: [{ 1: "9999" }] };
+        } };
+        provider.base = replacement;
+        await provider.activate(replacement);
+        const expected = [{ packageId: 9999, name: "新帳號貼圖", stickerIds: [99990], animated: false }];
+        assert.deepEqual(await provider.fetchStickerPackages(), expected);
+        gate.resolve();
+        const stale = await loading;
+        assert.deepEqual(requests.filter((id) => id !== 9999), pendingRequests);
+        assert.deepEqual(stale, []);
+        assert.deepEqual(await provider.fetchStickerPackages(), expected);
+        assert.equal(freshLookups, 1);
+        assert.deepEqual(requests.filter((id) => id === 9999), [9999]);
+      } finally {
+        gate.resolve();
+        await loading.catch(() => {});
+        await provider.close();
+      }
+    });
+  }
+});
+
 test("the chat list carries LINE's unread count, activity time and last message; E2EE previews decrypt once and register no media", async () => {
   const at = (n) => String(1_700_000_000_000 + n);
   let boxRequests = 0;

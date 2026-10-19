@@ -535,6 +535,7 @@ export class EvexLineProvider implements LineProvider {
       true,
       "/TSHOP4",
     );
+    if (this.client !== client || this.stopped) return [];
     const owned = parseOwnedProducts(result);
     const packages: StickerPackage[] = [];
     for (let offset = 0; offset < owned.length; offset += PACK_META_CONCURRENCY) {
@@ -544,9 +545,10 @@ export class EvexLineProvider implements LineProvider {
         if (stickerIds.length === 0) return undefined;
         return { packageId: product.packageId, name: meta?.name || product.name || `貼圖包 ${product.packageId}`, stickerIds, animated: meta?.animated ?? false };
       }));
+      if (this.client !== client || this.stopped) return [];
       for (const entry of batch) if (entry) packages.push(entry);
     }
-    if (this.client === client) this.stickerPackages = { at: Date.now(), packages };
+    this.stickerPackages = { at: Date.now(), packages };
     return packages;
   }
 
