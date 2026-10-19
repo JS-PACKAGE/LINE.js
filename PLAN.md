@@ -264,6 +264,8 @@
 
 > PWA 雜湊資源快取補強（2026-10）：`/assets/` 命中 Cache Storage 時直接回傳，不再重複背景下載及寫入；首次載入仍取得網路內容，manifest／icons／favicon 照舊背景更新，頁面導覽照舊 network-first 以取得 cookie。回歸測試先重現同資源第二次載入仍發出請求，修正後 typecheck、build 與 336 項測試通過；worker 隔離執行中三次重複載入的 fetch／快取寫入均由 3 次降為 0。實際瀏覽器啟用 service worker，以 `cache: "no-store"` 排除 HTTP 快取後，兩項雜湊資源各載入三次的伺服器請求由 6 次降為 0；確認網頁仍呈現、manifest 仍更新、頁面導覽仍到伺服器，私人媒體、`/ws`、非 GET 及失敗資源未被快取。使用隔離 HTTP／WS provider，未呼叫真實 LINE；完成後移除測試 origin 的 worker 與快取。
 
+> 貼圖包切換補強（2026-10）：切換只更新分頁的選取狀態及目前貼圖格，不再重建全部貼圖包按鈕；重選同一包不重畫，套件清單更新或帳號清理仍完整重建／清空。實際瀏覽器以 100 包、每包 40 張貼圖切換 5 次，分頁節點新增及移除各由 500 個降為 0；重選目前包兩次的貼圖格新增及移除各由 80 個降為 0，並保留原分頁節點及焦點。typecheck、build 與 336 項測試通過；瀏覽器確認唯一 ARIA 選取、切換後 WS 發送正確 packageId／stickerId、切換不重抓清單，登出清空舊節點、換帳號載入新清單後仍發送正確貼圖。使用隔離 HTTP／WS provider 及產生的 PNG，未呼叫真實 LINE。
+
 ### Server → Client
 
 | type | 負載 |

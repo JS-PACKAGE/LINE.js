@@ -498,10 +498,10 @@ export function createComposer(send: (frame: ClientFrame) => boolean, mentions: 
 
   function renderStickers(): void {
     tabs.replaceChildren();
-    grid.replaceChildren();
+    if (packages && !packages.some((entry) => entry.packageId === activePackage)) activePackage = packages[0]?.packageId;
+    renderStickerGrid();
     if (!packages) return;
     stickerState.textContent = packages.length === 0 ? "此帳號沒有可用的貼圖包；可用下方「用 ID 手動送出」。" : "";
-    if (!packages.some((entry) => entry.packageId === activePackage)) activePackage = packages[0]?.packageId;
     for (const entry of packages) {
       const tab = document.createElement("button");
       tab.type = "button";
@@ -516,12 +516,19 @@ export function createComposer(send: (frame: ClientFrame) => boolean, mentions: 
       icon.src = `/media/stickerpack-${entry.packageId}`;
       tab.append(icon);
       tab.addEventListener("click", () => {
+        if (activePackage === entry.packageId) return;
+        tabs.querySelector('[aria-selected="true"]')?.setAttribute("aria-selected", "false");
+        tab.ariaSelected = "true";
         activePackage = entry.packageId;
-        renderStickers();
+        renderStickerGrid();
       });
       tabs.append(tab);
     }
-    const active = packages.find((entry) => entry.packageId === activePackage);
+  }
+
+  function renderStickerGrid(): void {
+    grid.replaceChildren();
+    const active = packages?.find((entry) => entry.packageId === activePackage);
     if (!active) return;
     for (const stickerId of active.stickerIds) {
       const cell = document.createElement("button");
