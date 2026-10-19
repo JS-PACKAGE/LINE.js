@@ -949,7 +949,7 @@ export class EvexLineProvider implements LineProvider {
     for (const message of entry.messages) merged.set(message.messageId, message);
     entry.messages = [...merged.values()];
     entry.messages.sort((a, b) => this.compareSquareMessages(a, b));
-    entry.byId = new Map(entry.messages.map((message) => [message.messageId, message]));
+    entry.byId = merged;
     for (const [id, update] of entry.updates) this.applySquareUpdate(entry, id, update);
     this.boundSquareHistory(entry);
     entry.at = Date.now();
