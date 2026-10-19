@@ -1187,13 +1187,17 @@ export class EvexLineProvider implements LineProvider {
   private async fetchFriends(client: Client): Promise<Channel[]> {
     const { userFriendMids } = await client.base.relation.getUserFriendIds({ request: { blockStatus: "ALL" } });
     if (this.client !== client || this.stopped) return [];
-    const batches: string[][] = [];
-    for (let offset = 0; offset < (userFriendMids?.length ?? 0); offset += FRIEND_BATCH) batches.push(userFriendMids.slice(offset, offset + FRIEND_BATCH));
+    const count = userFriendMids?.length ?? 0;
     const friends: Channel[] = [];
     // A few batches at a time: a large friend list is not a long line of sequential round trips,
     // and LINE is not hit with every batch at once.
-    for (let wave = 0; wave < batches.length; wave += FRIEND_BATCH_CONCURRENCY) {
-      const answers = await Promise.all(batches.slice(wave, wave + FRIEND_BATCH_CONCURRENCY).map((mids) => client.base.relation.getContactsV3({ mids })));
+    for (let wave = 0; wave < count; wave += FRIEND_BATCH * FRIEND_BATCH_CONCURRENCY) {
+      const requests = [];
+      const end = Math.min(wave + FRIEND_BATCH * FRIEND_BATCH_CONCURRENCY, count);
+      for (let offset = wave; offset < end; offset += FRIEND_BATCH) {
+        requests.push(client.base.relation.getContactsV3({ mids: userFriendMids.slice(offset, offset + FRIEND_BATCH) }));
+      }
+      const answers = await Promise.all(requests);
       if (this.client !== client || this.stopped) return [];
       for (const { responses } of answers) {
         for (const contact of responses) {
