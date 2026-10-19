@@ -147,6 +147,18 @@ interface SquareHistory {
   loading?: Promise<Message[]>;
 }
 
+// Let the lookup cap stop candidate preparation before traversing the remaining messages.
+function* talkMemberMids(entries: Iterable<{ raw: LineMessage }>): Generator<string> {
+  for (const { raw } of entries) {
+    yield raw.from;
+    yield* chatEventMids(raw.contentMetadata);
+  }
+}
+
+function* squareMemberMids(entries: Iterable<{ raw: LineSquareMessage }>): Generator<string> {
+  for (const { raw } of entries) yield raw.message.from;
+}
+
 export class EvexLineProvider implements LineProvider {
   private base?: BaseClient;
   private client?: Client;
@@ -853,7 +865,7 @@ export class EvexLineProvider implements LineProvider {
     const raws = fetched.filter((raw) => raw.id !== anchorId);
     const readable: { raw: LineMessage; undecryptable: boolean }[] = [];
     for (const raw of raws) readable.push(await this.decryptTalk(client, raw));
-    await this.resolveMembers(client, "talk", readable.flatMap((entry) => [entry.raw.from, ...chatEventMids(entry.raw.contentMetadata)]));
+    await this.resolveMembers(client, "talk", talkMemberMids(readable));
     if (this.client !== client) throw new Error("HISTORY_INVALIDATED");
     const myMid = this.getProfile().userId;
     const messages = readable.map((entry) => this.talkToMessage(entry.raw, myMid, entry.undecryptable));
@@ -940,7 +952,7 @@ export class EvexLineProvider implements LineProvider {
       token = { syncToken: response.syncToken, continuationToken: response.continuationToken };
     }
     for (const { raw, name } of found.values()) if (name) this.rememberName(raw.message.from, name);
-    await this.resolveMembers(client, "square", [...found.values()].map(({ raw }) => raw.message.from));
+    await this.resolveMembers(client, "square", squareMemberMids(found.values()));
     if (this.client !== client || this.squareCache.get(squareChatMid) !== entry) throw new Error("HISTORY_INVALIDATED");
     const merged = new Map<string, Message>();
     for (const { raw, reactions } of found.values()) {
@@ -1315,8 +1327,8 @@ export class EvexLineProvider implements LineProvider {
       decrypted.set(chatId, entry);
     }
     for (const { raw, name } of squareLast.values()) if (name) this.rememberName(raw.message.from, name);
-    await this.resolveMembers(client, "talk", [...decrypted.values()].flatMap((entry) => [entry.raw.from, ...chatEventMids(entry.raw.contentMetadata)]));
-    await this.resolveMembers(client, "square", [...squareLast.values()].map(({ raw }) => raw.message.from));
+    await this.resolveMembers(client, "talk", talkMemberMids(decrypted.values()));
+    await this.resolveMembers(client, "square", squareMemberMids(squareLast.values()));
     for (const [chatId, entry] of decrypted) {
       try {
         const message = this.talkToMessage(entry.raw, myMid, entry.undecryptable, true);
