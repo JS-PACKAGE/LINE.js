@@ -14,6 +14,8 @@ import { createUpdateNotice } from "./update.js";
 import { copyImage, downloadMedia } from "./save.js";
 import { createNotifier } from "./notify.js";
 import { CONTENT_LABEL, cardTitle, dayLabel, formatBytes, formatTime, listTime, previewOf, scamSummary } from "./format.js";
+import { SearchWindow } from "./searchWindow.js";
+import { CHAT_MESSAGE_LIMIT, TOTAL_MESSAGE_LIMIT, retainedRange } from "./retention.js";
 
 const $ = <T extends HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const login = $<HTMLElement>("#login");
@@ -74,9 +76,25 @@ let reconnectDelay = 1000;
 let authState: AuthState | undefined;
 let signedIn = false;
 let channels: Channel[] = [];
+let channelOrderDirty = false;
 let messages: Record<string, Message[]> = {};
 let messageIndices: Record<string, Map<string, number>> = {};
 const unorderedChats = new Set<string>();
+const retainedChats = new Set<string>();
+const trimmedNewer = new Set<string>();
+let retainedCount = 0;
+let evictedCount = 0;
+const retentionNote = document.createElement("p");
+retentionNote.id = "retention-note";
+retentionNote.role = "status";
+messageList.parentElement!.before(retentionNote);
+
+function updateRetentionNote(): void {
+  retentionNote.textContent = `只搜尋目前保留訊息：每聊天室最多 ${CHAT_MESSAGE_LIMIT} 則、全部最多 ${TOTAL_MESSAGE_LIMIT.toLocaleString()} 則；目前 ${retainedCount.toLocaleString()} 則。` +
+    (evictedCount ? `已移出 ${evictedCount.toLocaleString()} 則；較早訊息可向上載入，回到聊天室會重新載入最新訊息。` : "較早訊息可向上載入。") +
+    (selected && trimmedNewer.has(selected) ? "目前閱讀歷史窗口；按「最新訊息」返回。" : "") +
+    "引用跳轉與提及候選僅涵蓋目前保留範圍。";
+}
 
 function orderedMessages(channelId: string): Message[] {
   const list = messages[channelId] ?? [];
@@ -113,7 +131,7 @@ let searching = false;
 let searchQuery = "";
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
-interface HistoryState { cursor?: string; hasMore: boolean; loading: boolean; loaded: boolean; failed: boolean }
+interface HistoryState { cursor?: string; hasMore: boolean; loading: boolean; loaded: boolean; failed: boolean; restart?: boolean }
 let historyOf: Record<string, HistoryState> = {};
 let pendingHistory: Record<string, string> = {};
 // The service has a Jev token (scam:state), and the scam checks this page is waiting on.
@@ -168,7 +186,8 @@ function applyAuthState(state: AuthState): void {
     cancelMessageRender();
     messageDays = new WeakMap();
     searchText = new WeakMap();
-    searchRows.clear();
+    searchWindow.clear();
+    renderedSearchQuery = undefined;
     searching = false;
     searchQuery = "";
     messageSearch.value = "";
@@ -195,6 +214,7 @@ function applyAuthState(state: AuthState): void {
     unseenBelow = 0;
     pinnedToBottom = true;
     channels = [];
+    channelOrderDirty = false;
     messages = {};
     messageIndices = {};
     unorderedChats.clear();
@@ -202,6 +222,7 @@ function applyAuthState(state: AuthState): void {
     opened = new Set();
     liveCounted = new Set();
     selected = undefined;
+    resetRetention();
     tab = "chats";
     filter.value = "";
     historyOf = {};
@@ -315,6 +336,10 @@ function channelRow(channel: Channel, count: number | undefined, latest: Message
 const friendOrder = new Intl.Collator("zh-TW");
 
 function renderChannels(): void {
+  if (channelOrderDirty) {
+    sortChannels();
+    channelOrderDirty = false;
+  }
   const keyword = filter.value.trim().toLocaleLowerCase();
   const inTab = channels.filter((channel) => (tab === "friends" ? channel.kind === "user" : hasConversation(channel)));
   const visible = inTab.filter((channel) => channel.name.toLocaleLowerCase().includes(keyword));
@@ -400,9 +425,9 @@ function keepPinned(): void {
 const jump = $<HTMLButtonElement>("#jump");
 let unseenBelow = 0;
 function updateJump(): void {
-  const away = selected !== undefined && messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight > 200;
+  const away = selected !== undefined && (trimmedNewer.has(selected) || messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight > 200);
   if (!away) unseenBelow = 0;
-  jump.hidden = !away;
+  jump.hidden = searching || !away;
   jump.textContent = unseenBelow > 0 ? `↓ ${unseenBelow} 則新訊息` : "↓ 最新訊息";
 }
 jump.addEventListener("click", () => {
@@ -414,6 +439,11 @@ jump.addEventListener("click", () => {
 // to and whoever's id the echo carries (communities use another sender id): jump there and stay
 // pinned while pictures and stickers finish loading.
 function scrollToLatest(): void {
+  if (selected && trimmedNewer.has(selected)) {
+    dropRetainedChat(selected);
+    drawMessages();
+    requestHistory(selected);
+  }
   pinnedToBottom = true;
   if (messageFrame !== undefined) pendingAnchor = "bottom";
   messageList.scrollTop = messageList.scrollHeight;
@@ -595,9 +625,8 @@ interface SearchHit {
   channel: Channel | undefined;
 }
 
-interface SearchRow { message: Message; channel: Channel | undefined; query: string; node: HTMLElement }
-const searchRows = new Map<string, SearchRow>();
-const searchNote = Object.assign(document.createElement("p"), { className: "history-note" });
+const searchWindow = new SearchWindow<SearchHit>(messageList, ({ message, channel }) => searchRow(message, channel), ({ message }) => JSON.stringify([message.channelId, message.messageId]));
+let renderedSearchQuery: string | undefined;
 let searchText = new WeakMap<Message, { sender: string; body: string }>();
 
 function searchHits(): SearchHit[] {
@@ -640,21 +669,16 @@ function renderSearch(): void {
   jump.hidden = true;
   const hits = searchHits();
   searchCount.textContent = query === "" ? "" : hits.length + " 則";
-  const rows: Node[] = [searchNote];
-  searchNote.textContent = query === "" ? "輸入文字以搜尋所有已載入的訊息。" : hits.length === 0 ? "沒有符合的已載入訊息。" : hits.length + " 則符合（只涵蓋已載入的訊息）";
-  const hit = query.toLocaleLowerCase();
-  const retained = new Set<string>();
-  for (const { message, channel } of hits) {
-    const key = JSON.stringify([message.channelId, message.messageId]);
-    retained.add(key);
-    const known = searchRows.get(key);
-    if (known?.message === message && known.channel === channel && known.query === hit) {
-      rows.push(known.node);
-      continue;
-    }
+  searchWindow.set(hits, query === "" ? "輸入文字；只搜尋目前保留訊息。" : hits.length === 0 ? "目前保留訊息沒有符合結果。" : `${hits.length} 則符合（只搜尋目前保留訊息）`, renderedSearchQuery !== query);
+  renderedSearchQuery = query;
+}
+
+function searchRow(message: Message, channel: Channel | undefined): HTMLElement {
+    const hit = searchQuery.trim().toLocaleLowerCase();
     const row = document.createElement("article");
-    row.className = "message";
+    row.className = "message search-result";
     row.dataset.messageId = message.messageId;
+    row.dataset.channelId = message.channelId;
     row.role = "button";
     row.tabIndex = 0;
     row.addEventListener("click", () => jumpToMessage(message));
@@ -689,17 +713,14 @@ function renderSearch(): void {
     }
     main.append(body);
     row.append(main);
-    rows.push(row);
-    searchRows.set(key, { message, channel, query: hit, node: row });
-  }
-  for (const key of searchRows.keys()) if (!retained.has(key)) searchRows.delete(key);
-  reconcile(messageList, rows);
+    return row;
 }
 
 function closeSearch(): void {
   clearTimeout(searchTimer);
   searching = false;
-  searchRows.clear();
+  searchWindow.clear();
+  renderedSearchQuery = undefined;
   searchQuery = "";
   messageSearch.value = "";
   searchBar.hidden = true;
@@ -713,6 +734,8 @@ searchToggle.addEventListener("click", () => {
   searchBar.hidden = false;
   searchToggle.ariaPressed = "true";
   cancelMessageRender();
+  rendered.clear();
+  dayDividers.clear();
   renderSearch();
   messageSearch.focus();
 });
@@ -841,7 +864,7 @@ function quoteNode(message: Message, original: Message | undefined): HTMLElement
   const quote = document.createElement("button");
   quote.type = "button";
   quote.className = "reply-quote";
-  quote.textContent = original ? `${original.senderName}：${previewOf(original)}` : "回覆一則較早的訊息";
+  quote.textContent = original ? `${original.senderName}：${previewOf(original)}` : "原訊息不在目前保留範圍（可向上載入）";
   quote.disabled = !original;
   quote.dataset.replyTo = message.replyTo;
   return quote;
@@ -1004,13 +1027,14 @@ function renderMessages(anchor: MessageAnchor = "bottom"): void {
     drawMessages(nextAnchor);
     for (const channelId of fill) {
       const state = historyOf[channelId];
-      if (!searching && channelId === selected && state?.hasMore && messageList.scrollHeight <= messageList.clientHeight + 40) requestHistory(channelId);
+      if (!searching && channelId === selected && state?.hasMore && (messageList.scrollHeight <= messageList.clientHeight + 40 || messageList.scrollTop < 80)) requestHistory(channelId);
     }
   });
 }
 
 function drawMessages(anchor: MessageAnchor = "bottom"): void {
   cancelMessageRender();
+  updateRetentionNote();
   const channel = channels.find((entry) => entry.channelId === selected);
   channelTitle.textContent = channel?.name ?? "選擇一個聊天室";
   // The header avatar is redrawn only when it would look different.
@@ -1034,9 +1058,9 @@ function drawMessages(anchor: MessageAnchor = "bottom"): void {
   const previousTop = messageList.scrollTop;
   // Re-renders that add a line (a read label, a divider) must not push the newest message out of view.
   const atBottom = previousHeight - previousTop - messageList.clientHeight < 8;
-  const viewportTop = anchor === "prepend" ? messageList.getBoundingClientRect().top : 0;
+  const viewportTop = messageList.getBoundingClientRect().top;
   let retainedAnchor: { messageId: string; top: number } | undefined;
-  if (anchor === "prepend") {
+  if (anchor !== "bottom" && !atBottom) {
     for (const [messageId, { node }] of rendered) {
       const rect = node.getBoundingClientRect();
       if (rect.bottom > viewportTop) {
@@ -1112,7 +1136,7 @@ function drawMessages(anchor: MessageAnchor = "bottom"): void {
   reconcile(messageList, nodes);
   if (anchor === "bottom" || (anchor === "keep" && atBottom)) messageList.scrollTop = messageList.scrollHeight;
   // Older messages were inserted above: keep what the reader was looking at in place.
-  else if (anchor === "prepend") {
+  else if (retainedAnchor || anchor === "prepend") {
     // Prepending can change sender grouping and replace the anchor's node.
     const anchorNode = retainedAnchor ? rendered.get(retainedAnchor.messageId)?.node : undefined;
     messageList.scrollTop = anchorNode && retainedAnchor
@@ -1124,8 +1148,10 @@ function drawMessages(anchor: MessageAnchor = "bottom"): void {
 }
 
 /** Adds or replaces messages of one chat, sorting once per batch rather than once per message. */
-function mergeMessages(channelId: string, incoming: readonly Message[]): void {
+function mergeMessages(channelId: string, incoming: readonly Message[], older = false): void {
   const list = messages[channelId] ?? [];
+  const previousLength = list.length;
+  const anchorId = list.length + incoming.length > CHAT_MESSAGE_LIMIT && channelId === selected && !searching ? retentionAnchor() : undefined;
   const at = (messageIndices[channelId] ??= new Map());
   for (const message of incoming) {
     const index = at.get(message.messageId);
@@ -1140,6 +1166,76 @@ function mergeMessages(channelId: string, incoming: readonly Message[]): void {
     }
   }
   messages[channelId] = list;
+  retainedCount += list.length - previousLength;
+  retainedChats.delete(channelId);
+  retainedChats.add(channelId);
+  enforceRetention(channelId, anchorId, older);
+}
+
+function retentionAnchor(): string | undefined {
+  const selection = window.getSelection();
+  const element = selection?.anchorNode?.parentElement?.closest<HTMLElement>("[data-message-id]");
+  if (selection && !selection.isCollapsed && element && messageList.contains(element)) return element.dataset.messageId;
+  if (pinnedToBottom) return undefined;
+  const top = messageList.getBoundingClientRect().top;
+  for (const [id, entry] of rendered) if (entry.node.getBoundingClientRect().bottom > top) return id;
+  return undefined;
+}
+
+function resetRetention(): void {
+  retainedChats.clear();
+  trimmedNewer.clear();
+  retainedCount = 0;
+  evictedCount = 0;
+  updateRetentionNote();
+}
+
+function dropRetainedChat(channelId: string): void {
+  const count = messages[channelId]?.length ?? 0;
+  retainedCount -= count;
+  evictedCount += count;
+  delete messages[channelId];
+  delete messageIndices[channelId];
+  unorderedChats.delete(channelId);
+  retainedChats.delete(channelId);
+  trimmedNewer.delete(channelId);
+  delete historyOf[channelId];
+  for (const requestId of Object.keys(pendingHistory)) if (pendingHistory[requestId] === channelId) delete pendingHistory[requestId];
+  if (renderedChannel === channelId) {
+    rendered.clear();
+    dayDividers.clear();
+  }
+  updateRetentionNote();
+}
+
+function enforceRetention(channelId: string, anchorId: string | undefined, older: boolean): void {
+  const list = orderedMessages(channelId);
+  if (list.length > CHAT_MESSAGE_LIMIT) {
+    const index = anchorId ? messageIndices[channelId]?.get(anchorId) : undefined;
+    const { start, end } = retainedRange(list.length, index, older);
+    const kept = list.slice(start, end);
+    messages[channelId] = kept;
+    messageIndices[channelId] = new Map(kept.map((message, at) => [message.messageId, at]));
+    retainedCount -= list.length - kept.length;
+    evictedCount += list.length - kept.length;
+    if (end < list.length) trimmedNewer.add(channelId);
+    if (start > 0) {
+      // Provider cursors are opaque: restart at the latest page, never skip a removed prefix.
+      const state = historyOf[channelId];
+      if (state) {
+        delete state.cursor;
+        state.hasMore = true;
+        state.restart = true;
+        state.loading = false;
+        for (const requestId of Object.keys(pendingHistory)) if (pendingHistory[requestId] === channelId) delete pendingHistory[requestId];
+      }
+    }
+  }
+  for (const id of retainedChats) {
+    if (retainedCount <= TOTAL_MESSAGE_LIMIT) break;
+    if (id !== selected && id !== channelId) dropRetainedChat(id);
+  }
+  updateRetentionNote();
 }
 
 function requestHistory(channelId: string): void {
@@ -1148,6 +1244,7 @@ function requestHistory(channelId: string): void {
   const requestId = crypto.randomUUID();
   if (!send({ type: "history:fetch", requestId, chatId: channelId, ...(state.cursor ? { before: state.cursor } : {}) })) return;
   state.loading = true;
+  state.restart = false;
   state.failed = false;
   pendingHistory[requestId] = channelId;
   if (channelId === selected) renderMessages("keep");
@@ -1158,12 +1255,14 @@ function applyHistory(frame: Extract<ServerFrame, { type: "history" }>): void {
   const state = channelId ? historyOf[channelId] : undefined;
   if (!channelId || !state) return;
   delete pendingHistory[frame.requestId];
-  const firstPage = !state.loaded;
-  mergeMessages(channelId, frame.messages);
+  const firstPage = (messages[channelId]?.length ?? 0) === 0;
+  mergeMessages(channelId, frame.messages, !firstPage);
   state.loading = false;
   state.loaded = true;
-  state.cursor = frame.cursor;
-  state.hasMore = frame.hasMore && frame.cursor !== undefined;
+  if (!state.restart) {
+    state.cursor = frame.cursor;
+    state.hasMore = frame.hasMore && frame.cursor !== undefined;
+  }
   scheduleChannels();
   if (channelId !== selected) {
     if (searching) renderMessages("keep");
@@ -1176,6 +1275,17 @@ function applyHistory(frame: Extract<ServerFrame, { type: "history" }>): void {
 }
 
 function upsertMessage(message: Message, fresh: boolean): void {
+  const mine = isMine(message);
+  if (mine && message.channelId === selected && !searching) scrollToLatest();
+  if (trimmedNewer.has(message.channelId) && !messageIndices[message.channelId]?.has(message.messageId)) {
+    // Keep a contiguous historical window. Unseen live traffic is fetched when returning
+    // to latest, rather than splicing a distant new tail onto an old history page.
+    if (fresh && message.channelId === selected) unseenBelow += 1;
+    evictedCount += 1;
+    updateRetentionNote();
+    updateJump();
+    return;
+  }
   mergeMessages(message.channelId, [message]);
   if (message.channelId !== selected || searching) {
     if (searching) renderMessages("keep");
@@ -1183,7 +1293,6 @@ function upsertMessage(message: Message, fresh: boolean): void {
   }
   const nearBottom = pendingAnchor === "bottom" || (burstNearBottom ??= messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 80);
   // Your own message always jumps into view, even when you were reading older history.
-  const mine = isMine(message);
   renderMessages(nearBottom || mine ? "bottom" : "keep");
   if (fresh && !mine && !nearBottom) unseenBelow += 1;
   reportRead();
@@ -1197,7 +1306,7 @@ function reportRead(): void {
   clearTimeout(readTimer);
   const chatId = selected;
   readTimer = setTimeout(() => {
-    if (!signedIn || searching || !chatId || selected !== chatId || document.visibilityState !== "visible") return;
+    if (!signedIn || searching || !chatId || selected !== chatId || document.visibilityState !== "visible" || trimmedNewer.has(chatId) || !pinnedToBottom) return;
     // A background tab may not have drawn its queued frame yet: never acknowledge unseen DOM.
     if (messageFrame !== undefined) {
       reportRead();
@@ -1205,6 +1314,11 @@ function reportRead(): void {
     }
     const newest = [...orderedMessages(chatId)].reverse().find((message) => /^\d{1,24}$/.test(message.messageId));
     if (!newest) return;
+    const node = rendered.get(newest.messageId)?.node;
+    if (!node) return;
+    const viewport = messageList.getBoundingClientRect();
+    const rect = node.getBoundingClientRect();
+    if (rect.top >= viewport.bottom || rect.bottom <= viewport.top) return;
     const id = BigInt(newest.messageId);
     const known = reportedRead[chatId];
     if (known !== undefined && id <= known) return;
@@ -1229,12 +1343,14 @@ async function handle(frame: ServerFrame): Promise<void> {
       if (halted) return;
       // The server replays the full snapshot after every (re)connect.
       channels = [];
+      channelOrderDirty = false;
       readPositions = {};
       unreadFrom = undefined;
       messages = {};
       cancelMessageRender();
       clearTimeout(readTimer);
-      searchRows.clear();
+      searchWindow.clear();
+      renderedSearchQuery = undefined;
       messageDays = new WeakMap();
       searchText = new WeakMap();
       messageIndices = {};
@@ -1246,6 +1362,13 @@ async function handle(frame: ServerFrame): Promise<void> {
       pendingHistory = {};
       pendingScam = new Set();
       reportedRead = {};
+      resetRetention();
+      rendered.clear();
+      dayDividers.clear();
+      messageList.replaceChildren();
+      searchCount.textContent = "";
+      unseenBelow = 0;
+      pinnedToBottom = true;
       return;
     case "update:available":
       notice.available(frame);
@@ -1268,7 +1391,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       return;
     case "channels":
       channels = frame.channels;
-      sortChannels();
+      channelOrderDirty = true;
       for (const channel of channels) applyUnread(channel);
       if (selected && !channels.some((channel) => channel.channelId === selected)) {
         selected = undefined;
@@ -1280,11 +1403,11 @@ async function handle(frame: ServerFrame): Promise<void> {
       if (selected && !historyOf[selected]?.loaded) requestHistory(selected);
       return;
     case "channel": {
-      // One chat changed: it moves to where its activity puts it; its preview and badge follow.
+      // Update data and unread state now; activity ordering joins the next channel render.
       const index = channels.findIndex((channel) => channel.channelId === frame.channel.channelId);
       if (index < 0) channels.push(frame.channel);
       else channels[index] = frame.channel;
-      sortChannels();
+      channelOrderDirty = true;
       applyUnread(frame.channel);
       scheduleChannels();
       return;
@@ -1549,11 +1672,20 @@ function openChat(id: string): void {
   if (!signedIn) return;
   if (searching) closeSearch();
   if (id !== selected) {
+    if (selected) {
+      for (const requestId of Object.keys(pendingHistory)) if (pendingHistory[requestId] === selected) delete pendingHistory[requestId];
+      const previous = historyOf[selected];
+      if (previous) previous.loading = false;
+    }
+    if (selected && trimmedNewer.has(selected)) dropRetainedChat(selected);
     const list = orderedMessages(id);
     const count = unread[id] ?? 0;
     unreadFrom = count > 0 && count <= list.length ? { channelId: id, messageId: list[list.length - count]!.messageId, count } : undefined;
   }
   selected = id;
+  retainedChats.delete(id);
+  if (messages[id]) retainedChats.add(id);
+  updateRetentionNote();
   setDrawer(false);
   delete unread[id];
   opened.add(id);
@@ -1604,6 +1736,7 @@ filter.addEventListener("keydown", (event) => {
 messageList.addEventListener("scroll", () => {
   pinnedToBottom = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 80;
   updateJump();
+  if (!searching && pinnedToBottom) reportRead();
   const state = selected ? historyOf[selected] : undefined;
   // Near the top: load the next older page, unless the last attempt failed (then the user retries explicitly).
   if (!searching && selected && state?.loaded && state.hasMore && !state.loading && !state.failed && messageList.scrollTop < 80) requestHistory(selected);
