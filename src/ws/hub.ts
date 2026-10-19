@@ -157,28 +157,31 @@ export function createHub(options: HubOptions): Hub {
     sendData(socket, JSON.stringify(frame));
   }
 
-  /** Sends an already serialized frame: a broadcast is turned into JSON once, not once per connection. */
-  function sendData(socket: WebSocket, data: string): void {
+  /** Buffers hold UTF-8 JSON, but the wire protocol remains text (not binary). */
+  function sendData(socket: WebSocket, data: string | Buffer): void {
     if (socket.readyState !== WebSocket.OPEN) return;
     if (socket.bufferedAmount > MAX_BUFFERED_BYTES) {
       socket.terminate();
       return;
     }
-    socket.send(data);
+    socket.send(data, { binary: false });
   }
 
-  function sendEach(clients: Iterable<WebSocket>, frame: ServerFrame): void {
-    let data: string | undefined;
-    for (const socket of clients) sendData(socket, (data ??= JSON.stringify(frame)));
+  /** Reuse one encoding across recipients; the returned buffer belongs only to this broadcast. */
+  function sendEach(clients: Iterable<WebSocket>, frame: ServerFrame, data?: Buffer): Buffer | undefined {
+    for (const socket of clients) {
+      if (socket.readyState === WebSocket.OPEN) sendData(socket, (data ??= Buffer.from(JSON.stringify(frame))));
+    }
+    return data;
   }
 
   function broadcast(frame: ServerFrame): void {
     sendEach(wss.clients, frame);
   }
 
-  /** Frames every kind of client may see: sign-in state and LINE connection state, never secrets. */
+  /** Only public state or events in botScope may reach both groups; never secrets. */
   function broadcastAll(frame: ServerFrame): void {
-    sendEach([...wss.clients, ...botWss.clients], frame);
+    sendEach(botWss.clients, frame, sendEach(wss.clients, frame));
   }
 
   function broadcastBots(frame: ServerFrame): void {
@@ -191,8 +194,9 @@ export function createHub(options: HubOptions): Hub {
   }
 
   function broadcastChannels(): void {
-    broadcast({ type: "channels", channels: store.snapshotChannels() });
-    broadcastBots({ type: "channels", channels: botChannels() });
+    const channels = store.snapshotChannels();
+    broadcast({ type: "channels", channels });
+    if (botWss.clients.size > 0) broadcastBots({ type: "channels", channels: channels.filter((channel) => botScope.has(channel.channelId)) });
   }
 
   function apiState(): ServerFrame {
@@ -494,8 +498,8 @@ export function createHub(options: HubOptions): Hub {
     const placeholder = store.unsend(messageId, chatHint);
     if (!placeholder) return;
     const frame: ServerFrame = { type: "message:unsend", chatId: placeholder.channelId, messageId };
-    broadcast(frame);
-    if (botScope.has(placeholder.channelId)) broadcastBots(frame);
+    if (botScope.has(placeholder.channelId)) broadcastAll(frame);
+    else broadcast(frame);
     broadcastChannel(placeholder.channelId, placeholder.channelId === chatHint ? before : undefined);
   }
 
@@ -509,8 +513,9 @@ export function createHub(options: HubOptions): Hub {
       clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => { void refreshChannels(); }, NEW_CHANNEL_REFRESH_MS);
     }
-    broadcast({ type: kind === "edit" ? "message:edit" : "message", message: stored });
-    if (botScope.has(message.channelId)) broadcastBots({ type: kind === "edit" ? "message:edit" : "message", message: stored });
+    const frame: ServerFrame = { type: kind === "edit" ? "message:edit" : "message", message: stored };
+    if (botScope.has(message.channelId)) broadcastAll(frame);
+    else broadcast(frame);
     // The list entry follows: activity order and preview move with the newest message.
     if (before) broadcastChannel(message.channelId, before);
   }

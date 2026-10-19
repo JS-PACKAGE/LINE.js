@@ -1450,6 +1450,62 @@ test("a bot sees its sign-in state and only the chats it is allowed, with no rep
   assert.equal(bot.frames.filter((frame) => frame.type === "message:unsend").length, 1, "nothing from chats outside api.chats");
 });
 
+test("broadcast bursts stay ordered UTF-8 text and preserve bot scope with any recipient group empty", async (t) => {
+  for (const mode of ["page", "bot", "mixed"]) await t.test(mode, async (t) => {
+    const env = await botEnv(t);
+    const pages = mode === "bot" ? [] : [env.page];
+    const bots = [];
+    if (mode === "mixed") {
+      const page = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+      t.after(() => page.socket.close());
+      await page.until((frame) => frame.type === "channels");
+      pages.push(page);
+    }
+    if (mode !== "page") for (let i = 0; i < (mode === "mixed" ? 4 : 1); i++) bots.push(await env.open());
+    if (mode === "bot") {
+      const closed = new Promise((resolve) => env.page.socket.once("close", resolve));
+      env.page.socket.close();
+      await closed;
+    }
+    const clients = [...pages, ...bots];
+    const wire = new Map(clients.map((client) => [client, []]));
+    for (const client of clients) client.socket.on("message", (data, binary) => {
+      wire.get(client).push({ frame: JSON.parse(data.toString()), binary });
+    });
+    const expected = [];
+    for (let i = 0; i < 32; i++) {
+      const message = {
+        messageId: String(1000 + i), channelId: i % 2 === 0 ? CHAT : "c1", channelKind: "group",
+        senderId: "u1", senderName: "測試成員", contentType: "NONE", createdAt: i + 1,
+        text: `第 ${i} 則：繁體中文、𠮷、🙂、引號\"、換行\n、NUL\u0000、孤立代理字元\ud800`,
+      };
+      env.hub.handleMessage(message, "new");
+      env.hub.handleMessage(message, "new");
+      expected.push({ type: "message", message });
+      const edited = { ...message, text: `${message.text}（修改）`, editedAt: 100 };
+      env.hub.handleMessage(edited, "edit");
+      expected.push({ type: "message:edit", message: edited });
+      env.hub.handleUnsend(message.channelId, message.messageId);
+      expected.push({ type: "message:unsend", chatId: message.channelId, messageId: message.messageId });
+    }
+    env.hub.setStatus("listening");
+    // A round trip fences all preceding broadcasts without sleeping or timing assertions.
+    await Promise.all(clients.map(async (client) => {
+      client.socket.send(JSON.stringify({ type: "ping" }));
+      await client.until((frame) => frame.type === "pong");
+    }));
+    for (const client of clients) {
+      const received = wire.get(client);
+      assert.equal(received.every(({ binary }) => !binary), true, "Buffer optimization must not change text opcodes");
+      const frames = received.map(({ frame }) => frame);
+      assert.deepEqual(frames.filter((frame) => ["message", "message:edit", "message:unsend"].includes(frame.type)),
+        bots.includes(client) ? expected.filter((frame) => (frame.chatId ?? frame.message.channelId) === CHAT) : expected);
+      assert.deepEqual(frames.find((frame) => frame.type === "status"), { type: "status", state: "listening" });
+      if (bots.includes(client)) assert.equal(frames.some((frame) => frame.type === "channel"), false);
+    }
+  });
+});
+
 test("a bot can send text and read history in an allowed chat only", async (t) => {
   const env = await botEnv(t);
   const bot = await env.open();

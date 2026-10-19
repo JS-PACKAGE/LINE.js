@@ -325,6 +325,17 @@ The same checks run automatically in GitHub Actions (`.github/workflows/ci.yml`)
 
 Tests use `node --test` and a Mock Provider; mocks do not replace real LINE acceptance. Gate 1 requires scanning with a secondary account and receiving a real message within 60 seconds; Gates 2–4 additionally verify web synchronization, history, sending, and media. See [PLAN.md](PLAN.md) for all Gates and acceptance criteria.
 
+Packet-processing optimization verified: each broadcast is JSON/UTF-8 encoded once and shared by web and authorized API connections; channel-list broadcasts sort once before filtering API-visible chats. Text frames and protocol version 2 remain unchanged, with no event coalescing or dropping and no changes to validation, rate limits or slow-client backpressure protection. Typecheck, build and all 277 tests passed, including new burst coverage for web-only, API-only and mixed connections, Unicode, edit/unsend ordering, deduplication and chat isolation.
+
+Actual local HTTP/WS cookie/Token-authenticated measurement: 1 web-protocol connection and 4 bots, 4,000 messages containing Chinese/emoji per round, waiting for each connection's pong every 40 messages; medians of 5 rounds after warmup. Backend processing is cumulative synchronous `handleMessage` time; completion includes receipt and parsing of messages and pongs by all connections (milliseconds):
+
+| Text length (UTF-16) | Backend: before | Backend: after | Completion: before | Completion: after |
+|---|---:|---:|---:|---:|
+| 100 | 74.18 | 62.60 | 107.04 | 97.93 |
+| 2000 | 195.54 | 111.70 | 298.03 | 212.87 |
+
+Measurements use the production HTTP/WS hub and an isolated LINE provider, excluding LINE upstream latency, AI inference and browser rendering. Text frames, contents, ordering and counts were checked on every connection. No real LINE account was used; this does not establish Gate acceptance.
+
 Scam-analysis acceleration verified: typecheck, build and all 273 tests passed, covering request coalescing, exact text matching, expiration, LRU eviction, failure retries, authorization, rate limits and logout/account isolation. An actual HTTP/WS cookie- and Token-authenticated smoke run used the production JevClient with an isolated upstream delayed by 200ms: concurrent web/API checks of identical text followed by a repeat check reduced upstream calls from 3 to 1 and repeat latency from about 203ms to 0.46ms. This is not actual TypeSafe latency; no paid API or real LINE account was used, and this does not establish Gate acceptance.
 
 Verified for this change (scam check): typecheck, build, all 200 tests passing, and zero vulnerabilities from `npm audit --audit-level=high`. Headless Chromium with an isolated provider (and a fake analyzer) confirmed that 「詐騙機率分析」 appears in the context menu only for other people's text messages, the result dialog's content and single button, and that later confirmation dialogs still show their cancel button. Calling the real TypeSafe endpoint with an invalid key returned 401 (endpoint and authentication scheme are correct). **Not verified**: a real result with a valid key (none was available), and use on a real LINE account.
