@@ -20,12 +20,19 @@ test("a very long invite list is abbreviated with the total", () => {
   assert.equal(chatEventText(added(A, ...many), "群組", () => "某人"), `某人 新增 ${Array(10).fill("某人").join("、")} 等 12 人 至群組`);
 });
 
+test("an invalid member beyond the displayed targets invalidates the entire invite", () => {
+  const metadata = added(A, ...Array(10).fill(B), "not-a-mid");
+  assert.equal(chatEventText(metadata, "群組", nameOf), undefined);
+  assert.deepEqual(chatEventMids(metadata), []);
+});
+
 test("unknown or malformed events stay unrendered instead of being guessed", () => {
   for (const metadata of [
     undefined,
     {},
     { LOC_KEY: "C_ML", LOC_ARGS: `${A}\u001e${B}` },
     added(A),
+    added("not-a-mid", B),
     { LOC_KEY: "C_MI", LOC_ARGS: `${A}\u001enot-a-mid` },
     { LOC_KEY: "C_MI" },
   ]) {

@@ -12,29 +12,23 @@ export function isChatEvent(contentType: string): boolean {
   return contentType === "CHATEVENT" || contentType === "18";
 }
 
-interface MemberChange {
-  actor: string;
-  targets: string[];
-}
-
 /** `C_MI`: the first mid added the others to the chat. */
-function parseMemberAdded(metadata: Record<string, string> | undefined): MemberChange | undefined {
+function parseMemberAdded(metadata: Record<string, string> | undefined): string[] | undefined {
   if (metadata?.LOC_KEY !== "C_MI") return undefined;
-  const [actor, ...targets] = (metadata.LOC_ARGS ?? "").split(ARG_SEPARATOR);
-  if (!actor || !MID.test(actor) || targets.length === 0 || !targets.every((mid) => MID.test(mid))) return undefined;
-  return { actor, targets };
+  const members = (metadata.LOC_ARGS ?? "").split(ARG_SEPARATOR);
+  if (members.length < 2 || !members.every((mid) => MID.test(mid))) return undefined;
+  return members;
 }
 
 /** Every member mid whose name the event text needs. */
 export function chatEventMids(metadata: Record<string, string> | undefined): string[] {
-  const change = parseMemberAdded(metadata);
-  return change ? [change.actor, ...change.targets] : [];
+  return parseMemberAdded(metadata) ?? [];
 }
 
 export function chatEventText(metadata: Record<string, string> | undefined, place: "群組" | "聊天室", nameOf: (mid: string) => string): string | undefined {
-  const change = parseMemberAdded(metadata);
-  if (!change) return undefined;
-  const shown = change.targets.slice(0, MAX_NAMED).map(nameOf).join("、");
-  const rest = change.targets.length - MAX_NAMED;
-  return `${nameOf(change.actor)} 新增 ${shown}${rest > 0 ? ` 等 ${change.targets.length} 人` : ""} 至${place}`;
+  const members = parseMemberAdded(metadata);
+  if (!members) return undefined;
+  const shown = members.slice(1, MAX_NAMED + 1).map(nameOf).join("、");
+  const targets = members.length - 1;
+  return `${nameOf(members[0]!)} 新增 ${shown}${targets > MAX_NAMED ? ` 等 ${targets} 人` : ""} 至${place}`;
 }
