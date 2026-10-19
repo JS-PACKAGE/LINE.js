@@ -283,7 +283,7 @@ function hasConversation(channel: Channel): boolean {
 
 /** The newest message known for a chat: the server's list preview, unless this page has seen a newer one. */
 function latestOf(channel: Channel): Message | undefined {
-  const seen = orderedMessages(channel.channelId).at(-1);
+  const seen = messages[channel.channelId] ? orderedMessages(channel.channelId).at(-1) : undefined;
   const listed = channel.lastMessage;
   return seen && (!listed || seen.createdAt >= listed.createdAt) ? seen : listed;
 }
