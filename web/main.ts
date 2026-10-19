@@ -489,6 +489,7 @@ function scrollToLatest(): void {
  * `hit` (a lower-cased query) only highlights when searching.
  */
 function decorate(text: string, mentions: readonly TextMention[], hit: string, emojis: readonly TextEmoji[] = []): Node[] {
+  if (mentions.length === 0 && emojis.length === 0 && !hit) return linkifiedNodes(text);
   const nodes: Node[] = [];
   const emit = (part: string, mention?: TextMention): void => {
     if (part === "") return;
