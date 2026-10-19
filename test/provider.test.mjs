@@ -701,6 +701,31 @@ test("OpenChat an invalidated in-flight walk cannot refill history or media afte
   assert.equal(provider.mediaOrigins.size, 0);
 });
 
+test("OpenChat push fetch failures invalidate history immediately without restarting the live connection or exposing log data", async () => {
+  const errors = [];
+  const statuses = [];
+  const provider = new EvexLineProvider({ async get() {}, async set() {}, async flush() {} }, "DESKTOPWIN", {
+    onError: (code) => errors.push(code),
+    onStatus: (status) => statuses.push(status),
+  });
+  const base = provider.createBase();
+  base.poll.islisten = true;
+  const log = (type) => base.emit("log", { type, get data() { throw new Error("must not inspect sensitive upstream data"); } });
+  provider.squareCache.set(SQUARE, {});
+  log("[LEGY/PUSH] noop failed");
+  assert.equal(provider.squareCache.size, 1, "a failed keepalive does not imply lost OpenChat events");
+  log("[LEGY/PUSH] fetchMyEvents failed");
+  assert.equal(provider.squareCache.size, 0, "in-flight history must be invalidated before it can complete");
+  await settle();
+  assert.deepEqual(errors, []);
+  assert.deepEqual(statuses, []);
+  assert.equal(provider.retry, undefined, "upstream retries the fetch on the next push");
+  provider.createBase();
+  provider.squareCache.set(SQUARE, {});
+  log("[LEGY/PUSH] fetchMyEvents failed");
+  assert.equal(provider.squareCache.size, 1, "a replaced client's failure cannot invalidate the current session");
+});
+
 test("OpenChat own reaction changes and take-backs remain correct on the next cached and refreshed history", async () => {
   const base = fakeBase({ square: {
     async fetchSquareChatEvents() { return { events: [squareEvent(1), squareEvent(2, SQUARE, "IMAGE")] }; },

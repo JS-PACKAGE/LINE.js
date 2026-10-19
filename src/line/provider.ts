@@ -196,6 +196,12 @@ export class EvexLineProvider implements LineProvider {
     });
     base.on("log", ({ type }) => {
       // Never forward upstream log data: it can contain authentication material.
+      if (type === "[LEGY/PUSH] fetchMyEvents failed") {
+        // 3.5.0 keeps the push connection alive and retries on the next square push,
+        // but missed events mean even an in-flight OpenChat history walk is stale.
+        if (this.base === base) this.squareCache.clear();
+        return;
+      }
       if (type !== "LegyPusherError" && type !== "LegyPusherError_cannot_init") return;
       setImmediate(() => {
         // Live events may have been missed: the OpenChat history cache can no longer be trusted as current.
