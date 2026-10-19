@@ -393,12 +393,14 @@ export function createHub(options: HubOptions): Hub {
     }
   }
 
-  function rememberRead(chatId: string, position: ReadPosition): void {
+  function rememberRead(chatId: string, position: ReadPosition): boolean {
     const readers = seenReads.get(chatId) ?? new Map<string, bigint>();
     const id = BigInt(position.messageId);
     const known = readers.get(position.readerId);
-    if (known === undefined || id > known) readers.set(position.readerId, id);
+    if (known !== undefined && id <= known) return false;
+    readers.set(position.readerId, id);
     seenReads.set(chatId, readers);
+    return true;
   }
 
   async function sendReadSnapshot(socket: WebSocket, chatId: string, kind: ChannelKind): Promise<void> {
@@ -927,8 +929,7 @@ export function createHub(options: HubOptions): Hub {
       }, wait);
     },
     handleRead(chatId, position) {
-      if (!store.hasChannel(chatId)) return;
-      rememberRead(chatId, position);
+      if (!store.hasChannel(chatId) || !rememberRead(chatId, position)) return;
       broadcast({ type: "read", chatId, positions: [position] });
     },
     setUpdate(info) {

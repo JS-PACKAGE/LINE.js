@@ -874,6 +874,29 @@ test("live read events reach the browser only for chats the account has", async 
   assert.deepEqual(env.client.frames.filter((frame) => frame.type === "read"), [{ type: "read", chatId: CHAT, positions: [{ readerId: "u1", messageId: "7" }] }]);
 });
 
+test("live read broadcasts only advance each member's numeric position, including zero and large ids", async (t) => {
+  const env = await signedIn(t);
+  const positions = [
+    { readerId: "u1", messageId: "0" },
+    { readerId: "u1", messageId: "00" },
+    { readerId: "u1", messageId: "9007199254740992" },
+    { readerId: "u1", messageId: "9007199254740993" },
+    { readerId: "u1", messageId: "09007199254740993" },
+    { readerId: "u1", messageId: "9007199254740992" },
+    { readerId: "u2", messageId: "0" },
+    { readerId: "u2", messageId: "0" },
+  ];
+  for (const position of positions) env.hub.handleRead(CHAT, position);
+  env.request({ type: "ping" });
+  await env.client.until((frame) => frame.type === "pong");
+  assert.deepEqual(env.client.frames.filter((frame) => frame.type === "read").flatMap((frame) => frame.positions), [
+    { readerId: "u1", messageId: "0" },
+    { readerId: "u1", messageId: "9007199254740992" },
+    { readerId: "u1", messageId: "9007199254740993" },
+    { readerId: "u2", messageId: "0" },
+  ]);
+});
+
 test("a message taken back is replaced for every page, its media stops being served from cache, and a reload shows only the placeholder", async (t) => {
   const env = await signedIn(t);
   let fetches = 0;
