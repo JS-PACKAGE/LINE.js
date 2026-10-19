@@ -76,6 +76,24 @@ test("late and same-time messages are slotted in creation order, after equal tim
   assert.deepEqual(store.messagesOf("c1").map((entry) => entry.messageId), ["e", "a", "c", "d", "b", "f"]);
 });
 
+test("late arrivals at a full cache keep stable ties and evict only the oldest entry", () => {
+  const store = new ChatStore(3);
+  for (const [id, at] of [["a", 10], ["b", 20], ["c", 30], ["d", 20]]) store.upsert(message(id, at), false);
+  assert.deepEqual(store.messagesOf("c1").map((entry) => entry.messageId), ["b", "d", "c"]);
+  assert.equal(store.get("a", "c1"), undefined);
+  assert.equal(store.get("d", "c1").text, "text-d");
+  store.upsert(message("e", 20), false);
+  assert.deepEqual(store.messagesOf("c1").map((entry) => entry.messageId), ["d", "e", "c"]);
+  assert.equal(store.get("b", "c1"), undefined);
+  assert.equal(store.channelOf("c1").lastMessage.messageId, "c");
+  store.upsert(message("f", 30), false);
+  assert.deepEqual(store.messagesOf("c1").map((entry) => entry.messageId), ["e", "c", "f"]);
+  assert.equal(store.get("d", "c1"), undefined);
+  store.upsert(message("old", 5), false);
+  assert.equal(store.get("old", "c1"), undefined);
+  assert.deepEqual(store.messagesOf("c1").map((entry) => entry.messageId), ["e", "c", "f"]);
+});
+
 test("a message taken back keeps only who sent it and when, wherever LINE says it was, and stays taken back", () => {
   const store = new ChatStore(500);
   store.upsert(message("m1", 10, { mediaId: "msg-m1", contentType: "IMAGE", replyTo: "m0", senderPictureId: "avatar-p-abcdefgh" }), false);

@@ -119,11 +119,10 @@ export class ChatStore {
         }
       }
       if (at === 0 && list.length >= this.perChannelLimit) return message;
-      list.splice(at, 0, message);
+      if (at === list.length) list.push(message);
+      else list.splice(at, 0, message);
       ids.set(message.messageId, message);
-      if (list.length > this.perChannelLimit) {
-        for (const dropped of list.splice(0, list.length - this.perChannelLimit)) ids.delete(dropped.messageId);
-      }
+      if (list.length > this.perChannelLimit) ids.delete(list.shift()!.messageId);
     }
     this.messages[message.channelId] = list;
     this.byId[message.channelId] = ids;
