@@ -151,7 +151,7 @@ approval, and a regression against any of them is treated as a vulnerability.
 | `session.json` is created with mode `0600` using `O_EXCL \| O_NOFOLLOW`, re-tightened to `0600` if it exists, must be a regular file owned by the current user, and is rejected if it is a symlink or corrupt (it is never overwritten in that case). | `src/line/session.ts` |
 | Session writes are serialized and atomic (temporary file `0600`, fsync, rename). A write failure is surfaced and is not silently swallowed. | `src/line/session.ts` |
 | `session.json` and `config.yaml` are git-ignored. The process runs with `umask 077`. | `.gitignore`, `src/main.ts` |
-| Logs never contain credentials, tokens, QR URLs, PINs, key material, or package error objects. Internal errors are logged as short codes locally; clients only ever receive a generic message. | `src/ws/hub.ts`, project rule |
+| Logs never contain credentials, tokens, QR URLs, PINs, key material, or package error objects. Operation failures and process-level exceptions are logged only as fixed codes locally, never upstream error names or messages; clients only ever receive a generic message. | `src/ws/hub.ts`, `src/main.ts`, project rule |
 | On logout or auth failure, the message cache, media cache and read state are cleared from memory. | `src/ws/hub.ts` |
 | Decrypt or parse failures **fail closed**: a placeholder is shown; content is never guessed. | project rule |
 

@@ -329,19 +329,15 @@ export function createHub(options: HubOptions): Hub {
       for (const bot of botWss.clients) bot.close(1008);
       if (token) send(socket, { type: "api:token", token });
       broadcast(apiState());
-    } catch (error) {
-      logFailure("API_TOKEN_FAILED", error);
+    } catch {
+      // Upstream errors can contain credentials; log only our operation code.
+      console.error("API_TOKEN_FAILED");
       fail(socket, "API_FAILED", requestId);
     }
   }
 
   function fail(socket: WebSocket, code: keyof typeof GENERIC, requestId?: string): void {
     send(socket, { type: "error", ...(requestId ? { requestId } : {}), code, message: GENERIC[code] });
-  }
-
-  // Internal causes stay in the local log (security rule 8); clients only ever get a generic code.
-  function logFailure(code: string, error: unknown): void {
-    console.error(code, error instanceof Error ? `${error.name}: ${error.message}`.slice(0, 200) : "unknown");
   }
 
   async function handleHistory(socket: WebSocket, frame: Record<string, unknown>, scope?: ReadonlySet<string>): Promise<void> {
@@ -363,9 +359,9 @@ export function createHub(options: HubOptions): Hub {
       send(socket, { type: "history", requestId, chatId, messages, hasMore: page.hasMore, ...(page.cursor ? { cursor: page.cursor } : {}) });
       // Receipts are an extra: a failure here must not turn a good history page into an error. Bots get none.
       if (!before && !scope) void sendReadSnapshot(socket, chatId, channel.kind);
-    } catch (error) {
+    } catch {
       if (account !== generation) return;
-      logFailure("HISTORY_FAILED", error);
+      console.error("HISTORY_FAILED");
       fail(socket, "HISTORY_FAILED", requestId);
     }
   }
@@ -415,10 +411,10 @@ export function createHub(options: HubOptions): Hub {
       fetching = provider.fetchReadPositions({ channelId: chatId, kind }).then(
         // A logout while LINE was answering clears readFetches: the old account's receipts are dropped.
         (positions) => { if (readFetches.get(chatId)?.done === fetching) for (const position of positions) rememberRead(chatId, position); },
-        (error: unknown) => {
+        () => {
           // A failure is not remembered: the next open asks LINE again.
           if (readFetches.get(chatId)?.done === fetching) readFetches.delete(chatId);
-          logFailure("READ_RANGE_FAILED", error);
+          console.error("READ_RANGE_FAILED");
         },
       );
       readFetches.set(chatId, { at: Date.now(), done: fetching });
@@ -469,9 +465,9 @@ export function createHub(options: HubOptions): Hub {
       // In OpenChat this account speaks under a member id of its own; remember it so its messages can be taken back.
       if (channel.kind === "square") ownSquareSenders.set(request.chatId, message.senderId);
       send(socket, { type: "sent", requestId: request.requestId, messageId: message.messageId });
-    } catch (error) {
+    } catch {
       if (account !== generation) return;
-      logFailure("SEND_FAILED", error);
+      console.error("SEND_FAILED");
       fail(socket, "SEND_FAILED", request.requestId);
     }
   }
@@ -492,9 +488,9 @@ export function createHub(options: HubOptions): Hub {
       if (account !== generation || login.state !== "ready") return;
       // LINE may or may not echo the take-back to this device: show it now (a later echo changes nothing).
       takeBack(chatId, messageId);
-    } catch (error) {
+    } catch {
       if (account !== generation) return;
-      logFailure("UNSEND_FAILED", error);
+      console.error("UNSEND_FAILED");
       fail(socket, "UNSEND_FAILED", requestId);
     }
   }
@@ -515,9 +511,9 @@ export function createHub(options: HubOptions): Hub {
       if (account !== generation || login.state !== "ready") return;
       // LINE echoes nothing to this device for talk chats: show the change now.
       updateReactions(chatId, messageId, withMyReaction(store.get(messageId, chatId)?.reactions, reaction));
-    } catch (error) {
+    } catch {
       if (account !== generation) return;
-      logFailure("REACT_FAILED", error);
+      console.error("REACT_FAILED");
       fail(socket, "REACT_FAILED", requestId);
     }
   }
@@ -642,11 +638,11 @@ export function createHub(options: HubOptions): Hub {
       // Anyone opening the page later (or another tab now) must not see the badge of a chat that was just read.
       store.clearUnread(chatId);
       broadcastChannel(chatId, channel);
-    } catch (error) {
+    } catch {
       if (account !== generation || markedRead.get(chatId) !== id) return;
       if (known === undefined) markedRead.delete(chatId);
       else markedRead.set(chatId, known);
-      logFailure("READ_MARK_FAILED", error);
+      console.error("READ_MARK_FAILED");
     }
   }
 
@@ -657,9 +653,9 @@ export function createHub(options: HubOptions): Hub {
     try {
       const packages = await provider.fetchStickerPackages();
       if (account === generation && login.state === "ready") send(socket, { type: "stickers", requestId, packages });
-    } catch (error) {
+    } catch {
       if (account !== generation) return;
-      logFailure("STICKERS_FAILED", error);
+      console.error("STICKERS_FAILED");
       fail(socket, "STICKERS_FAILED", requestId);
     }
   }
@@ -685,9 +681,9 @@ export function createHub(options: HubOptions): Hub {
         if (account !== generation || login.state !== "ready") return;
         store.setChannels(channels);
         broadcastChannels();
-      } catch (error) {
+      } catch {
         if (account !== generation) return;
-        logFailure("CHANNELS_FAILED", error);
+        console.error("CHANNELS_FAILED");
         broadcast({ type: "error", code: "CHANNELS_FAILED", message: GENERIC.CHANNELS_FAILED });
       } finally {
         if (account === generation) refreshing = undefined;

@@ -120,7 +120,7 @@
 
 ### 3.2 失敗行為
 - 解密失敗／不支援內容：訊息標記 `decryptFailed` 與 `contentType` 佔位，**fail-closed 不冒充內容**。
-- LINE 服務失敗：ws 推 `error`（generic code），內部原因只入本地日誌；不自動循環重試（QR 重新產生需使用者動作）。
+- LINE 服務失敗：ws 推 `error`（generic code），本地日誌只記固定操作錯誤碼，不記上游錯誤名稱、訊息或物件；不自動循環重試（QR 重新產生需使用者動作）。
 - 上傳／發送失敗：回 `error` 對應 `requestId`，前端保留草稿可重試；不半套送出（fail-closed）。
 
 ---
@@ -292,11 +292,13 @@ Media   { mediaId, mime, size, kind: "image"｜"sticker"｜"video"｜"audio" }
 5. 每連線頻率限制：`message:send` ≤ 5/秒；`POST /media/upload` ≤ 10MB/檔、≤ 5 次/分鐘；frame ≤ 256KB。
 6. 媒體快取上限預設 200MB（LRU）；收到的媒體須先出現在已見訊息中才可請求，單檔上限預設 50MB，類型以內容判斷（不含 SVG／HTML）。
 7. 輸入驗證：`chatId` 格式（`u／c／r／s／m` 開頭，`m` 為 OpenChat）、`text` ≤ 8000 字、`limit` ≤ 100、`packageId`／`stickerId` 限正整數、上傳媒體以內容判斷（圖片 PNG／JPEG／GIF；影片 MP4／MOV）。
-8. 對外一律 generic 錯誤；內部錯誤只入本地日誌。
+8. 對外一律 generic 錯誤；本地日誌只記固定操作錯誤碼，上游錯誤名稱、訊息或物件也可能含憑證，不得寫入。
 9. 依賴釘選版本；`npm audit` 無 high 以上（Gate 4 驗收）。
 10. 解密／解析失敗 **fail-closed**：顯示佔位，不降級猜測內容。
 11. 機器人 API（v1.11）：預設關閉；Bearer Token（只存雜湊、一次性顯示）、不得帶 `Origin`、影格白名單、`api.chats` 範圍、全域每分鐘發送上限、最多 4 連線、換／撤銷 Token 立即斷線。
 12. 詐騙機率分析（v1.15、v1.16）：`jev.token` 有值才啟用；金鑰只作為送往 TypeSafe 的 Bearer 標頭、不送網頁、不入日誌；只在使用者點選或機器人請求時送出伺服器快取的那一則他人文字；網頁每連線每分鐘 10 次，機器人限 `api.chats`、合計每分鐘 10 次；回應 fail-closed、錯誤 generic。
+
+錯誤日誌修正：移除 WS 各操作與程序例外處理的上游錯誤文字，沿用管理員／詐騙查詢的固定碼模式。歷史失敗回歸測試確認錯誤名稱與訊息不進日誌；typecheck、build、314 項測試通過。正式 HTTP／WS 隔離失敗回 generic `HISTORY_FAILED`，日誌只有該碼；另在暫存設定、無 session、停用更新的環境啟動實際 `dist/main.js`，未處理 rejection 後仍可接受 HTTP，未捕捉 exception 記固定碼後 exit 1 並移除 pid，兩者均未輸出注入的假敏感文字。不接觸真實帳號，也不改既有錯誤回應或關閉流程。
 
 ---
 

@@ -699,11 +699,14 @@ test("malformed history requests are refused before LINE is contacted; failures 
   assert.equal((await env.client.until((frame) => frame.requestId === "u1")).code, "UNKNOWN_CHAT");
   assert.equal(env.provider.calls.length, 0);
 
-  env.provider.historyError = new Error("LINE said no: token=secret-token");
+  const logs = [];
+  t.mock.method(console, "error", (...args) => logs.push(args));
+  env.provider.historyError = Object.assign(new Error("LINE said no: token=secret-token"), { name: "secret-name" });
   env.request({ type: "history:fetch", requestId: "f1", chatId: CHAT });
   const failure = await env.client.until((frame) => frame.requestId === "f1");
   assert.equal(failure.code, "HISTORY_FAILED");
   assert.ok(!JSON.stringify(failure).includes("secret"));
+  assert.deepEqual(logs, [["HISTORY_FAILED"]], "neither upstream error names nor messages may reach local logs");
 });
 
 test("text and sticker sends are validated, acknowledged to the sender and shown to every client once", async (t) => {
