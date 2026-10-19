@@ -1084,14 +1084,16 @@ function drawMessages(anchor: MessageAnchor = "bottom"): void {
   cancelMessageRender();
   updateRetentionNote();
   const channel = selected ? channelsById.get(selected) : undefined;
-  channelTitle.textContent = channel?.name ?? "選擇一個聊天室";
+  const title = channel?.name ?? "選擇一個聊天室";
+  if (channelTitle.textContent !== title) channelTitle.textContent = title;
   // The header avatar is redrawn only when it would look different.
   const avatarKey = channel ? `${channel.channelId}\n${channel.pictureId ?? ""}\n${channel.name}` : "";
   if (channelAvatar.dataset.key !== avatarKey) {
     channelAvatar.dataset.key = avatarKey;
     channelAvatar.replaceChildren(...(channel ? [createAvatar(channel.pictureId, channel.name, { zoomable: true })] : []));
   }
-  channelMeta.textContent = channel ? KIND_LABEL[channel.kind] + (channel.kind !== "user" && channel.memberCount ? ` · ${channel.memberCount} 人` : "") : "";
+  const meta = channel ? KIND_LABEL[channel.kind] + (channel.kind !== "user" && channel.memberCount ? ` · ${channel.memberCount} 人` : "") : "";
+  if (channelMeta.textContent !== meta) channelMeta.textContent = meta;
   if (searching) {
     renderSearch();
     return;

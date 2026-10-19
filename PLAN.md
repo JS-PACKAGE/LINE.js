@@ -292,6 +292,8 @@
 
 > 瀏覽器 Cookie 比對補強（2026-10）：保留啟動時產生的 32-byte 隨機 Token，Cookie 仍傳送 64 位小寫 hex；先通過原本的嚴格格式檢查，再解碼為 32-byte 與原始 Token 做 `timingSafeEqual`，不再每次重新編碼固定 Token。隔離程序完成 100 次帶 Cookie 的媒體 GET，Token 編碼 Buffer 由 200 個／12,800 bytes 降為 100 個／3,200 bytes；實際 WS upgrade 由兩個／128 bytes 降為一個／32 bytes。typecheck、build 與 338 項測試通過；補強奇數長度、合法 Token 尾接額外 hex／非 hex、大小寫及非法字元的拒絕測試，原 Origin、Cookie、跨站與 API Token 規則不變。未輸出 Token 或呼叫真實 LINE。
 
+> 聊天室標頭補強（2026-10）：訊息重畫時只在標題或聊天室資訊文字改變後更新節點，直接比對目前 DOM 內容而不額外保存快取，確保暫時顯示的錯誤仍能被下一次正常重畫清除。實際瀏覽器接收三次已讀更新，標題及聊天室資訊的文字替換各由 3 次降為 0；切換聊天室的名稱與人數仍更新，注入 generic WS 錯誤後也能恢復原資訊。typecheck、build 與 338 項測試通過；使用隔離 HTTP／WS provider，未呼叫真實 LINE 或回報真實帳號已讀。
+
 ### Server → Client
 
 | type | 負載 |
