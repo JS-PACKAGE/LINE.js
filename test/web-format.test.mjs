@@ -52,9 +52,39 @@ test("list and divider times: today's clock, yesterday across a month boundary, 
   assert.equal(listTime(at(2026, 9, 30, 23), at(2026, 10, 1, 1)), "昨天");
   assert.equal(listTime(at(2026, 10, 8), NOW), "10/8");
   assert.equal(listTime(at(2025, 12, 31), NOW), "2025/12/31");
+  assert.equal(listTime(at(2024, 2, 29), at(2024, 3, 2)), "2/29");
+  assert.equal(listTime(at(2025, 12, 31), at(2026, 1, 1)), "昨天");
   assert.equal(dayLabel(at(2026, 10, 10, 0), NOW), "今天");
   assert.equal(dayLabel(at(2026, 10, 9), NOW), "昨天");
   assert.match(dayLabel(at(2025, 3, 2), NOW), /^2025年3月2日/);
+});
+
+test("list dates keep invalid timestamps distinguishable from real dates", () => {
+  for (const timestamp of [NaN, Infinity, -Infinity, 8_640_000_000_000_001]) {
+    assert.equal(listTime(timestamp, NOW), "Invalid Date");
+  }
+});
+
+test("list dates follow local calendar and year changes without caching the timezone", () => {
+  const fixtures = [
+    { zone: "UTC", expected: "2026/12/31" },
+    { zone: "Asia/Taipei", expected: "1/1" },
+    { zone: "America/Los_Angeles", expected: "2026/12/31" },
+    { zone: "UTC", expected: "2026/12/31" },
+  ];
+  const source = `
+    import { listTime } from ${JSON.stringify(new URL("../web/format.ts", import.meta.url).href)};
+    const result = ${JSON.stringify(fixtures)}.map(({ zone }) => {
+      process.env.TZ = zone;
+      return listTime(Date.parse("2026-12-31T23:30:00Z"), Date.parse("2027-01-03T12:00:00Z"));
+    });
+    process.stdout.write(JSON.stringify(result));
+  `;
+  const actual = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", source], {
+    encoding: "utf8",
+    env: { ...process.env, TZ: "UTC" },
+  }));
+  assert.deepEqual(actual, fixtures.map(({ expected }) => expected));
 });
 
 test("sizes switch units at 1 KiB and 1 MiB", () => {

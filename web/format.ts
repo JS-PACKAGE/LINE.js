@@ -27,7 +27,11 @@ export function listTime(at: number, now = Date.now()): string {
   const today = new Date(now);
   if (date.toDateString() === today.toDateString()) return formatTime(at);
   if (isYesterday(date, today)) return "昨天";
-  return date.toLocaleDateString("zh-TW", { ...(date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }), month: "numeric", day: "numeric" });
+  const year = date.getFullYear();
+  if (Number.isNaN(year)) return "Invalid Date";
+  const monthDay = `${date.getMonth() + 1}/${date.getDate()}`;
+  // zh-TW's numeric Gregorian date uses era years (Date's year 0 is 1 BCE).
+  return year === today.getFullYear() ? monthDay : `${year > 0 ? year : 1 - year}/${monthDay}`;
 }
 
 /** The divider above each day's messages. */
