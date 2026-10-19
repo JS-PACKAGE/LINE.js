@@ -45,21 +45,24 @@ export class SearchWindow<T> {
     const previousIndex = this.indexAt(Math.max(0, previousTop - this.note.offsetHeight));
     const previousItem = this.items[previousIndex];
     const within = Math.max(0, previousTop - this.note.offsetHeight - this.offsets[previousIndex]!);
-    const known = new Map(this.items.map((item, index) => [this.key(item), this.heights[index]!]));
+    const known = !reset && this.items.length > 0 ? new Map<unknown, number>() : undefined;
+    if (known) {
+      for (let index = 0; index < this.items.length; index++) known.set(this.key(this.items[index]!), this.heights[index]!);
+    }
     this.clear();
     this.active = true;
     this.items = items;
-    this.heights = items.map((item) => {
-      const previous = known.get(this.key(item));
-      return reset ? 100 : previous ?? 100;
-    });
+    this.heights = known
+      ? items.map((item) => known.get(this.key(item)) ?? 100)
+      : new Array<number>(items.length).fill(100);
     this.reindex();
     this.note.textContent = note;
     this.host.classList.add("search-results");
     this.top.style.height = "0px";
     this.bottom.style.height = `${this.offsets[this.items.length]}px`;
     this.host.replaceChildren(this.note, this.top, this.bottom);
-    const nextIndex = !reset && previousItem !== undefined ? items.findIndex((item) => this.key(item) === this.key(previousItem)) : -1;
+    const previousKey = !reset && previousItem !== undefined ? this.key(previousItem) : undefined;
+    const nextIndex = !reset && previousItem !== undefined ? items.findIndex((item) => this.key(item) === previousKey) : -1;
     this.host.scrollTop = reset ? 0 : nextIndex >= 0 ? this.note.offsetHeight + this.offsets[nextIndex]! + within : previousTop;
     this.draw();
   }
