@@ -2,7 +2,7 @@
 
 # LINE.js
 
-ローカルで動作する TypeScript 製 LINE Web クライアントです。バージョンを固定した [@evex/linejs v3.4.2](https://github.com/evex-dev/linejs/tree/v3.4.2) で LINE に接続し、WebSocket でチャンネルとメッセージを同期し、同じポートの HTTP で Web ページを配信します。
+ローカルで動作する TypeScript 製 LINE Web クライアントです。バージョンを固定した [@evex/linejs v3.5.0](https://jsr.io/@evex/linejs/3.5.0) で LINE に接続し、WebSocket でチャンネルとメッセージを同期し、同じポートの HTTP で Web ページを配信します。
 
 > 開発状況：QR ログイン／ログアウト、session の再利用、チャンネル一覧（友だちとチャットのタブ、プロフィール画像）、リアルタイム・履歴メッセージ、テキスト／画像／動画／スタンプの送信（画像や動画の貼り付け、所有済みスタンプパックからの選択に対応）、受信した画像／GIF／動画／音声の埋め込み表示、相手の既読、既読通知と未読数、オープンチャットの管理者バッジ、メッセージ内のリンク、システムメッセージ（例：「XX 新增 OO 至群組」（XX が OO をグループに追加））、切断時の全画面オーバーレイ、モバイル版ハンバーガーメニュー、ボット API（`/api/ws`）、ターミナルインターフェース（CLI）、バージョン更新通知が利用できます。サブアカウントで QR コードを読み取る Gate 1 の受け入れ確認は、まだ小語による確認待ちです。
 
@@ -18,7 +18,7 @@
 
 ```mermaid
 flowchart LR
-    LINE[LINE サービス] <--> Provider[LineProvider adapter\n@evex/linejs 3.4.2]
+    LINE[LINE サービス] <--> Provider[LineProvider adapter\n@evex/linejs 3.5.0]
     Provider <--> Backend[Node TypeScript バックエンド\nsession とメモリキャッシュ]
     Backend <-->|WebSocket 訊息與頻道| Browser[Vite / vanilla TypeScript Web ページ]
     Backend <-->|同埠 HTTP 靜態頁與媒體| Browser
@@ -33,9 +33,9 @@ OpenChat adapter は別途、10 分間のメモリ内履歴キャッシュを保
 - Node.js **≥ 22** と npm。
 - JSR、npm、LINE に接続できるネットワーク。
 - QR コードの読み取りと PIN の確認ができる LINE サブアカウント。
-- `@evex/linejs` と `@evex/linejs-types` はともに **3.4.2**（JSR）に固定します。そのほかの直接依存もバージョンを固定する必要があります。
+- `@evex/linejs` と `@evex/linejs-types` はともに **3.5.0**（JSR、今回のアップグレードはユーザーが明示的に承認済み）に固定します。そのほかの直接依存もバージョンを固定する必要があります。
 
-上流の 3.4.2 が依存する Thrift には high の脆弱性があるため、本プロジェクトでは `overrides` で修正版 `thrift@0.23.0` に固定し、LINE パッケージのバージョンは変更しません。修正の根拠：[CVE-2026-41636](https://github.com/advisories/GHSA-r67j-r569-jrwp)。実際の LINE アカウントで、ログインの再利用、チャンネル一覧、リアルタイムメッセージの互換性を確認済みです。
+以前の上流 3.4.2 の Thrift 依存には high の脆弱性があったため、本プロジェクトでは `overrides` で修正版 `thrift@0.23.0` に固定し、3.5.0 へのアップグレード後もこの override を維持します。修正の根拠：[CVE-2026-41636](https://github.com/advisories/GHSA-r67j-r569-jrwp)。実際の LINE アカウントによるログインの再利用、チャンネル一覧、リアルタイムメッセージの従来の互換性確認は 3.4.2 のものであり、**3.5.0 の実 LINE Gate 合格を意味しません**。今回のアップグレードでは実際の LINE アカウントで検証していません。
 
 ## インストールと起動
 
@@ -473,4 +473,4 @@ npm run update -- --verify      # 更新前額外要求最新 tag 通過 git ver
 
 エンジニアリングとセキュリティの規約は [AGENTS.md](AGENTS.md)、確定した計画の全文は [PLAN.md](PLAN.md)を参照してください（どちらも繁体字中国語）。機能ごとに分けてコミットし、個人設定や認証情報を混ぜないでください。既存の `LICENSE`、`.nojekyll` を書き換えてはいけません。
 
-本作品 **LINE.js** は **Apache-2.0** で、ルートディレクトリの [LICENSE](LICENSE) に従います。使用するパッケージ **@evex/linejs** と **@evex/linejs-types** は **MIT** で、そのライセンスは本作品とは独立しています。詳細は[上流のライセンス](https://github.com/evex-dev/linejs/blob/v3.4.2/LICENSE)を参照してください。本リポジトリは clone 専用で、npm／JSR パッケージは公開しません。
+本作品 **LINE.js** は **Apache-2.0** で、ルートディレクトリの [LICENSE](LICENSE) に従います。使用するパッケージ **@evex/linejs** と **@evex/linejs-types** は **MIT** で、そのライセンスは本作品とは独立しています。詳細は[上流のライセンス](https://github.com/evex-dev/linejs/blob/v3.5.0/LICENSE)を参照してください。本リポジトリは clone 専用で、npm／JSR パッケージは公開しません。

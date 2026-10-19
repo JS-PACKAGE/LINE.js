@@ -2,7 +2,7 @@
 
 # LINE.js
 
-本機 TypeScript LINE 網頁客戶端，以釘選的 [@evex/linejs v3.4.2](https://github.com/evex-dev/linejs/tree/v3.4.2) 連線 LINE，經 WebSocket 同步頻道與訊息、同埠 HTTP 提供網頁。
+本機 TypeScript LINE 網頁客戶端，以釘選的 [@evex/linejs v3.5.0](https://jsr.io/@evex/linejs/3.5.0) 連線 LINE，經 WebSocket 同步頻道與訊息、同埠 HTTP 提供網頁。
 
 > 開發狀態：QR 登入／登出、session 復用、頻道清單（好友與聊天分頁、大頭照）、即時與歷史訊息、文字／圖片／影片／貼圖發送（可貼上圖片或影片、可從已擁有的貼圖包選貼圖）、收到的圖片／GIF／影片／語音內嵌顯示、他人已讀、已讀回報與未讀數、社群管理員徽章、訊息內連結、系統訊息（例如「XX 新增 OO 至群組」）、斷線全畫面覆蓋、手機版漢堡選單、機器人 API（`/api/ws`）、終端機介面（CLI）與版本更新通知已可用。Gate 1 以次要帳號掃碼的驗收仍待小語確認。
 
@@ -18,7 +18,7 @@
 
 ```mermaid
 flowchart LR
-    LINE[LINE 服務] <--> Provider[LineProvider adapter\n@evex/linejs 3.4.2]
+    LINE[LINE 服務] <--> Provider[LineProvider adapter\n@evex/linejs 3.5.0]
     Provider <--> Backend[Node TypeScript 後端\nsession 與記憶體快取]
     Backend <-->|WebSocket 訊息與頻道| Browser[Vite / vanilla TypeScript 網頁]
     Backend <-->|同埠 HTTP 靜態頁與媒體| Browser
@@ -33,9 +33,9 @@ OpenChat adapter 另有 10 分鐘的記憶體歷史快取，最多 5 個聊天�
 - Node.js **≥ 22** 與 npm。
 - 可連線至 JSR、npm 與 LINE 的網路。
 - 能掃描 QR 並確認 PIN 的 LINE 次要帳號。
-- `@evex/linejs` 與 `@evex/linejs-types` 均固定 **3.4.2**（JSR）；其餘直接依賴也須釘選版本。
+- `@evex/linejs` 與 `@evex/linejs-types` 均固定 **3.5.0**（JSR，本次升級已獲使用者明示授權）；其餘直接依賴也須釘選版本。
 
-上游 3.4.2 的 Thrift 依賴包含 high 漏洞，本專案以 `overrides` 釘選修補版 `thrift@0.23.0`，不更動 LINE 套件版本。修補依據：[CVE-2026-41636](https://github.com/advisories/GHSA-r67j-r569-jrwp)。已以真實 LINE 帳號驗證登入復用、頻道清單與即時訊息相容。
+先前上游 3.4.2 的 Thrift 依賴包含 high 漏洞，本專案以 `overrides` 釘選修補版 `thrift@0.23.0`；升級至 3.5.0 後仍保留此 override。修補依據：[CVE-2026-41636](https://github.com/advisories/GHSA-r67j-r569-jrwp)。先前以真實 LINE 帳號驗證的登入復用、頻道清單與即時訊息相容性屬於 3.4.2，**不代表 3.5.0 已通過真實 LINE Gate**；本次升級未使用真實 LINE 帳號驗證。
 
 ## 安裝與啟動
 
@@ -473,4 +473,4 @@ npm run update -- --verify      # 更新前額外要求最新 tag 通過 git ver
 
 工程與安全規範見 [AGENTS.md](AGENTS.md)，定案企劃全文見 [PLAN.md](PLAN.md)。依功能分批提交，不混入個人設定或憑證；不得改寫既有 `LICENSE`、`.nojekyll`。
 
-本作品 **LINE.js** 採 **Apache-2.0**，以根目錄 [LICENSE](LICENSE) 為準。消費套件 **@evex/linejs** 與 **@evex/linejs-types** 採 **MIT**，其授權獨立於本作品，詳見 [上游授權](https://github.com/evex-dev/linejs/blob/v3.4.2/LICENSE)。本倉庫僅供 clone，不發布 npm／JSR 套件。
+本作品 **LINE.js** 採 **Apache-2.0**，以根目錄 [LICENSE](LICENSE) 為準。消費套件 **@evex/linejs** 與 **@evex/linejs-types** 採 **MIT**，其授權獨立於本作品，詳見 [上游授權](https://github.com/evex-dev/linejs/blob/v3.5.0/LICENSE)。本倉庫僅供 clone，不發布 npm／JSR 套件。

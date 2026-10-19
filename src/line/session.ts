@@ -5,7 +5,7 @@ import { open, rename, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { FileStorage, type Storage } from "@evex/linejs/storage";
 
-// FileStorage 3.4.2 discards write errors. Keep its contract, but make writes
+// FileStorage 3.5.0 discards write errors. Keep its contract, but make writes
 // atomic, permission-safe and observable before declaring authentication ready.
 export class SessionStorage extends FileStorage {
   private queue: Promise<void> = Promise.resolve();

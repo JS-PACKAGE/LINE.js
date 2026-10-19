@@ -1,6 +1,6 @@
 # LINE.js 本機 LINE 網頁客戶端 企劃書 v1.16
 
-一句話：以 **WebSocket** 為即時通道、以 **@evex/linejs v3.4.2** 為 LINE 連線核心的本機 TypeScript 網頁客戶端（**LINE.js**）——Node 後端以 QR 掃碼登入 LINE，將訊息與頻道清單經 ws 推送到監聽 `127.0.0.1:3789` 的網頁前端。
+一句話：以 **WebSocket** 為即時通道、以 **@evex/linejs v3.5.0** 為 LINE 連線核心的本機 TypeScript 網頁客戶端（**LINE.js**）——Node 後端以 QR 掃碼登入 LINE，將訊息與頻道清單經 ws 推送到監聽 `127.0.0.1:3789` 的網頁前端。
 
 ### 基本資料
 
@@ -13,17 +13,23 @@
 | 本作品倉庫 | https://github.com/JS-PACKAGE/LINE.js（main） |
 | 本作品授權 | **Apache-2.0**（以倉庫根 `LICENSE` 為準，實作不得改寫） |
 | 前置檔案 | `LICENSE`、`.nojekyll` **已在 main**（2026-10-08 經 GitHub API 驗證，見 Gate 0） |
-| 消費套件 | **@evex/linejs v3.4.2**＋**@evex/linejs-types v3.4.2**（JSR，MIT） |
-| 套件倉庫 | https://github.com/evex-dev/linejs（tag `v3.4.2`，commit `ef6c3d9`） |
+| 消費套件 | **@evex/linejs v3.5.0**＋**@evex/linejs-types v3.5.0**（JSR，MIT；本次升級已獲使用者明示授權） |
+| 套件倉庫 | https://github.com/evex-dev/linejs（原始 3.4.2 調查對應 tag `v3.4.2`、commit `ef6c3d9`；不作為 3.5.0 的驗證證據） |
 | 套件文件 | https://linejs.evex.land/（2026-10-08 驗證可連） |
 | 套件授權 | MIT（授權宣告列入 `README.md`） |
+
+本次由 3.4.2 升至 3.5.0，維持 Node.js ≥22、LineProvider adapter 邊界與 `overrides` 的 `thrift@0.23.0`，不新增通話功能。本次未使用真實 LINE 帳號驗證，3.5.0 的真實 LINE Gate 尚未驗收；下文註明 3.4.2 的來源調查與既有實測僅保留為歷史紀錄，不代表 3.5.0 已通過驗證。
+
+3.5.0 PUSH 相容處理：上游 `fetchMyEvents` 失敗後仍保留連線，留待下一個 square push 重試；adapter 遇到 `[LEGY/PUSH] fetchMyEvents failed` 即作廢 OpenChat 歷史快取（含進行中的查詢），避免沿用可能漏事件的歷史。不轉送上游 log payload 或憑證、不另增重試；此為來源與 adapter 行為說明，不是真實 LINE Gate 驗證結果。
+
+本次隔離驗證：`npm run typecheck`、`npm test`（含 build，306 項通過）與 `npm audit --audit-level=high`（0 漏洞）完成。實際執行 3.5.0 `BaseClient`／`ConnManager`，以隔離上游錯誤確認 noop 與 square PUSH 拒絕不終止程序、square 失敗立即清除歷史快取且保留 sync token；另以正式 HTTP／WS 與 adapter 驗證管理員分頁、同連線 mention 授權及重新查詢撤權。未連接真實 LINE、不取代 Gate 驗收。
 
 ---
 
 ## 〇、專案概述
 
 ### 目標
-- 以 TypeScript 本地開發 LINE 網頁客戶端 **LINE.js**：Node 後端經 @evex/linejs v3.4.2 連線 LINE（Thrift／LEGY／PUSH／E2EE）。
+- 以 TypeScript 本地開發 LINE 網頁客戶端 **LINE.js**：Node 後端經 @evex/linejs v3.5.0 連線 LINE（Thrift／LEGY／PUSH／E2EE）。
 - 後端預設監聽 **127.0.0.1:3789**（PORT 由本文件定案；host 與 PORT 值入 `config.yaml`，v1.11 起 host 以設定檔為準），以 **ws** 將 LINE 訊息與頻道清單推送到網頁客戶端。
 - 第一版全功能：頻道清單、即時訊息串流、歷史載入、網頁端發送**文字／圖片／貼圖**、圖片／貼圖顯示。
 - 登入採 **QR 掃碼**（免帳密）；session 持久化，重啟優先復用、失效才重掃。
@@ -42,7 +48,7 @@
 | 編號 | 要求 |
 |---|---|
 | R1 | TypeScript 本地開發；執行環境 Node.js ≥ **v22**（本機 v26.10.0） |
-| R2 | 消費套件釘選 **@evex/linejs@3.4.2**、**@evex/linejs-types@3.4.2**（JSR），不追 main；升版需人工裁示 |
+| R2 | 消費套件釘選 **@evex/linejs@3.5.0**、**@evex/linejs-types@3.5.0**（JSR），不追 main；本次升版已獲人工明示裁示，後續升版仍須人工裁示 |
 | R3 | 後端預設監聽 **127.0.0.1**，PORT 預設 **3789**，主機與 PORT 值入 `config.yaml` 且以設定為準（v1.11 裁示：不再強制本機迴路），程式不得寫死 |
 | R4 | 以 **ws（WebSocket）** 將 LINE 訊息與頻道清單推送到網頁客戶端；同埠 HTTP 提供靜態前端與 `GET /media/:mediaId` 媒體位元組 |
 | R5 | 登入＝**QR 掃碼**（免帳密）；session（cert／refreshToken／authToken）持久化於 `session.json`，重啟優先復用、失效才重掃；QR URL 與 PIN 僅一次性顯示、不入日誌 |
@@ -72,7 +78,7 @@
 ## 二、系統架構
 
 ```
-[LINE 伺服器] ⇄ @evex/linejs v3.4.2（Thrift／LEGY／PUSH／E2EE）
+[LINE 伺服器] ⇄ @evex/linejs v3.5.0（Thrift／LEGY／PUSH／E2EE）
                        │
           [LINE.js 後端｜Node ≥22｜TypeScript｜127.0.0.1:3789]
           ├─ src/line/    LineProvider adapter：QR 登入、事件、歷史、發送、媒體
@@ -93,9 +99,9 @@
 
 ---
 
-## 三、外部 API 介接（@evex/linejs v3.4.2 ＋ LINE 服務，皆經 adapter）
+## 三、外部 API 介接（@evex/linejs v3.5.0 ＋ LINE 服務，皆經 adapter）
 
-> 本節為**本系統需要的最小契約**，已對照 v3.4.2 原始碼（`packages/linejs/client/`）逐項驗證；若實測與契約衝突，**以套件實際行為為準，只改 adapter**，不動核心狀態機。
+> 本節為**本系統需要的最小契約**；原始逐項驗證依據為 v3.4.2 原始碼（`packages/linejs/client/`），並非 3.5.0 的實測紀錄。升級後若與契約衝突，**以目前釘選套件的實際行為為準，只改 adapter**，不動核心狀態機；隔離驗證不能取代真實 LINE Gate。
 
 ### 3.1 LineProvider 介面（實作含 MockLineProvider，無 LINE 帳號可開發測試）
 
@@ -303,7 +309,7 @@ Media   { mediaId, mime, size, kind: "image"｜"sticker"｜"video"｜"audio" }
 | 風險 | 影響 | 因應 |
 |---|---|---|
 | LINE 風控／帳號限制（非官方 API） | 封號、功能失效 | QR 登入（裁示）；低頻操作；**次要帳號先行驗證**（裁示），穩定後再切主帳號 |
-| linejs API／LINE 協定變動 | 解析失敗 | 釘 3.4.2；adapter 隔離；升版人工裁示 |
+| linejs API／LINE 協定變動 | 解析失敗 | 釘 3.5.0；adapter 隔離；本次升版已獲人工裁示，後續升版仍須人工裁示 |
 | E2EE 群組需 decrypt key | 群組訊息不可讀 | `FileStorage` 持久化 key；缺 key 顯示「無法解密」佔位 |
 | ws 中斷／後端 listen 失效 | 資料斷流 | 前端自動重連＋snapshot 重送；後端退避重啟 `client.listen()` |
 | 媒體流量／記憶體 | 記憶體膨脹 | 快取上限＋LRU；preview 優先；ws 不傳位元組 |
@@ -340,7 +346,7 @@ ws 伺服器、`channels`／`message` 協定、登入頁＋主畫面最小版。
 2. **PORT 3789** 為本文件定案（授權由本文件決定）；值入 `config.yaml`，可調整。
 3. 前端 **vanilla TypeScript＋Vite**（2026-10-08 裁示）；若改框架，同步更新「二、依賴策略」與本條並升版。
 4. 登入仿照裝置 `ANDROIDSECONDARY`（QR 範例預設）；型別入 `config.yaml` 可調。
-5. linejs 契約以 3.4.2 原始碼為準（`fetchJoinedChats`／`chat.fetchMessages`／`message.getData`／`chat.sendMessage`／`obs.uploadObjTalk`／`uploadMediaByE2EE` 已驗證）；圖片／貼圖的 `sendMessage` payload 形狀於 Phase 3 實測，衝突只改 adapter。
+5. linejs 契約原始調查以 3.4.2 原始碼為據（當時已驗證 `fetchJoinedChats`／`chat.fetchMessages`／`message.getData`／`chat.sendMessage`／`obs.uploadObjTalk`／`uploadMediaByE2EE`）；目前釘選 3.5.0，不能把原始調查視為新版實測。圖片／貼圖的 `sendMessage` payload 形狀仍以實際套件行為為準，衝突只改 adapter。
 6. 歷史預設 **50 則**（`config.yaml` 可調）；`before` 分頁行為於 Phase 3 實測定案，不影響其他實作。
 7. 媒體範圍＝**圖片／GIF／影片／語音＋貼圖**（v1.6 裁示擴大）；檔案佔位為範圍外。影片點擊後才載入、語音按播放才載入。
 8. 發送範圍＝**文字＋圖片＋貼圖**（2026-10-08 裁示，v1.1 起）；貼圖以 `packageId`／`stickerId` 指定，貼圖選單 UI（列舉帳號貼圖）列延伸項目，待 Phase 3 查 linejs 貼圖 API 後另裁。

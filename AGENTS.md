@@ -5,8 +5,8 @@
 - 與使用者溝通、文件及 UI 使用繁體中文；技術名詞與程式識別字可保留英文。
 - 使用 TypeScript、Node.js ≥22、Node ESM；前端 Vite＋vanilla TypeScript。不得擅自替換框架或最低執行版本。
 - 先讀 [PLAN.md](PLAN.md) 與相關實作、驗證套件 API，再修改；採最小完整修改，不做無關重構或增加不必要依賴。
-- `@evex/linejs` 與 `@evex/linejs-types` 必須釘選 JSR **3.4.2**。不得追蹤 main，升版必須取得人工裁示。
-- **所有 LINE 外部 API 一律經 LineProvider adapter**，核心狀態、HTTP、WS 與前端不得直接呼叫套件。API 衝突以 v3.4.2 實際原始碼為準，只改 adapter。
+- `@evex/linejs` 與 `@evex/linejs-types` 必須釘選 JSR **3.5.0**。本次由 3.4.2 升版已獲使用者明示授權；不得追蹤 main，後續升版仍必須取得人工裁示。
+- **所有 LINE 外部 API 一律經 LineProvider adapter**，核心狀態、HTTP、WS 與前端不得直接呼叫套件。API 衝突以目前釘選 v3.5.0 的實際原始碼為準，只改 adapter。
 - MockLineProvider 僅供隔離測試，不能冒充真實 LINE 功能或代替 Gate 驗收。
 - 依功能分批提交；先檢查 diff，僅納入該功能相關檔案。未經明示授權不得 push、發布或部署。保留使用者既有修改。
 - 不改寫根目錄 `LICENSE`（Apache-2.0）與 `.nojekyll`；不發布 npm／JSR 套件。
@@ -53,6 +53,8 @@ npm run cli -- login|logout|token
 後端 `tsc` 建置，前端 Vite 建置；`npm test` 使用 `node --test` 與 Mock Provider。修改後做針對性驗證並啟動實際程序或操作瀏覽器，不可只憑型別檢查宣告完成。測試應驗證消費者可見行為、邊界、轉移與錯誤，不測程式字串或單純 wiring。`.github/workflows/ci.yml` 於 push／PR 以 Node 22 乾淨安裝執行 typecheck、test 與 `npm audit --audit-level=high`（唯讀權限、不用任何 secret）；CI 通過不代替實際程序或瀏覽器驗證，也不代替 Gate 實測。
 
 Gate 依 [PLAN.md](PLAN.md) 逐關驗收，不跳關；Gate 0 遠端需存在四件必要文件及前置根檔。Gate 1 必須用**次要帳號** QR 掃碼，60 秒內接收真實訊息並驗證 session 權限。未經實測不得宣稱 Gate 通過。
+
+本次 3.5.0 升級未使用真實 LINE 帳號驗證，不得宣稱新版通過真實 LINE Gate。下列註明 linejs 3.4.2 的 workaround 是當時的來源觀察，不得改寫成 3.5.0 的驗證證據；新版是否仍需沿用，應對照目前原始碼與隔離測試確認，不能僅因升版就移除安全或相容性處理。
 
 登入完全經 WS：QR／PIN 只可送給發起 `auth:start` 的連線，`auth:state` 等廣播不得含祕密；不得新增 HTTP 登入端點或把祕密放進任何共享狀態。WS 升級必須同時驗證路徑、Host、Origin 與瀏覽器 cookie。每個 ws 連線必須掛 `error` 處理（超大 frame 會觸發 error，未處理會使程序崩潰）。登入 helper 無法在登入前附加 token 監聽，因此 adapter 使用等價 BaseClient 流程；token listener 必須先註冊。SessionStorage 沿用 FileStorage 契約但覆寫原子持久化，不能吞寫入錯誤。Thrift 以 override 固定修補版 `0.23.0`，不得解除修補而引入已知 high 漏洞。linejs 3.4.2 的 `fetchUsers()` 一次送出全部好友 mid，超過 LINE 上限 100 會失敗，因此 adapter 自行分批取得好友。
 

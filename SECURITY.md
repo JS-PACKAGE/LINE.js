@@ -191,11 +191,13 @@ Cache Storage after logout (`web/public/sw.js`).
 
 ### Supply chain
 
-- `@evex/linejs` and `@evex/linejs-types` are pinned to **3.4.2** and are not upgraded without explicit
-  maintainer approval. All direct dependencies are pinned to exact versions, and `package-lock.json` is
-  committed.
-- `thrift` is forced to a patched version through `overrides` (see [CVE-2026-41636](https://github.com/advisories/GHSA-r67j-r569-jrwp)).
+- `@evex/linejs` and `@evex/linejs-types` are pinned to **3.5.0**. The upgrade from 3.4.2 was explicitly
+  authorized by the user; future upgrades still require explicit maintainer approval. All direct
+  dependencies are pinned to exact versions, and `package-lock.json` is committed.
+- `thrift` remains forced to **0.23.0** through `overrides` after this upgrade (see [CVE-2026-41636](https://github.com/advisories/GHSA-r67j-r569-jrwp)).
   The override must not be removed while the upstream dependency is affected.
+- This upgrade has not been verified with a real LINE account or passed a real LINE Gate. Earlier
+  real-account observations for 3.4.2 do not establish compatibility of 3.5.0.
 - `npm audit` must report no high or critical advisories before a release.
 - New dependencies require justification; trivial functionality is written locally.
 

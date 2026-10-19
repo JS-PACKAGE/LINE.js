@@ -2,7 +2,7 @@
 
 # LINE.js
 
-A local TypeScript LINE web client that connects to LINE using the pinned [@evex/linejs v3.4.2](https://github.com/evex-dev/linejs/tree/v3.4.2), synchronizes channels and messages over WebSocket, and serves the web interface over HTTP on the same port.
+A local TypeScript LINE web client that connects to LINE using the pinned [@evex/linejs v3.5.0](https://jsr.io/@evex/linejs/3.5.0), synchronizes channels and messages over WebSocket, and serves the web interface over HTTP on the same port.
 
 > Development status: QR login/logout, session reuse, channel lists (friends and chats tabs, profile pictures), live and historical messages, sending text/images/videos/stickers (including pasting images or videos and selecting stickers from owned packs), inline display of received images/GIFs/videos/voice messages, others' read receipts, sending read receipts and unread counts, OpenChat administrator badges, links in messages, system messages (such as 「XX 新增 OO 至群組」 (XX added OO to the group)), a full-screen disconnection overlay, a mobile hamburger menu, the bot API (`/api/ws`), the terminal interface (CLI), and version update notifications are available. Gate 1 acceptance using a secondary account to scan the QR code still awaits confirmation from 小語.
 
@@ -18,7 +18,7 @@ This project uses unofficial LINE APIs and may cause account restrictions or ban
 
 ```mermaid
 flowchart LR
-    LINE[LINE service] <--> Provider[LineProvider adapter\n@evex/linejs 3.4.2]
+    LINE[LINE service] <--> Provider[LineProvider adapter\n@evex/linejs 3.5.0]
     Provider <--> Backend[Node TypeScript backend\nsession and in-memory cache]
     Backend <-->|WebSocket messages and channels| Browser[Vite / vanilla TypeScript web interface]
     Backend <-->|Same-port HTTP static pages and media| Browser
@@ -33,9 +33,9 @@ The OpenChat adapter additionally keeps a 10-minute in-memory history cache, bou
 - Node.js **≥ 22** and npm.
 - Network access to JSR, npm, and LINE.
 - A secondary LINE account that can scan a QR code and confirm a PIN.
-- Both `@evex/linejs` and `@evex/linejs-types` are pinned to **3.4.2** (JSR); all other direct dependencies must also have pinned versions.
+- Both `@evex/linejs` and `@evex/linejs-types` are pinned to **3.5.0** (JSR; this upgrade was explicitly authorized by the user); all other direct dependencies must also have pinned versions.
 
-Upstream 3.4.2's Thrift dependency contains a high-severity vulnerability. This project pins the patched `thrift@0.23.0` through `overrides`, without changing the LINE package versions. Patch reference: [CVE-2026-41636](https://github.com/advisories/GHSA-r67j-r569-jrwp). Compatibility of login reuse, channel lists, and live messages has been verified with a real LINE account.
+Previously, upstream 3.4.2's Thrift dependency contained a high-severity vulnerability. This project pins the patched `thrift@0.23.0` through `overrides` and retains that override after upgrading to 3.5.0. Patch reference: [CVE-2026-41636](https://github.com/advisories/GHSA-r67j-r569-jrwp). Previous real-account verification of login reuse, channel lists, and live messages applied to 3.4.2, **not to a real LINE Gate for 3.5.0**; this upgrade has not been verified with a real LINE account.
 
 ## Installation and startup
 
@@ -473,4 +473,4 @@ See [SECURITY.md](SECURITY.md) (in English) for the security policy and reportin
 
 See [AGENTS.md](AGENTS.md) (in Chinese) for engineering and security rules, and [PLAN.md](PLAN.md) for the full agreed plan. Commit in feature-based batches, excluding personal configuration and credentials; do not rewrite the existing `LICENSE` or `.nojekyll`.
 
-This work, **LINE.js**, is licensed under **Apache-2.0**, as specified by the root [LICENSE](LICENSE). The consumed packages **@evex/linejs** and **@evex/linejs-types** are licensed under **MIT**, independently of this work; see the [upstream license](https://github.com/evex-dev/linejs/blob/v3.4.2/LICENSE). This repository is for cloning only; no npm/JSR package is published.
+This work, **LINE.js**, is licensed under **Apache-2.0**, as specified by the root [LICENSE](LICENSE). The consumed packages **@evex/linejs** and **@evex/linejs-types** are licensed under **MIT**, independently of this work; see the [upstream license](https://github.com/evex-dev/linejs/blob/v3.5.0/LICENSE). This repository is for cloning only; no npm/JSR package is published.
