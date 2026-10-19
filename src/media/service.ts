@@ -234,7 +234,7 @@ export function sniffUpload(bytes: Buffer): "image/png" | "image/jpeg" | "image/
  * the clip length and does not work it out itself. Undefined when the file does not say.
  */
 export function mp4DurationMs(bytes: Buffer): number | undefined {
-  const find = (start: number, end: number, wanted: string): { body: number; end: number } | undefined => {
+  const find = (start: number, end: number, wanted: number): { body: number; end: number } | undefined => {
     let at = start;
     while (at + 8 <= end) {
       let size = bytes.readUInt32BE(at);
@@ -247,13 +247,13 @@ export function mp4DurationMs(bytes: Buffer): number | undefined {
         header = 16;
       } else if (size === 0) size = end - at;
       if (size < header || at + size > end) return undefined;
-      if (bytes.toString("latin1", at + 4, at + 8) === wanted) return { body: at + header, end: at + size };
+      if (bytes.readUInt32BE(at + 4) === wanted) return { body: at + header, end: at + size };
       at += size;
     }
     return undefined;
   };
-  const moov = find(0, bytes.length, "moov");
-  const mvhd = moov && find(moov.body, moov.end, "mvhd");
+  const moov = find(0, bytes.length, 0x6d6f6f76 /* moov */);
+  const mvhd = moov && find(moov.body, moov.end, 0x6d766864 /* mvhd */);
   if (!mvhd) return undefined;
   const version = bytes[mvhd.body];
   let timescale: number;

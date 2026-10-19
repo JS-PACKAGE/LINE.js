@@ -226,6 +226,8 @@
 
 > 已讀欄位僅在可見性改變時設定 `hidden`，文字計數更新維持原路徑。正式網頁保留 500 則、收到 100 次編輯時，本次既有已讀欄位的重複屬性異動由 400 次降為 0，100 則編輯仍正確顯示；次數依重繪排程而異。typecheck／build 通過；經正式 WS 注入隔離的「他人已讀」事件，驗證本帳號訊息由隱藏變為「已讀 1」、增加為「已讀 2」，較新訊息另顯示「已讀 1」，他人訊息不誤顯示且較舊回報不倒退，已截圖確認。另以網頁登出、隔離恢復及 500 則新快照驗證舊已讀狀態清空。`chat.sendReadReceipts` 保持關閉，未回報自己的已讀或連線真實 LINE。
 
+> MP4／MOV 長度解析以 big-endian 四位元組值比對 `moov`／`mvhd`，不再為每個掃過的 box 建立 Latin-1 字串；尺寸、父層邊界、extended header 與版本／timescale 驗證不變。Node 26.7.0 的 7 輪局部量測：1,084-byte 樣本解析 100,000 次中位數約 14.58ms → 4.03ms；含 524,288 個空 `free` box 的 4 MiB 樣本單次約 16.17ms → 3.63ms，非實際上傳加速比例。typecheck、build、328 項測試通過，新增 extended／EOF-sized／越過父層範圍的回歸；另比對 2,114 個截短、型別位元組變化、異常尺寸及非零 offset 視圖，前後結果一致。正式 EvexLineProvider 搭配隔離 HTTP 傳輸 fixture 驗證 MP4／MOV 長度參數、E2EE fallback 入口與缺失長度不猜測；未執行真實 LINE 加密或發送。
+
 ### Server → Client
 
 | type | 負載 |

@@ -348,6 +348,29 @@ test("the clip length comes from moov/mvhd and is never guessed", () => {
   assert.equal(mp4DurationMs(Buffer.concat([ftyp("isom"), box("moov", box("mvhd", v1))])), 4000, "version 1 header");
 });
 
+test("MP4 duration respects extended headers, EOF-sized boxes and parent boundaries", () => {
+  const extended = (type, body) => {
+    const head = Buffer.alloc(16);
+    head.writeUInt32BE(1, 0);
+    head.write(type, 4, "latin1");
+    head.writeBigUInt64BE(BigInt(16 + body.length), 8);
+    return Buffer.concat([head, body]);
+  };
+  const movie = extended("moov", extended("mvhd", mvhd(1000, 12_345).subarray(8)));
+  assert.equal(mp4DurationMs(Buffer.concat([ftyp("isom"), movie])), 12_345);
+  const toEnd = box("moov", mvhd(1000, 4321));
+  toEnd.writeUInt32BE(0, 0);
+  assert.equal(mp4DurationMs(Buffer.concat([ftyp("qt  "), toEnd])), 4321);
+  for (let length = 8; length < 16; length += 1) assert.equal(mp4DurationMs(movie.subarray(0, length)), undefined);
+  const oversized = Buffer.from(movie);
+  oversized.writeBigUInt64BE(0xffffffffffffffffn, 8);
+  assert.equal(mp4DurationMs(oversized), undefined);
+
+  const escapedHeader = mvhd(1000, 1234);
+  const parent = box("moov", escapedHeader.subarray(0, 8));
+  assert.equal(mp4DurationMs(Buffer.concat([parent, escapedHeader.subarray(8)])), undefined, "mvhd cannot borrow bytes beyond moov");
+});
+
 test("pending uploads are bounded by size as well as count, oldest dropped first", () => {
   const media = new MediaService(1024, {});
   const big = { mime: "video/mp4", bytes: { length: 100 * 1024 * 1024 } };
