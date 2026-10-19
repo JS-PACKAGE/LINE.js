@@ -119,6 +119,34 @@ test("received media is typed from its bytes, and anything that could carry scri
   }
 });
 
+test("received signatures respect slice boundaries and distinguish exact audio brands", () => {
+  const signatures = [
+    { bytes: Buffer.from("RIFF0000WEBP"), mime: "image/webp", offsets: [0, 1, 2, 3, 8, 9, 10, 11] },
+    { bytes: Buffer.from("0000ftypisom"), mime: "video/mp4", offsets: [4, 5, 6, 7] },
+    { bytes: Buffer.from("0000ftypM4A "), mime: "audio/mp4", offsets: [4, 5, 6, 7] },
+    { bytes: Buffer.from("0000ftypM4B "), mime: "audio/mp4", offsets: [4, 5, 6, 7] },
+    { bytes: Buffer.from("ID3"), mime: "audio/mpeg", offsets: [0, 1, 2] },
+    { bytes: Buffer.from([0xff, 0xf1]), mime: "audio/aac", offsets: [0, 1] },
+    { bytes: Buffer.from([0xff, 0xfb]), mime: "audio/mpeg", offsets: [0, 1] },
+  ];
+  for (const { bytes, mime, offsets } of signatures) {
+    const envelope = Buffer.concat([Buffer.from("prefix"), bytes, Buffer.from("suffix")]);
+    const view = envelope.subarray(6, 6 + bytes.length);
+    assert.equal(sniffMedia(view), mime);
+    for (let end = 0; end < view.length; end++) assert.equal(sniffMedia(view.subarray(0, end)), undefined);
+    for (const offset of offsets) {
+      const corrupted = Buffer.from(view);
+      corrupted[offset] ^= 0x80;
+      assert.equal(sniffMedia(corrupted), undefined);
+    }
+  }
+  for (const brand of ["M4A ", "M4B "]) {
+    const lookalike = Buffer.from(`0000ftyp${brand}`);
+    lookalike[11] ^= 0x80;
+    assert.equal(sniffMedia(lookalike), "video/mp4");
+  }
+});
+
 test("image signatures respect sliced storage and reject truncated or corrupted headers", () => {
   const signatures = [
     { bytes: Buffer.from("89504e470d0a1a0a", "hex"), mime: "image/png" },

@@ -278,12 +278,12 @@ export function mp4DurationMs(bytes: Buffer): number | undefined {
 export function sniffMedia(bytes: Buffer): string | undefined {
   const image = sniffImage(bytes);
   if (image) return image;
-  if (bytes.length >= 12 && bytes.toString("latin1", 0, 4) === "RIFF" && bytes.toString("latin1", 8, 12) === "WEBP") return "image/webp";
-  if (bytes.length >= 12 && bytes.toString("latin1", 4, 8) === "ftyp") {
-    const brand = bytes.toString("latin1", 8, 12);
-    return brand === "M4A " || brand === "M4B " ? "audio/mp4" : "video/mp4";
+  if (bytes.length >= 12 && bytes.readUInt32BE(0) === 0x52494646 /* RIFF */ && bytes.readUInt32BE(8) === 0x57454250 /* WEBP */) return "image/webp";
+  if (bytes.length >= 12 && bytes.readUInt32BE(4) === 0x66747970 /* ftyp */) {
+    const brand = bytes.readUInt32BE(8);
+    return brand === 0x4d344120 /* M4A */ || brand === 0x4d344220 /* M4B */ ? "audio/mp4" : "video/mp4";
   }
-  if (bytes.length >= 3 && bytes.toString("latin1", 0, 3) === "ID3") return "audio/mpeg";
+  if (bytes.length >= 3 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33 /* ID3 */) return "audio/mpeg";
   if (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1]! & 0xf6) === 0xf0) return "audio/aac";
   if (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1]! & 0xe0) === 0xe0) return "audio/mpeg";
   return undefined;
