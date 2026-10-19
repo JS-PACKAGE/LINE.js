@@ -833,3 +833,161 @@ test("a failed or old-session own membership lookup cannot complete an administr
     await assert.rejects(result, mode === "failure" ? /membership unavailable/ : /SESSION_CHANGED/);
   });
 });
+
+test("member prefetch overlaps different senders in one chat and single-flights a sender across chats", async () => {
+  const gates = new Map();
+  const calls = [];
+  const base = fakeBase({ talk: { async getContactsV2({ mids }) {
+    calls.push(mids);
+    await new Promise((resolve) => gates.set(mids[0], resolve));
+    return { contacts: Object.fromEntries(mids.map((id) => [id, { contact: { mid: id, displayName: `resolved-${id}` } }])) };
+  } } });
+  const { provider, received, emit } = await activeProvider(base);
+  emit("message", talk("1", GROUP_A, mid(1), "first"));
+  emit("message", talk("2", GROUP_A, mid(2), "second"));
+  emit("message", talk("3", GROUP_B, mid(1), "other"));
+  assert.equal(calls.length, 2);
+  gates.get(mid(2))();
+  await settle();
+  assert.equal(received.length, 0, "ready second sender must not overtake the first");
+  gates.get(mid(1))();
+  await Promise.all([...provider.deliveries.values()]);
+  assert.deepEqual(received.filter(({ message }) => message.channelId === GROUP_A).map(({ message }) => message.text), ["first", "second"]);
+  assert.ok(received.every(({ message }) => message.senderName.startsWith("resolved-")));
+  await provider.close();
+});
+
+test("member timeouts keep a global bound on real LINE calls and discard queued and late results", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const releases = [];
+  let calls = 0;
+  let active = 0;
+  let peak = 0;
+  const base = fakeBase({ talk: { async getContactsV2({ mids }) {
+    calls += 1;
+    peak = Math.max(peak, ++active);
+    await new Promise((resolve) => releases.push(resolve));
+    active -= 1;
+    return { contacts: Object.fromEntries(mids.map((id) => [id, { contact: { mid: id, displayName: "late" } }])) };
+  } } });
+  const { provider, received, emit } = await activeProvider(base);
+  for (let id = 1; id <= 20; id += 1) emit("message", talk(String(id), GROUP_A, mid(id), String(id)));
+  assert.equal(calls, 5);
+  t.mock.timers.tick(5000);
+  await Promise.all([...provider.deliveries.values()]);
+  assert.equal(received.length, 20);
+  assert.equal(calls, 5, "expired queued lookups never reach LINE");
+  emit("message", talk("21", GROUP_B, mid(21), "next"));
+  assert.equal(calls, 5, "timed-out running requests retain their slots");
+  for (const release of releases.splice(0)) release();
+  await new Promise(setImmediate);
+  assert.equal(calls, 6);
+  assert.ok(!provider.profiles.has(mid(1)), "late timed-out results cannot fill profiles");
+  releases.splice(0).forEach((release) => release());
+  await Promise.all([...provider.deliveries.values()]);
+  assert.equal(peak, 5);
+  await provider.close();
+});
+
+test("member lookup and delivery results from a closed account cannot contaminate its replacement", async () => {
+  let release;
+  const old = fakeBase({ talk: { async getContactsV2({ mids }) {
+    await new Promise((resolve) => { release = resolve; });
+    return { contacts: { [mids[0]]: { contact: { mid: mids[0], displayName: "old account" } } } };
+  } } });
+  const { provider, received, emit } = await activeProvider(old);
+  emit("message", talk("1", GROUP_A, mid(1), "old"));
+  const oldDelivery = provider.deliveries.get(GROUP_A);
+  await provider.teardown();
+  const replacement = fakeBase();
+  provider.base = replacement;
+  await provider.activate(replacement);
+  provider.client.emit("message", talk("2", GROUP_A, mid(1), "new"));
+  await provider.deliveries.get(GROUP_A);
+  release();
+  await oldDelivery;
+  await new Promise(setImmediate);
+  assert.deepEqual(received.map(({ message }) => message.text), ["new"]);
+  assert.notEqual(provider.profiles.get(mid(1)).name, "old account");
+  assert.equal(provider.lookupFlights.size, 0);
+  await provider.close();
+});
+
+test("OpenChat ID index follows duplicate moves, equal-time cursors, eviction and late mutations", async () => {
+  const base = fakeBase({ square: {
+    async fetchSquareChatEvents() { return { events: [squareEvent(9), squareEvent(10), squareEvent(11)] }; },
+    async getSquareMember() { return { squareMember: { displayName: "成員" } }; },
+  } });
+  const { provider, emit } = await activeProvider(base);
+  const channel = { channelId: SQUARE, kind: "square" };
+  await provider.fetchHistory(channel, 50);
+  const moved = squareRaw(11);
+  moved.message.createdTime = squareRaw(9).message.createdTime;
+  emit("square:message", { raw: moved });
+  emit("square:message", { raw: squareRaw(8) });
+  await provider.deliveries.get(SQUARE);
+  assert.deepEqual((await provider.fetchHistory(channel, 50)).messages.map((message) => message.messageId), ["8", "9", "11", "10"]);
+  assert.deepEqual((await provider.fetchHistory(channel, 50, `${1_700_000_000_009}:11`)).messages.map((message) => message.messageId), ["8", "9"]);
+  assert.equal((await provider.fetchHistory(channel, 50, "0:1")).messages.length, 0);
+  provider.updateSquareMessage(SQUARE, "11", { unsent: true });
+  emit("square:message", { raw: moved });
+  await provider.deliveries.get(SQUARE);
+  assert.equal(provider.squareCache.get(SQUARE).byId.get("11").unsent, true);
+  for (let id = 12; id <= 5015; id += 1) emit("square:message", { raw: squareRaw(id) });
+  await provider.deliveries.get(SQUARE);
+  const entry = provider.squareCache.get(SQUARE);
+  assert.equal(entry.byId.size, 5000);
+  assert.equal(entry.byId.has("8"), false);
+  assert.ok(entry.messages.every((message) => entry.byId.get(message.messageId) === message));
+  provider.updateSquareMessage(SQUARE, "5015", { reactions: { counts: { LIKE: 2 } } });
+  provider.updateSquareMessage(SQUARE, "8", { reactions: { counts: { LOVE: 1 } } });
+  assert.deepEqual((await provider.fetchHistory(channel, 1)).messages[0].reactions, { counts: { LIKE: 2 } });
+  assert.equal(entry.byId.has("8"), false);
+  await provider.close();
+});
+
+test("plain media preserves exact single-chunk slices and enforces actual streamed bytes", async () => {
+  const { provider } = await activeProvider(fakeBase());
+  const backing = Uint8Array.from([99, 1, 2, 3, 99]);
+  provider.downloadMaxBytes = 3;
+  const client = { base: {
+    authToken: "test-only", request: { systemType: "test" },
+    obs: { getMessageDataUrl: () => "https://example.invalid/media" },
+    fetch: async () => new Response(new ReadableStream({ start(controller) { controller.enqueue(backing.subarray(1, 4)); controller.close(); } })),
+  } };
+  assert.deepEqual(await provider.downloadPlainMedia(client, "1", false), Buffer.from([1, 2, 3]));
+  client.base.fetch = async () => new Response(new ReadableStream({ start(controller) {
+    controller.enqueue(Uint8Array.from([1, 2]));
+    controller.enqueue(Uint8Array.from([3, 4]));
+    controller.close();
+  } }), { headers: { "content-length": "1" } });
+  assert.equal(await provider.downloadPlainMedia(client, "1", false), undefined);
+  await provider.close();
+});
+
+test("OpenChat history member lookups retain the 100-member cap and share the global request bound", async () => {
+  let calls = 0;
+  let active = 0;
+  let peak = 0;
+  const base = fakeBase({ square: {
+    async fetchSquareChatEvents() {
+      return { events: Array.from({ length: 150 }, (_, index) => {
+        const event = squareEvent(index + 1);
+        event.payload.receiveMessage.squareMessage.message.from = `p-${index}`;
+        return event;
+      }) };
+    },
+    async getSquareMember() {
+      calls += 1;
+      peak = Math.max(peak, ++active);
+      await new Promise(setImmediate);
+      active -= 1;
+      return { squareMember: { displayName: "resolved" } };
+    },
+  } });
+  const { provider } = await activeProvider(base);
+  assert.equal((await provider.fetchHistory({ channelId: SQUARE, kind: "square" }, 50)).messages.length, 50);
+  assert.equal(calls, 100);
+  assert.equal(peak, 5);
+  await provider.close();
+});

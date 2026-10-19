@@ -138,6 +138,7 @@ const DEFAULT_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 
 interface SquareHistory {
   at: number;
+  byId: Map<string, Message>;
   messages: Message[];
   origins: Map<string, LineMessage>;
   updates: Map<string, { unsent?: boolean; reactions?: Reactions }>;
@@ -157,8 +158,13 @@ export class EvexLineProvider implements LineProvider {
   // Names and pictures keyed by mid. LINE events carry only mids, so these are learned from the
   // friend list, profile lookups and (for OpenChat history) the sender names inside events.
   private profiles = new Map<string, MemberProfile>();
-  // mid -> time before which a failed lookup is not retried.
+  // source:mid -> time before which a failed lookup is not retried.
   private lookupMisses = new Map<string, number>();
+  private lookupFlights = new Map<string, Promise<void>>();
+  private lookupQueue = new Set<{ run: () => void; cancel: () => void }>();
+  private lookupJobs = new Set<{ run: () => void; cancel: () => void }>();
+  // Slots are released only when the actual LINE request settles, not when our waiter times out.
+  private activeLookups = 0;
   // Per chat, the tail of its delivery chain: one slow member lookup holds back only its own chat.
   private deliveries = new Map<string, Promise<void>>();
   private squareCache = new Map<string, SquareHistory>();
@@ -247,8 +253,9 @@ export class EvexLineProvider implements LineProvider {
     this.rememberProfile(profile.userId, profile.displayName, profile.pictureId, true);
     // Sender lookups are asynchronous; chaining per chat keeps each chat's messages in arrival order.
     const deliver = (chatId: string, source: "talk" | "square", senderMid: string, convert: () => Message, kind: "new" | "edit", extraMids: string[] = []) => {
+      const members = this.resolveMembers(client, source, [senderMid, ...extraMids]);
       const next = (this.deliveries.get(chatId) ?? Promise.resolve()).then(async () => {
-        await this.resolveMembers(client, source, [senderMid, ...extraMids]);
+        await members;
         if (this.client !== client) return;
         let message: Message;
         try {
@@ -593,7 +600,8 @@ export class EvexLineProvider implements LineProvider {
       }
       chunks.push(part.value);
     }
-    return Buffer.concat(chunks);
+    const single = chunks.length === 1 ? chunks[0] : undefined;
+    return single ? Buffer.from(single.buffer, single.byteOffset, single.byteLength) : Buffer.concat(chunks, total);
   }
 
   async fetchReadPositions(channel: ChannelRef): Promise<ReadPosition[]> {
@@ -618,51 +626,89 @@ export class EvexLineProvider implements LineProvider {
    * the generic member name until the retry delay passes.
    */
   private async resolveMembers(client: Client, source: "talk" | "square", mids: Iterable<string>): Promise<void> {
+    if (this.client !== client) return;
     const now = Date.now();
     const pending = [...new Set(mids)]
       .filter((mid) => (source === "square" ? mid.length > 0 : TALK_USER_MID.test(mid)))
-      .filter((mid) => !this.profiles.get(mid)?.settled && (this.lookupMisses.get(mid) ?? 0) <= now)
+      .filter((mid) => !this.profiles.get(mid)?.settled && (this.lookupMisses.get(`${source}:${mid}`) ?? 0) <= now)
       .slice(0, MAX_LOOKUPS_PER_CALL);
-    if (pending.length === 0) return;
-    const timeout = Promise.withResolvers<void>();
-    const timer = setTimeout(timeout.resolve, LOOKUP_TIMEOUT_MS);
-    try {
-      await Promise.race([source === "square" ? this.lookupSquareMembers(client, pending) : this.lookupContacts(client, pending), timeout.promise]);
-    } finally {
-      clearTimeout(timer);
+    const waiting: Promise<void>[] = [];
+    const fresh: string[] = [];
+    for (const mid of pending) {
+      const flight = this.lookupFlights.get(`${source}:${mid}`);
+      if (flight) waiting.push(flight);
+      else fresh.push(mid);
     }
-    const retryAt = Date.now() + LOOKUP_RETRY_MS;
-    for (const mid of pending) if (!this.profiles.get(mid)?.settled) this.lookupMisses.set(mid, retryAt);
-    if (this.lookupMisses.size > MAX_LOOKUP_MISSES) {
-      const now = Date.now();
-      for (const [mid, until] of this.lookupMisses) if (until <= now) this.lookupMisses.delete(mid);
+    const batchSize = source === "talk" ? CONTACT_BATCH : 1;
+    for (let offset = 0; offset < fresh.length; offset += batchSize) {
+      const batch = fresh.slice(offset, offset + batchSize);
+      const done = Promise.withResolvers<void>();
+      let expired = false;
+      const keys = batch.map((mid) => `${source}:${mid}`);
+      const finish = () => {
+        if (this.client === client) {
+          const retryAt = Date.now() + LOOKUP_RETRY_MS;
+          for (const mid of batch) if (!this.profiles.get(mid)?.settled) this.lookupMisses.set(`${source}:${mid}`, retryAt);
+          if (this.lookupMisses.size > MAX_LOOKUP_MISSES) {
+            for (const [key, until] of this.lookupMisses) if (until <= Date.now()) this.lookupMisses.delete(key);
+          }
+        }
+        done.resolve();
+      };
+      const forget = () => {
+        for (const key of keys) if (this.lookupFlights.get(key) === done.promise) this.lookupFlights.delete(key);
+      };
+      const job: { run: () => void; cancel: () => void } = {
+        cancel: () => {
+          expired = true;
+          clearTimeout(timer);
+          this.lookupJobs.delete(job);
+          if (this.lookupQueue.delete(job)) forget();
+          finish();
+        },
+        run: () => {
+          this.activeLookups += 1;
+          void (async () => {
+            try {
+              if (source === "talk") {
+                const { contacts } = await client.base.talk.getContactsV2({ mids: batch });
+                if (expired || this.client !== client) return;
+                for (const { contact } of Object.values(contacts ?? {})) {
+                  if (contact?.mid) this.rememberProfile(contact.mid, contact.displayNameOverridden || contact.displayName, avatarMediaId("profile", contact.pictureStatus), true);
+                }
+              } else {
+                const mid = batch[0]!;
+                const { squareMember } = await client.base.square.getSquareMember({ squareMemberMid: mid });
+                if (!expired && this.client === client) this.rememberProfile(mid, squareMember.displayName, avatarMediaId("obs", squareMember.profileImageObsHash), true, memberRole(squareMember.role));
+              }
+            } catch {
+              // Failed and timed-out lookups retain the existing retry delay.
+            } finally {
+              clearTimeout(timer);
+              this.lookupJobs.delete(job);
+              forget();
+              if (!expired) finish();
+              this.activeLookups -= 1;
+              this.drainLookups();
+            }
+          })();
+        },
+      };
+      const timer = setTimeout(job.cancel, LOOKUP_TIMEOUT_MS);
+      for (const key of keys) this.lookupFlights.set(key, done.promise);
+      this.lookupQueue.add(job);
+      this.lookupJobs.add(job);
+      waiting.push(done.promise);
     }
+    this.drainLookups();
+    await Promise.all(waiting);
   }
 
-  private async lookupContacts(client: Client, mids: string[]): Promise<void> {
-    for (let offset = 0; offset < mids.length; offset += CONTACT_BATCH) {
-      try {
-        const { contacts } = await client.base.talk.getContactsV2({ mids: mids.slice(offset, offset + CONTACT_BATCH) });
-        if (this.client !== client) return;
-        for (const { contact } of Object.values(contacts ?? {})) {
-          if (contact?.mid) this.rememberProfile(contact.mid, contact.displayNameOverridden || contact.displayName, avatarMediaId("profile", contact.pictureStatus), true);
-        }
-      } catch {
-        // Unresolved mids get a retry delay in resolveMembers.
-      }
-    }
-  }
-
-  private async lookupSquareMembers(client: Client, mids: string[]): Promise<void> {
-    for (let offset = 0; offset < mids.length; offset += SQUARE_LOOKUP_CONCURRENCY) {
-      await Promise.all(mids.slice(offset, offset + SQUARE_LOOKUP_CONCURRENCY).map(async (mid) => {
-        try {
-          const { squareMember } = await client.base.square.getSquareMember({ squareMemberMid: mid });
-          if (this.client === client) this.rememberProfile(mid, squareMember.displayName, avatarMediaId("obs", squareMember.profileImageObsHash), true, memberRole(squareMember.role));
-        } catch {
-          // Unresolved mids get a retry delay in resolveMembers.
-        }
-      }));
+  private drainLookups(): void {
+    while (this.activeLookups < SQUARE_LOOKUP_CONCURRENCY && this.lookupQueue.size > 0) {
+      const job = this.lookupQueue.values().next().value!;
+      this.lookupQueue.delete(job);
+      job.run();
     }
   }
 
@@ -777,8 +823,7 @@ export class EvexLineProvider implements LineProvider {
     if (before !== undefined) {
       const match = /^(\d+):(\d{1,24})$/.exec(before);
       if (!match || !Number.isSafeInteger(Number(match[1]))) throw new Error("INVALID_CURSOR");
-      end = all.findIndex((message) => this.compareSquareMessages(message, { createdAt: Number(match[1]), messageId: match[2]! }) >= 0);
-      if (end < 0) end = all.length;
+      end = this.squareLowerBound(all, { createdAt: Number(match[1]), messageId: match[2]! });
     }
     const start = Math.max(0, end - limit);
     const messages = all.slice(start, end);
@@ -795,7 +840,7 @@ export class EvexLineProvider implements LineProvider {
     const cached = this.squareCache.get(squareChatMid);
     if (cached?.loading) return cached.loading;
     if (cached && Date.now() - cached.at < SQUARE_CACHE_MS) return cached.messages;
-    const entry: SquareHistory = { at: 0, messages: [], origins: new Map(), updates: new Map(), liveUpdates: new Set() };
+    const entry: SquareHistory = { at: 0, messages: [], byId: new Map(), origins: new Map(), updates: new Map(), liveUpdates: new Set() };
     // Take-backs are permanent; reaction snapshots are not. Only events arriving during this
     // walk override its history statuses, otherwise an expired live snapshot would win forever.
     if (cached) for (const [id, update] of cached.updates) {
@@ -858,6 +903,7 @@ export class EvexLineProvider implements LineProvider {
     for (const message of entry.messages) merged.set(message.messageId, message);
     entry.messages = [...merged.values()];
     entry.messages.sort((a, b) => this.compareSquareMessages(a, b));
+    entry.byId = new Map(entry.messages.map((message) => [message.messageId, message]));
     for (const [id, update] of entry.updates) this.applySquareUpdate(entry, id, update);
     this.boundSquareHistory(entry);
     entry.at = Date.now();
@@ -868,9 +914,21 @@ export class EvexLineProvider implements LineProvider {
     return a.createdAt - b.createdAt || a.messageId.length - b.messageId.length || a.messageId.localeCompare(b.messageId);
   }
 
+  private squareLowerBound(messages: Message[], target: Pick<Message, "createdAt" | "messageId">): number {
+    let low = 0;
+    let high = messages.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (this.compareSquareMessages(messages[middle]!, target) < 0) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  }
+
   private boundSquareHistory(entry: SquareHistory): void {
     if (entry.messages.length > SQUARE_MAX_MESSAGES) {
       for (const message of entry.messages.splice(0, entry.messages.length - SQUARE_MAX_MESSAGES)) {
+        entry.byId.delete(message.messageId);
         entry.origins.delete(message.messageId);
         entry.updates.delete(message.messageId);
         entry.liveUpdates.delete(message.messageId);
@@ -879,9 +937,9 @@ export class EvexLineProvider implements LineProvider {
   }
 
   private applySquareUpdate(entry: SquareHistory, id: string, update: { unsent?: boolean; reactions?: Reactions }): void {
-    const index = entry.messages.findIndex((message) => message.messageId === id);
-    if (index < 0) return;
-    const message = entry.messages[index]!;
+    const message = entry.byId.get(id);
+    if (!message) return;
+    const index = this.squareLowerBound(entry.messages, message);
     if (update.unsent) {
       entry.messages[index] = { messageId: message.messageId, channelId: message.channelId, channelKind: message.channelKind, senderId: message.senderId, senderName: message.senderName, createdAt: message.createdAt, contentType: message.contentType, unsent: true };
       entry.origins.delete(id);
@@ -889,6 +947,7 @@ export class EvexLineProvider implements LineProvider {
       const { reactions: _old, ...rest } = message;
       entry.messages[index] = { ...rest, ...(update.reactions ? { reactions: update.reactions } : {}) };
     }
+    entry.byId.set(id, entry.messages[index]!);
   }
 
   private updateSquareMessage(chatId: string, id: string, update: { unsent?: boolean; reactions?: Reactions }, live = true): void {
@@ -909,10 +968,11 @@ export class EvexLineProvider implements LineProvider {
   private rememberSquareMessage(message: Message): void {
     const cached = this.squareCache.get(message.channelId);
     if (!cached) return;
-    const index = cached.messages.findIndex((entry) => entry.messageId === message.messageId);
-    if (index >= 0) cached.messages[index] = message;
-    else cached.messages.push(message);
-    if (cached.messages.length > 1 && this.compareSquareMessages(cached.messages.at(-2)!, cached.messages.at(-1)!) > 0) cached.messages.sort((a, b) => this.compareSquareMessages(a, b));
+    const previous = cached.byId.get(message.messageId);
+    if (previous) cached.messages.splice(this.squareLowerBound(cached.messages, previous), 1);
+    const index = this.squareLowerBound(cached.messages, message);
+    cached.messages.splice(index, 0, message);
+    cached.byId.set(message.messageId, message);
     const origin = this.mediaOrigins.get(message.messageId);
     if (origin?.square) cached.origins.set(message.messageId, origin.raw);
     const update = cached.updates.get(message.messageId);
@@ -1243,6 +1303,11 @@ export class EvexLineProvider implements LineProvider {
     this.client = undefined;
     this.profiles.clear();
     this.lookupMisses.clear();
+    for (const job of this.lookupJobs) job.cancel();
+    this.lookupQueue.clear();
+    this.lookupJobs.clear();
+    this.lookupFlights.clear();
+    this.deliveries.clear();
     this.mediaOrigins.clear();
     this.previewDecrypts.clear();
     this.stickerPackages = undefined;

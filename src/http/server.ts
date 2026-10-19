@@ -107,7 +107,7 @@ export function createWebServer(config: Config, webRoot: string, media: MediaSer
       }
       chunks.push(chunk);
     }
-    const bytes = Buffer.concat(chunks);
+    const bytes = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total);
     const detected = sniffUpload(bytes);
     if (!detected) {
       json(response, 400, { code: "INVALID_MEDIA" });
