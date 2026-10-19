@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createNotifier } from "../web/notify.ts";
 
 // Session cleanup must close OS notifications as well as the hidden chat view.
-test("ending a session closes every chat notification without changing the notification preference", () => {
+test("notifications format only when eligible and close when their session ends", () => {
   const saved = new Map(["Notification", "document", "localStorage", "window"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   const shown = [];
   const opened = [];
@@ -25,17 +25,34 @@ test("ending a session closes every chat notification without changing the notif
   Object.defineProperty(globalThis, "window", { configurable: true, value: { focus() {} } });
   try {
     const notifier = createNotifier({ addEventListener() {} }, (id) => opened.push(id));
+    for (const [visibility, preference, permission] of [
+      ["visible", "on", "granted"],
+      ["hidden", "off", "granted"],
+      ["hidden", "on", "denied"],
+    ]) {
+      document.visibilityState = visibility;
+      preferences.set("linejs-notify", preference);
+      FakeNotification.permission = permission;
+      notifier.notify({ channelId: "friend", channelKind: "user", senderName: "Private sender" }, "", () => assert.fail("ineligible notifications must not format a preview"));
+    }
+    assert.equal(shown.length, 0);
+    document.visibilityState = "hidden";
+    preferences.set("linejs-notify", "on");
+    FakeNotification.permission = "granted";
+    let formatted = 0;
+    const preview = () => { formatted++; return "Private text"; };
     for (const channelId of ["friend", "group"]) {
-      notifier.notify({ channelId, channelKind: "user", senderName: "Private sender" }, "Private chat", "Private text");
+      notifier.notify({ channelId, channelKind: "user", senderName: "Private sender" }, "Private chat", preview);
     }
     assert.equal(shown.length, 2);
+    assert.equal(formatted, 2);
     notifier.clearAll();
     assert.ok(shown.every((notification) => notification.closed));
     assert.equal(preferences.get("linejs-notify"), "on");
     assert.deepEqual(opened, []);
     // Cleanup is idempotent; a new login can still receive and clear notifications.
     notifier.clearAll();
-    notifier.notify({ channelId: "new-account", channelKind: "user", senderName: "New sender" }, "", "New text");
+    notifier.notify({ channelId: "new-account", channelKind: "user", senderName: "New sender" }, "", preview);
     assert.equal(shown[2].closed, false);
     notifier.clear("new-account");
     assert.equal(shown[2].closed, true);
@@ -54,6 +71,7 @@ test("session notification cleanup is available when the browser lacks Notificat
     const button = {};
     const notifier = createNotifier(button, () => assert.fail("no notification should open a chat"));
     assert.equal(button.hidden, true);
+    notifier.notify({ channelId: "friend", channelKind: "user", senderName: "Private sender" }, "", () => assert.fail("unsupported notifications must not format a preview"));
     notifier.clearAll();
   } finally {
     if (descriptor) Object.defineProperty(globalThis, "Notification", descriptor);

@@ -1488,7 +1488,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       if (frame.type === "message" && !isMine(message) && (message.channelId !== selected || document.visibilityState !== "visible")) {
         unread[message.channelId] = (unread[message.channelId] ?? 0) + 1;
         liveCounted.add(message.channelId);
-        notifier.notify(message, channelsById.get(message.channelId)?.name ?? "", previewOf(message));
+        notifier.notify(message, channelsById.get(message.channelId)?.name ?? "", previewOf);
       }
       scheduleChannels();
       return;

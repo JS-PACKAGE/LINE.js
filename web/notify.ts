@@ -3,8 +3,8 @@ import type { Message } from "../src/model/dto.js";
 const ENABLED_KEY = "linejs-notify";
 
 export interface Notifier {
-  /** A new message from someone else arrived. Shown only while the page is hidden and notifications are on. */
-  notify(message: Message, chatName: string, preview: string): void;
+  /** A new message from someone else arrived. Its preview is computed only when a notification can be shown. */
+  notify(message: Message, chatName: string, preview: (message: Message) => string): void;
   /** Drops what is shown for a chat once it has been read here. */
   clear(chatId: string): void;
   /** Drops all account notifications when its session ends. */
@@ -40,9 +40,9 @@ export function createNotifier(button: HTMLButtonElement, open: (chatId: string)
   refresh();
   return {
     notify(message, chatName, preview) {
-      if (!enabled() || document.visibilityState === "visible") return;
+      if (document.visibilityState === "visible" || !enabled()) return;
       const title = message.channelKind === "user" ? message.senderName : `${message.senderName}（${chatName}）`;
-      const notification = new Notification(title, { body: preview, tag: message.channelId, icon: "/icons/icon-192.png" });
+      const notification = new Notification(title, { body: preview(message), tag: message.channelId, icon: "/icons/icon-192.png" });
       notification.addEventListener("click", () => {
         window.focus();
         open(message.channelId);
