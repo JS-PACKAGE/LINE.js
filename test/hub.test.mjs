@@ -1547,7 +1547,7 @@ test("the bot endpoint stays closed unless the config enables it", async (t) => 
 test("a token is created from the page, shown once and kept only as a hash", async (t) => {
   const env = await botEnv(t);
   assert.match(env.token, /^linejs_[A-Za-z0-9_-]{43}$/);
-  const state = env.page.frames.findLast((frame) => frame.type === "api:state");
+  const state = await env.page.until((frame) => frame.type === "api:state" && frame.createdAt !== undefined);
   assert.deepEqual(state.chats, [CHAT]);
   assert.ok(Number.isSafeInteger(state.createdAt));
   const stored = await readFile(join(env.root, "api-token.json"), "utf8");
