@@ -43,6 +43,7 @@ export function parseMentions(metadata: Record<string, string> | undefined, text
     if (A) found.push({ start, end });
     else if (typeof M === "string" && MENTIONED_MID.test(M)) found.push({ start, end, userId: M });
   }
+  if (found.length < 2) return found;
   found.sort((a, b) => a.start - b.start);
   let kept = 0;
   let lastEnd = 0;

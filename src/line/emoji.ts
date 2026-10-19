@@ -31,6 +31,7 @@ export function parseEmojis(metadata: Record<string, string> | undefined, text: 
     if (typeof productId !== "string" || !PRODUCT_ID.test(productId) || typeof sticonId !== "string" || !STICON_ID.test(sticonId)) continue;
     found.push({ start, end, emojiId: `emoji-${productId}-${sticonId}` });
   }
+  if (found.length < 2) return found;
   found.sort((a, b) => a.start - b.start);
   let kept = 0;
   let lastEnd = 0;
