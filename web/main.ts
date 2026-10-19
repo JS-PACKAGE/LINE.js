@@ -342,7 +342,7 @@ function renderChannels(): void {
   }
   const keyword = filter.value.trim().toLocaleLowerCase();
   const inTab = channels.filter((channel) => (tab === "friends" ? channel.kind === "user" : hasConversation(channel)));
-  const visible = inTab.filter((channel) => channel.name.toLocaleLowerCase().includes(keyword));
+  const visible = keyword ? inTab.filter((channel) => channel.name.toLocaleLowerCase().includes(keyword)) : inTab;
   // Conversations are ordered by activity (see sortChannels); the friend list reads alphabetically.
   if (tab === "friends") visible.sort((a, b) => friendOrder.compare(a.name, b.name));
   const day = new Date().toDateString();
