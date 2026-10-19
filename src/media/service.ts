@@ -207,9 +207,10 @@ export function isUploadId(id: string): boolean {
 
 /** Trusts file contents, not the client's Content-Type: only formats LINE displays are accepted. */
 export function sniffImage(bytes: Buffer): "image/png" | "image/jpeg" | "image/gif" | undefined {
-  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  // Read fixed signatures in place, without temporary Buffer views or decoded strings.
+  if (bytes.length >= 8 && bytes.readUInt32BE(0) === 0x89504e47 && bytes.readUInt32BE(4) === 0x0d0a1a0a) return "image/png";
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
-  if (bytes.length >= 6 && (bytes.subarray(0, 6).toString("latin1") === "GIF87a" || bytes.subarray(0, 6).toString("latin1") === "GIF89a")) return "image/gif";
+  if (bytes.length >= 6 && bytes.readUInt32BE(0) === 0x47494638 && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61) return "image/gif";
   return undefined;
 }
 

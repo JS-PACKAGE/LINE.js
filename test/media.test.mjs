@@ -119,6 +119,26 @@ test("received media is typed from its bytes, and anything that could carry scri
   }
 });
 
+test("image signatures respect sliced storage and reject truncated or corrupted headers", () => {
+  const signatures = [
+    { bytes: Buffer.from("89504e470d0a1a0a", "hex"), mime: "image/png" },
+    { bytes: Buffer.from("ffd8ff", "hex"), mime: "image/jpeg" },
+    { bytes: Buffer.from("GIF87a"), mime: "image/gif" },
+    { bytes: Buffer.from("GIF89a"), mime: "image/gif" },
+  ];
+  for (const { bytes, mime } of signatures) {
+    const envelope = Buffer.concat([Buffer.from("prefix"), bytes, Buffer.from("suffix")]);
+    const view = envelope.subarray(6, 6 + bytes.length);
+    assert.equal(sniffUpload(view), mime);
+    for (let end = 0; end < view.length; end++) assert.equal(sniffUpload(view.subarray(0, end)), undefined);
+    for (let index = 0; index < view.length; index++) {
+      const corrupted = Buffer.from(view);
+      corrupted[index] ^= 0x80;
+      assert.equal(sniffUpload(corrupted), undefined);
+    }
+  }
+});
+
 test("a hit is served from memory; the animated variant is requested separately", async () => {
   const upstream = source();
   const media = new MediaService(1000, upstream);
