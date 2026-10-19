@@ -43,6 +43,8 @@ footer { color: #667c73; font-size: 12px; line-height: 1.7; }
 #filter { margin: 12px 16px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: transparent; color: inherit; font: inherit; }
 #channels { list-style: none; margin: 0; padding: 0 8px 12px; overflow-y: auto; flex: 1; }
 #channels li { position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr); column-gap: 12px; row-gap: 2px; align-items: center; padding: 8px 44px 8px 12px; border-radius: 10px; cursor: pointer; }
+/* Keep native focus/search behavior while skipping offscreen row contents; remember measured heights. */
+#channels li { content-visibility: auto; contain-intrinsic-block-size: auto 43px; }
 #channels li .avatar { grid-row: 1 / span 2; }
 #channels li:hover { background: var(--soft); }
 #channels li[aria-selected="true"] { background: #cfeadc; }

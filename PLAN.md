@@ -198,6 +198,8 @@
 
 > 列表 DOM 完全相同時先依節點身分與順序確認後返回，省去 Set 與 childNodes 陣列；有增刪／排序時仍走原本 reconciliation，保持媒體節點身分。Chromium 5,000 節點、每輪 100 次、7 輪中位數，由約 44.1ms 降至 6.4ms（只量測不變列表）。typecheck／build 通過，實際函式以 11 組空列表、混合節點、增刪及排序案例確認結果，不變列表為零 childList mutation；正式網頁亦確認 100 則隔離即時訊息引發頻道重排、訊息開啟、搜尋刪減及還原，已截圖。
 
+> 長頻道列表採原生 `content-visibility: auto`，只略過離屏列的內容 layout／paint，保留全部 DOM 與原有鍵盤、搜尋流程；以估計高度佔位，瀏覽器記住實際高度，首次顯示不同字型／好友列時可調整捲動範圍。不支援的瀏覽器維持原本呈現。Chromium 5,000 列、每輪 20 次寬度切換、7 輪中位數約 613.6ms → 123.2ms；正式建置頁確認初始僅 30 列內容需呈現，5,000 聊天／5,000 好友的離屏 focus＋Enter、捲至底部、搜尋及 390px 視窗均已操作／截圖，瀏覽器文字搜尋仍能找到離屏名稱。build 通過；未實測 Safari／Firefox，也未宣稱整頁載入時間。語義依 [MDN content-visibility](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/content-visibility)。
+
 ### Server → Client
 
 | type | 負載 |
