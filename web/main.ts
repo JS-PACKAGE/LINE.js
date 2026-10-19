@@ -1463,7 +1463,8 @@ async function handle(frame: ServerFrame): Promise<void> {
       if (index < 0) channels.push(frame.channel);
       else channels[index] = frame.channel;
       channelsById.set(frame.channel.channelId, frame.channel);
-      channelOrderDirty = true;
+      channelOrderDirty ||= !previous || previous.name !== frame.channel.name
+        || (previous.lastMessageAt ?? 0) !== (frame.channel.lastMessageAt ?? 0);
       applyUnread(frame.channel);
       scheduleChannels();
       return;
