@@ -91,10 +91,11 @@ retentionNote.role = "status";
 messageList.parentElement!.before(retentionNote);
 
 function updateRetentionNote(): void {
-  retentionNote.textContent = `只搜尋目前保留訊息：每聊天室最多 ${CHAT_MESSAGE_LIMIT} 則、全部最多 ${TOTAL_MESSAGE_LIMIT.toLocaleString()} 則；目前 ${retainedCount.toLocaleString()} 則。` +
+  const text = `只搜尋目前保留訊息：每聊天室最多 ${CHAT_MESSAGE_LIMIT} 則、全部最多 ${TOTAL_MESSAGE_LIMIT.toLocaleString()} 則；目前 ${retainedCount.toLocaleString()} 則。` +
     (evictedCount ? `已移出 ${evictedCount.toLocaleString()} 則；較早訊息可向上載入，回到聊天室會重新載入最新訊息。` : "較早訊息可向上載入。") +
     (selected && trimmedNewer.has(selected) ? "目前閱讀歷史窗口；按「最新訊息」返回。" : "") +
     "引用跳轉與提及候選僅涵蓋目前保留範圍。";
+  if (retentionNote.textContent !== text) retentionNote.textContent = text;
 }
 
 function indexMessages(list: readonly Message[]): Map<string, number> {
