@@ -441,8 +441,8 @@ export class EvexLineProvider implements LineProvider {
       if (response.status === 404 || response.status === 403) continue;
       if (!response.ok) throw new Error("STICKER_FETCH_FAILED");
       if (!response.headers.get("content-type")?.startsWith("image/png")) throw new Error("STICKER_BAD_TYPE");
-      const bytes = Buffer.from(await response.arrayBuffer());
-      if (bytes.length === 0 || bytes.length > STICKER_MAX_BYTES) throw new Error("STICKER_BAD_SIZE");
+      const bytes = await this.readMediaBytes(response, STICKER_MAX_BYTES);
+      if (!bytes || bytes.length === 0) throw new Error("STICKER_BAD_SIZE");
       return { mime: "image/png", bytes };
     }
     return undefined;
@@ -457,9 +457,9 @@ export class EvexLineProvider implements LineProvider {
     const response = await fetch(`${origin}/${hash}${full ? "" : "/preview"}`, { signal: AbortSignal.timeout(STICKER_TIMEOUT_MS), redirect: "error" });
     if (response.status === 404 || response.status === 403) return undefined;
     if (!response.ok) throw new Error("AVATAR_FETCH_FAILED");
-    const bytes = Buffer.from(await response.arrayBuffer());
-    const mime = sniffImage(bytes);
-    if (!mime || bytes.length > STICKER_MAX_BYTES) throw new Error("AVATAR_BAD_CONTENT");
+    const bytes = await this.readMediaBytes(response, STICKER_MAX_BYTES);
+    const mime = bytes && sniffImage(bytes);
+    if (!bytes || !mime) throw new Error("AVATAR_BAD_CONTENT");
     return { mime, bytes };
   }
 
@@ -471,9 +471,9 @@ export class EvexLineProvider implements LineProvider {
       });
       if (response.status === 404 || response.status === 403) continue;
       if (!response.ok) throw new Error("STICKER_PACK_FETCH_FAILED");
-      const bytes = Buffer.from(await response.arrayBuffer());
-      const mime = sniffImage(bytes);
-      if (!mime || bytes.length > STICKER_MAX_BYTES) throw new Error("STICKER_PACK_BAD_CONTENT");
+      const bytes = await this.readMediaBytes(response, STICKER_MAX_BYTES);
+      const mime = bytes && sniffImage(bytes);
+      if (!bytes || !mime) throw new Error("STICKER_PACK_BAD_CONTENT");
       return { mime, bytes };
     }
     return undefined;
@@ -487,8 +487,8 @@ export class EvexLineProvider implements LineProvider {
     });
     if (response.status === 404 || response.status === 403) return undefined;
     if (!response.ok) throw new Error("EMOJI_FETCH_FAILED");
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (sniffImage(bytes) !== "image/png" || bytes.length > STICKER_MAX_BYTES) throw new Error("EMOJI_BAD_CONTENT");
+    const bytes = await this.readMediaBytes(response, STICKER_MAX_BYTES);
+    if (!bytes || sniffImage(bytes) !== "image/png") throw new Error("EMOJI_BAD_CONTENT");
     return { mime: "image/png", bytes };
   }
 
@@ -593,7 +593,12 @@ export class EvexLineProvider implements LineProvider {
     });
     if (response.status === 404 || response.status === 403 || response.status === 410) return undefined;
     if (!response.ok) throw new Error("MEDIA_FETCH_FAILED");
-    if (Number(response.headers.get("content-length")) > this.downloadMaxBytes || !response.body) {
+    return this.readMediaBytes(response, this.downloadMaxBytes);
+  }
+
+  /** Stop oversized CDN and authenticated media bodies before buffering the rest. */
+  private async readMediaBytes(response: Response, maxBytes: number): Promise<Buffer | undefined> {
+    if (Number(response.headers.get("content-length")) > maxBytes || !response.body) {
       await response.body?.cancel();
       return undefined;
     }
@@ -602,7 +607,7 @@ export class EvexLineProvider implements LineProvider {
     let total = 0;
     for (let part = await reader.read(); !part.done; part = await reader.read()) {
       total += part.value.length;
-      if (total > this.downloadMaxBytes) {
+      if (total > maxBytes) {
         await reader.cancel();
         return undefined;
       }

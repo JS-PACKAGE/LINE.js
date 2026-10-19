@@ -1221,6 +1221,52 @@ test("plain media preserves exact single-chunk slices and enforces actual stream
   await provider.close();
 });
 
+test("CDN images stop oversized bodies early but accept the exact byte limit", async (t) => {
+  const provider = new EvexLineProvider({}, "DESKTOPWIN", {});
+  const limit = 2 * 1024 * 1024;
+  const chunk = Buffer.alloc(64 * 1024);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(chunk);
+  for (const [method, args, code] of [
+    ["fetchSticker", ["1", false], "STICKER_BAD_SIZE"],
+    ["fetchAvatar", ["profile", "abcdefgh", false], "AVATAR_BAD_CONTENT"],
+    ["fetchStickerPack", ["1"], "STICKER_PACK_BAD_CONTENT"],
+    ["fetchEmoji", ["a".repeat(24), "1"], "EMOJI_BAD_CONTENT"],
+  ]) {
+    await t.test(method, async (t) => {
+      let response;
+      t.mock.method(globalThis, "fetch", async () => response);
+      for (const declared of [limit + 1, limit, undefined]) {
+        let received = 0;
+        let cancelled = false;
+        response = new Response(new ReadableStream({
+          pull(controller) {
+            if (received === limit * 2) return controller.close();
+            received += chunk.length;
+            controller.enqueue(chunk);
+          },
+          cancel() { cancelled = true; },
+        }, { highWaterMark: 0 }), { headers: {
+          "content-type": "image/png",
+          ...(declared === undefined ? {} : { "content-length": String(declared) }),
+        } });
+        await assert.rejects(provider[method](...args), { message: code });
+        assert.equal(cancelled, true, "rejected bodies must release the upstream stream");
+        if (declared > limit) assert.equal(received, 0, "declared oversize is rejected before consumption");
+        else assert.ok(received <= limit + chunk.length, "missing or understated lengths cannot bypass the streaming cap");
+      }
+
+      const bytes = Buffer.alloc(limit);
+      chunk.copy(bytes);
+      response = new Response(bytes, { headers: { "content-type": "image/png", "content-length": String(limit) } });
+      const media = await provider[method](...args);
+      assert.equal(media.mime, "image/png");
+      assert.deepEqual(media.bytes, bytes);
+      response = new Response(null, { headers: { "content-type": "image/png" } });
+      await assert.rejects(provider[method](...args), { message: code });
+    });
+  }
+});
+
 test("OpenChat history member lookups retain the 100-member cap and share the global request bound", async () => {
   let calls = 0;
   let active = 0;
