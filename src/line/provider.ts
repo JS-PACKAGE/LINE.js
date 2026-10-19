@@ -1102,7 +1102,7 @@ export class EvexLineProvider implements LineProvider {
       // OpenChat has no cancel call: MessageReactionType UNDO takes the reaction back.
       await client.base.square.reactToMessage({ request: { reqSeq, squareChatMid: channel.channelId, messageId, reactionType: kind ?? "UNDO" } });
       if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
-      const message = this.squareCache.get(channel.channelId)?.messages.find((entry) => entry.messageId === messageId);
+      const message = this.squareCache.get(channel.channelId)?.byId.get(messageId);
       if (message && !message.unsent) {
         this.updateSquareMessage(channel.channelId, messageId, {
           reactions: withMyReaction(message.reactions, kind),

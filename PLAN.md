@@ -200,6 +200,8 @@
 
 > 長頻道列表採原生 `content-visibility: auto`，只略過離屏列的內容 layout／paint，保留全部 DOM 與原有鍵盤、搜尋流程；以估計高度佔位，瀏覽器記住實際高度，首次顯示不同字型／好友列時可調整捲動範圍。不支援的瀏覽器維持原本呈現。Chromium 5,000 列、每輪 20 次寬度切換、7 輪中位數約 613.6ms → 123.2ms；正式建置頁確認初始僅 30 列內容需呈現，5,000 聊天／5,000 好友的離屏 focus＋Enter、捲至底部、搜尋及 390px 視窗均已操作／截圖，瀏覽器文字搜尋仍能找到離屏名稱。build 通過；未實測 Safari／Firefox，也未宣稱整頁載入時間。語義依 [MDN content-visibility](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/content-visibility)。
 
+> OpenChat 自己的反應更新直接查既有 `byId` 索引，不再額外線性掃描最多 5,000 則歷史；索引本就隨增刪、收回及快取重建同步維護。隔離上游、實際 adapter 7 輪各 10,000 次反應切換，中位數約 89.2ms → 3.2ms；確認加入／取消反應、未知訊息、已收回訊息及陣列／索引一致。typecheck、build 與 314 項測試通過；此為本機處理成本，不含真實 LINE 往返，未宣稱外部 API 延遲改善。
+
 ### Server → Client
 
 | type | 負載 |
