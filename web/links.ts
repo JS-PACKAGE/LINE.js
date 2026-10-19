@@ -2,18 +2,37 @@ export type TextPart = { text: string; url?: undefined } | { text: string; url: 
 
 // ASCII only: CJK text often sits right against a URL without a space.
 const URL_PATTERN = /https?:\/\/[^\s<>"'`\u0080-\uffff]+/gi;
-const TRAILING = /[.,;:!?]+$/;
+const TRAILING = ".,;:!?";
 
 /** Drops sentence punctuation and unbalanced closing brackets that were not part of the address. */
 function trimUrl(raw: string): string {
-  let url = raw;
-  for (;;) {
-    const cut = url.replace(TRAILING, "");
-    const last = cut.at(-1);
-    const open = last === ")" ? "(" : last === "]" ? "[" : last === "}" ? "{" : undefined;
-    if (open && cut.split(last!).length > cut.split(open).length) url = cut.slice(0, -1);
-    else return cut;
+  let end = raw.length;
+  while (end > 0 && TRAILING.includes(raw[end - 1]!)) end--;
+  const last = raw[end - 1];
+  if (last !== ")" && last !== "]" && last !== "}") return raw.slice(0, end);
+  // Count once: repeatedly splitting long runs of closing brackets would be quadratic.
+  let round = 0;
+  let square = 0;
+  let curly = 0;
+  for (let i = 0; i < end; i++) {
+    switch (raw[i]) {
+      case "(": round--; break;
+      case ")": round++; break;
+      case "[": square--; break;
+      case "]": square++; break;
+      case "{": curly--; break;
+      case "}": curly++; break;
+    }
   }
+  while (end > 0) {
+    const last = raw[end - 1]!;
+    if (last === ")" && round > 0) round--;
+    else if (last === "]" && square > 0) square--;
+    else if (last === "}" && curly > 0) curly--;
+    else if (!TRAILING.includes(last)) break;
+    end--;
+  }
+  return raw.slice(0, end);
 }
 
 /** Splits plain text into text runs and http(s) links. Anything `URL` rejects stays text. */
