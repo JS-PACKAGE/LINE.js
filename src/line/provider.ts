@@ -1086,7 +1086,9 @@ export class EvexLineProvider implements LineProvider {
     } catch (error) {
       if (!String((error as { data?: { code?: unknown } } | undefined)?.data?.code ?? "").includes("E2EE")) throw error;
     }
+    if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
     const chunks = await client.base.e2ee.encryptE2EEMessage(to, { ...contentMetadata, text }, "NONE");
+    if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
     return client.base.talk.sendMessage({
       to, contentType: "NONE", chunks, e2ee: true, ...reply,
       contentMetadata: { ...contentMetadata, e2eeVersion: "2", contentType: "0", e2eeMark: "2" },

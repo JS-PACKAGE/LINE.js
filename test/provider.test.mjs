@@ -606,6 +606,64 @@ test("a tag in an end-to-end encrypted chat travels inside the encrypted payload
   assert.equal(sealed.length, 1, "only an E2EE refusal leads to encrypting");
 });
 
+test("obsolete encrypted sends cannot start another retry or overwrite the replacement account's sequence", async (t) => {
+  for (const phase of ["refusal", "encryption"]) {
+    await t.test(phase, async () => {
+      const gate = Promise.withResolvers();
+      const started = Promise.withResolvers();
+      const values = new Map();
+      const storage = {
+        async get(key) { return values.get(key); },
+        async set(key, value) { values.set(key, value); },
+        async flush() {},
+        async clear() { values.clear(); },
+      };
+      const provider = new EvexLineProvider(storage, "DESKTOPWIN", {
+        onMessage() {}, onRead() {}, onStatus() {}, onError() {},
+      }, async () => { throw new Error("unexpected network request"); });
+      provider.listen = () => {};
+      const base = provider.createBase();
+      base.profile = { mid: ME, displayName: "舊帳號" };
+      base.reqseqs = { talk: 40 };
+      base.auth.logoutZ = async () => {};
+      base.request.requestCore = async () => {
+        if (phase === "refusal") { started.resolve(); await gate.promise; }
+        throw Object.assign(new Error("e2ee required"), { data: { code: "E2EE_UPDATE_SENDER_KEY" } });
+      };
+      let encryptions = 0;
+      base.e2ee.encryptE2EEMessage = async () => {
+        encryptions += 1;
+        if (phase === "encryption") { started.resolve(); await gate.promise; }
+        return [Buffer.from("isolated ciphertext")];
+      };
+      await provider.activate(base);
+      const channel = { channelId: GROUP_A, kind: "group" };
+      const sending = provider.sendText(channel, "舊訊息").then(() => undefined, (error) => error);
+      try {
+        await started.promise;
+        await provider.logout();
+        const replacement = provider.createBase();
+        replacement.profile = { mid: mid(9000), displayName: "新帳號" };
+        replacement.reqseqs = { talk: 800 };
+        replacement.request.requestCore = async () => ({ data: { success: talk("1001", GROUP_A, mid(9000), "新訊息").raw } });
+        await provider.activate(replacement);
+        const message = await provider.sendText(channel, "新訊息");
+        assert.equal(message.senderId, mid(9000));
+        assert.equal(JSON.parse(values.get("reqseq")).talk, 801);
+        gate.resolve();
+        const error = await sending;
+        assert.equal(JSON.parse(values.get("reqseq")).talk, 801, "an old retry must not persist its stale sequence");
+        assert.equal(error?.message, "NOT_AUTHENTICATED");
+        assert.equal(encryptions, phase === "refusal" ? 0 : 1);
+      } finally {
+        gate.resolve();
+        await sending;
+        await provider.close();
+      }
+    });
+  }
+});
+
 test("taking back calls talk or OpenChat unsend the way linejs' own unsend() does, and the media goes with it", async () => {
   const calls = [];
   const base = fakeBase({
