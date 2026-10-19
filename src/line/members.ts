@@ -32,7 +32,9 @@ export function parseMentions(metadata: Record<string, string> | undefined, text
   }
   if (!Array.isArray(list)) return [];
   const found: TextMention[] = [];
-  for (const entry of list.slice(0, MAX_RECEIVED_MENTIONS) as unknown[]) {
+  const count = Math.min(list.length, MAX_RECEIVED_MENTIONS);
+  for (let index = 0; index < count; index++) {
+    const entry: unknown = list[index];
     if (!entry || typeof entry !== "object") continue;
     const { S, E, M, A } = entry as Record<string, unknown>;
     const start = Number(S);
@@ -42,9 +44,15 @@ export function parseMentions(metadata: Record<string, string> | undefined, text
     else if (typeof M === "string" && MENTIONED_MID.test(M)) found.push({ start, end, userId: M });
   }
   found.sort((a, b) => a.start - b.start);
-  const kept: TextMention[] = [];
-  for (const mention of found) if (mention.start >= (kept.at(-1)?.end ?? 0)) kept.push(mention);
-  return kept;
+  let kept = 0;
+  let lastEnd = 0;
+  for (const mention of found) {
+    if (mention.start < lastEnd) continue;
+    found[kept++] = mention;
+    lastEnd = mention.end;
+  }
+  found.length = kept;
+  return found;
 }
 
 /** The message a reply answers, or undefined when this message is not a reply. */

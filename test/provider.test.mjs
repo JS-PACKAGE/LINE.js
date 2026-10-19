@@ -427,6 +427,36 @@ test("LINE emoji in a received text keep their ranges and picture ids; odd ids, 
   assert.equal(received[1].message.text, "(emoji)");
 });
 
+test("received decoration limits count invalid entries and retain the first same-start range", async () => {
+  const { received, emit } = await activeProvider(fakeBase());
+  const text = "😀@甲 @All (甲)(乙)(丙) @乙";
+  const productId = "5ac1bfd5040ab15980c9b435";
+  const mentions = Array(101).fill(null);
+  mentions[1] = { S: "2", E: "4", M: ME };
+  mentions[2] = { S: "2", E: "3", M: mid(3) };
+  mentions[99] = { S: "5", E: "9", A: "1" };
+  mentions[100] = { S: "20", E: "22", M: mid(4) };
+  const emojis = Array(201).fill(null);
+  emojis[1] = { S: 10, E: 13, productId, sticonId: "001" };
+  emojis[2] = { S: 10, E: 11, productId, sticonId: "002" };
+  emojis[199] = { S: 13, E: 16, productId, sticonId: "003" };
+  emojis[200] = { S: 16, E: 19, productId, sticonId: "004" };
+  emit("message", talk("813", GROUP_A, mid(2), text, { contentMetadata: {
+    MENTION: JSON.stringify({ MENTIONEES: mentions }),
+    REPLACE: JSON.stringify({ sticon: { resources: emojis } }),
+  } }));
+  await settle();
+  assert.equal(received[0].message.text, text);
+  assert.deepEqual(received[0].message.mentions, [
+    { start: 2, end: 4, userId: ME },
+    { start: 5, end: 9 },
+  ]);
+  assert.deepEqual(received[0].message.emojis, [
+    { start: 10, end: 13, emojiId: `emoji-${productId}-001` },
+    { start: 13, end: 16, emojiId: `emoji-${productId}-003` },
+  ]);
+});
+
 test("a location sent with a numeric content type arrives named, with its card and without text", async () => {
   const { received, emit } = await activeProvider(fakeBase());
   emit("message", talk("901", GROUP_A, mid(2), undefined, { contentType: 15, location: { title: "公司", address: "台北市", latitude: 25.03, longitude: 121.56 } }));
