@@ -452,8 +452,13 @@ const CONTINUE_WITHIN_MS = 5 * 60_000;
 
 // True while the reader is at the newest message; media that finishes loading then keeps it in view.
 let pinnedToBottom = true;
+let mediaPinFrame: number | undefined;
 function keepPinned(): void {
-  if (!searching && pinnedToBottom) messageList.scrollTop = messageList.scrollHeight;
+  if (!signedIn || searching || !pinnedToBottom || mediaPinFrame !== undefined) return;
+  mediaPinFrame = requestAnimationFrame(() => {
+    mediaPinFrame = undefined;
+    if (signedIn && !searching && pinnedToBottom) messageList.scrollTop = messageList.scrollHeight;
+  });
 }
 
 // "↓ 最新訊息" while the reader is away from the newest line; counts what arrived below meanwhile.
@@ -483,7 +488,7 @@ function scrollToLatest(): void {
   pinnedToBottom = true;
   if (messageFrame !== undefined) pendingAnchor = "bottom";
   messageList.scrollTop = messageList.scrollHeight;
-  requestAnimationFrame(keepPinned);
+  keepPinned();
 }
 
 /**
