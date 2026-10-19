@@ -1497,7 +1497,8 @@ async function handle(frame: ServerFrame): Promise<void> {
         entry.message = list[index]!;
         if (frame.reactions) entry.node.querySelector(".message-main")?.append(reactionsNode(entry.message, frame.reactions));
       }
-      if (frame.chatId === selected || searching) renderMessages("keep");
+      // Search omits reaction/read chips; retain their state without rescanning cached messages.
+      if (!searching && frame.chatId === selected) renderMessages("keep");
       return;
     }
     case "messages":
@@ -1518,7 +1519,7 @@ async function handle(frame: ServerFrame): Promise<void> {
           sortedReadPositions.delete(known);
         }
       }
-      if (frame.chatId === selected) renderMessages("keep");
+      if (!searching && frame.chatId === selected) renderMessages("keep");
       return;
     }
     case "sent": {
