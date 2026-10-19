@@ -355,7 +355,6 @@ const friendOrder = new Intl.Collator("zh-TW");
 function renderChannels(): void {
   if (channelOrderDirty) {
     sortChannels();
-    orderedFriends = undefined;
     channelOrderDirty = false;
   }
   const keyword = filter.value.trim().toLocaleLowerCase();
@@ -1439,6 +1438,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       return;
     case "channels":
       channels = frame.channels;
+      orderedFriends = undefined;
       channelOrderDirty = true;
       channelsById.clear();
       for (const channel of channels) {
@@ -1457,6 +1457,8 @@ async function handle(frame: ServerFrame): Promise<void> {
     case "channel": {
       // Update data and unread state now; activity ordering joins the next channel render.
       const previous = channelsById.get(frame.channel.channelId);
+      // Group activity does not change the alphabetical friend list.
+      if (previous?.kind === "user" || frame.channel.kind === "user") orderedFriends = undefined;
       const index = previous ? channels.indexOf(previous) : -1;
       if (index < 0) channels.push(frame.channel);
       else channels[index] = frame.channel;
