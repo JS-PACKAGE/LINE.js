@@ -938,6 +938,14 @@ function messageNode(message: Message, continued: boolean, quoted: Message | und
  * attached, so a playing video or voice message keeps playing and loaded pictures are not reloaded.
  */
 function reconcile(parent: HTMLElement, nodes: readonly Node[]): void {
+  let current = parent.firstChild;
+  let matched = 0;
+  while (current !== null && matched < nodes.length && nodes[matched] === current) {
+    current = current.nextSibling;
+    matched++;
+  }
+  if (matched === nodes.length && current === null) return;
+
   const keep = new Set(nodes);
   for (const child of [...parent.childNodes]) if (!keep.has(child)) child.remove();
   let cursor = parent.firstChild;
