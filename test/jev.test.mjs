@@ -45,8 +45,19 @@ test("no readable probability means no result (fail-closed); an unknown tactic i
 });
 
 test("an HTTP failure reports the status only, never the response body or the token", async () => {
-  const client = new JevClient({ token: "ts_secret", model: "m", fetchImpl: async () => json({ error: "invalid key ts_secret" }, 401) });
+  let consumed = 0;
+  let cancelled = false;
+  const body = new ReadableStream({
+    pull(controller) { consumed++; controller.enqueue(Buffer.from('{"error":"invalid key ts_secret"}')); },
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 });
+  const client = new JevClient({ token: "ts_secret", model: "m", fetchImpl: async () => new Response(body, { status: 401 }) });
   await assert.rejects(client.analyzeScam("x"), (error) => error.message === "status 401");
+  assert.equal(consumed, 0);
+  assert.equal(cancelled, true);
+  const failedBody = new ReadableStream({ start(controller) { controller.error(new Error("invalid key ts_secret")); } });
+  const failed = new JevClient({ token: "ts_secret", model: "m", fetchImpl: async () => new Response(failedBody, { status: 401 }) });
+  await assert.rejects(failed.analyzeScam("x"), (error) => error.message === "status 401");
   const huge = new JevClient({ token: "t", model: "m", fetchImpl: async () => new Response("x".repeat(70 * 1024)) });
   await assert.rejects(huge.analyzeScam("x"), /size/);
 });

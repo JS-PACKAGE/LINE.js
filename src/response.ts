@@ -22,3 +22,12 @@ export async function readResponseText(response: Response, maxChars: number): Pr
     reader.releaseLock();
   }
 }
+
+/** Discard an unread body without replacing the status-based error or fallback if the stream has already failed. */
+export async function discardResponse(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Cleanup failure is secondary to the response status; it must not expose an upstream body error.
+  }
+}

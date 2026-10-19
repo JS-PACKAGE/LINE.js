@@ -1,5 +1,5 @@
 import { isNewer, parseVersion } from "./version.js";
-import { readResponseText } from "../response.js";
+import { discardResponse, readResponseText } from "../response.js";
 
 export interface UpdateInfo {
   /** Newest published release, without a leading `v`. */
@@ -95,12 +95,15 @@ export class UpdateChecker {
       signal: AbortSignal.timeout(this.timeoutMs),
       redirect: "error",
     });
-    // A repository that has not published a release yet is a normal state, not an error.
-    if (response.status === 404) return undefined;
-    if (!response.ok) throw new Error("status");
+    if (!response.ok) {
+      await discardResponse(response);
+      // A repository that has not published a release yet is a normal state, not an error.
+      if (response.status === 404) return undefined;
+      throw new Error("status");
+    }
     const declared = Number(response.headers.get("content-length") ?? 0);
     if (declared > MAX_BODY_CHARS) {
-      await response.body?.cancel();
+      await discardResponse(response);
       throw new Error("size");
     }
     const text = await readResponseText(response, MAX_BODY_CHARS);

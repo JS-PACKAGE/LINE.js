@@ -5,7 +5,7 @@ import type { Message as LineMessage, SquareMessage as LineSquareMessage } from 
 import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
 import type { Channel, ChannelRef, ChatAdmin, ChatAdmins, HistoryPage, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
 import { withMyReaction } from "../model/store.js";
-import { readResponseText } from "../response.js";
+import { discardResponse, readResponseText } from "../response.js";
 import { memberRole, mentionMetadata, parseMentions, replyTarget } from "./members.js";
 import { parseEmojis } from "./emoji.js";
 import { parseCheckedOperation, parseReadOperation, parseReadRanges, parseUnsendOperation } from "./read.js";
@@ -439,9 +439,15 @@ export class EvexLineProvider implements LineProvider {
         signal: AbortSignal.timeout(STICKER_TIMEOUT_MS),
         redirect: "error",
       });
-      if (response.status === 404 || response.status === 403) continue;
-      if (!response.ok) throw new Error("STICKER_FETCH_FAILED");
-      if (!response.headers.get("content-type")?.startsWith("image/png")) throw new Error("STICKER_BAD_TYPE");
+      if (!response.ok) {
+        await discardResponse(response);
+        if (response.status === 404 || response.status === 403) continue;
+        throw new Error("STICKER_FETCH_FAILED");
+      }
+      if (!response.headers.get("content-type")?.startsWith("image/png")) {
+        await discardResponse(response);
+        throw new Error("STICKER_BAD_TYPE");
+      }
       const bytes = await this.readMediaBytes(response, STICKER_MAX_BYTES);
       if (!bytes || bytes.length === 0) throw new Error("STICKER_BAD_SIZE");
       return { mime: "image/png", bytes };
@@ -456,8 +462,11 @@ export class EvexLineProvider implements LineProvider {
   async fetchAvatar(host: AvatarHost, hash: string, full: boolean): Promise<MediaBytes | undefined> {
     const origin = host === "profile" ? "https://profile.line-scdn.net" : "https://obs.line-scdn.net";
     const response = await fetch(`${origin}/${hash}${full ? "" : "/preview"}`, { signal: AbortSignal.timeout(STICKER_TIMEOUT_MS), redirect: "error" });
-    if (response.status === 404 || response.status === 403) return undefined;
-    if (!response.ok) throw new Error("AVATAR_FETCH_FAILED");
+    if (!response.ok) {
+      await discardResponse(response);
+      if (response.status === 404 || response.status === 403) return undefined;
+      throw new Error("AVATAR_FETCH_FAILED");
+    }
     const bytes = await this.readMediaBytes(response, STICKER_MAX_BYTES);
     const mime = bytes && sniffImage(bytes);
     if (!bytes || !mime) throw new Error("AVATAR_BAD_CONTENT");
@@ -470,8 +479,11 @@ export class EvexLineProvider implements LineProvider {
         signal: AbortSignal.timeout(STICKER_TIMEOUT_MS),
         redirect: "error",
       });
-      if (response.status === 404 || response.status === 403) continue;
-      if (!response.ok) throw new Error("STICKER_PACK_FETCH_FAILED");
+      if (!response.ok) {
+        await discardResponse(response);
+        if (response.status === 404 || response.status === 403) continue;
+        throw new Error("STICKER_PACK_FETCH_FAILED");
+      }
       const bytes = await this.readMediaBytes(response, STICKER_MAX_BYTES);
       const mime = bytes && sniffImage(bytes);
       if (!bytes || !mime) throw new Error("STICKER_PACK_BAD_CONTENT");
@@ -486,8 +498,11 @@ export class EvexLineProvider implements LineProvider {
       signal: AbortSignal.timeout(STICKER_TIMEOUT_MS),
       redirect: "error",
     });
-    if (response.status === 404 || response.status === 403) return undefined;
-    if (!response.ok) throw new Error("EMOJI_FETCH_FAILED");
+    if (!response.ok) {
+      await discardResponse(response);
+      if (response.status === 404 || response.status === 403) return undefined;
+      throw new Error("EMOJI_FETCH_FAILED");
+    }
     const bytes = await this.readMediaBytes(response, STICKER_MAX_BYTES);
     if (!bytes || sniffImage(bytes) !== "image/png") throw new Error("EMOJI_BAD_CONTENT");
     return { mime: "image/png", bytes };
@@ -528,7 +543,10 @@ export class EvexLineProvider implements LineProvider {
         signal: AbortSignal.timeout(STICKER_TIMEOUT_MS),
         redirect: "error",
       });
-      if (!response.ok) return undefined;
+      if (!response.ok) {
+        await discardResponse(response);
+        return undefined;
+      }
       const text = await readResponseText(response, 1_000_000);
       return parsePackageMeta(JSON.parse(text));
     } catch {
@@ -592,8 +610,11 @@ export class EvexLineProvider implements LineProvider {
       signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
       redirect: "error",
     });
-    if (response.status === 404 || response.status === 403 || response.status === 410) return undefined;
-    if (!response.ok) throw new Error("MEDIA_FETCH_FAILED");
+    if (!response.ok) {
+      await discardResponse(response);
+      if (response.status === 404 || response.status === 403 || response.status === 410) return undefined;
+      throw new Error("MEDIA_FETCH_FAILED");
+    }
     return this.readMediaBytes(response, this.downloadMaxBytes);
   }
 

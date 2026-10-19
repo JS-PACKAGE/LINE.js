@@ -1,5 +1,5 @@
 import { SCAM_TACTICS, type ScamAnalysis, type ScamTactic } from "../model/dto.js";
-import { readResponseText } from "../response.js";
+import { discardResponse, readResponseText } from "../response.js";
 
 /** Anything that can rate a text; the hub only needs this (tests pass a fake). */
 export interface ScamAnalyzer {
@@ -74,10 +74,13 @@ export class JevClient implements ScamAnalyzer {
       // The key must never follow a redirect to some other host.
       redirect: "error",
     });
-    if (!response.ok) throw new Error(`status ${response.status}`);
+    if (!response.ok) {
+      await discardResponse(response);
+      throw new Error(`status ${response.status}`);
+    }
     const declared = Number(response.headers.get("content-length") ?? 0);
     if (declared > MAX_BODY_CHARS) {
-      await response.body?.cancel();
+      await discardResponse(response);
       throw new Error("size");
     }
     const body = await readResponseText(response, MAX_BODY_CHARS);

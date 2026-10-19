@@ -208,6 +208,8 @@
 
 > 貼圖 metadata、Jev 與 Release JSON 回應共用漸進 UTF-8 解碼，在串流中依既有 UTF-16 字數上限取消超大回應，不再先累積完整內容；原本的 Content-Length 前置檢查、模型／題目、metadata fallback 與 generic 錯誤均保留。隔離 32 MiB ASCII 串流原本無宣告時全數讀完，現在分別於 1,015,808／81,920／1,064,960 bytes 的首個超限 chunk 停止；Jev／Release 宣告超大也會取消 body。實際 HTTP 驗證三個入口提早關閉上游，並以剛好字數上限的多位元組中文 JSON 驗證正常解析，不誤改成 byte 上限。typecheck、build、325 項測試通過，新增跨 chunk BOM／多位元組／EOF 不完整 UTF-8、精確上限、取消與中斷回應不得回傳部分 JSON 的回歸。未呼叫真實 LINE、付費模型或 GitHub API；上游實際傳輸可含預取資料。
 
+> 不使用的外部 HTTP 回應（非成功狀態、貼圖錯誤 MIME、既有宣告超限）主動取消 body，不等待 runtime 回收，也不為了重用連線把無用內容全部讀完。保留 403／404／410 的缺件或替代圖流程與既有錯誤碼；body 已失敗時，清理錯誤不得取代 status 所決定的錯誤／fallback 或曝露上游訊息。32 MiB 401 上游的單次隔離 HTTP 觀察，回報錯誤當下皆只送 16 KiB，100ms 內總傳輸由 368 KiB 降至 32 KiB；不是吞吐量保證，仍可能有在途資料。另以真實 HTTP 驗證 10 種拒絕情境均取消上游（本次只送 16–32 KiB），動畫貼圖與貼圖包仍取得替代 PNG；更新 404 不誤記失敗，其他錯誤僅固定碼。typecheck、build、326 項測試通過，含替代圖前先釋放缺件回應、不得讀取錯誤 body、已失敗 body 不洩漏錯誤內容。未使用真實外部服務。
+
 ### Server → Client
 
 | type | 負載 |

@@ -1221,6 +1221,25 @@ test("plain media preserves exact single-chunk slices and enforces actual stream
   await provider.close();
 });
 
+test("animated sticker fallback releases the missing variant before downloading the static image", async (t) => {
+  const provider = new EvexLineProvider({}, "DESKTOPWIN", {});
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  let cancelled = false;
+  let consumed = 0;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (url.endsWith("/sticker_animation.png")) {
+      return new Response(new ReadableStream({
+        pull(controller) { consumed++; controller.enqueue(Buffer.alloc(1024)); },
+        cancel() { cancelled = true; },
+      }, { highWaterMark: 0 }), { status: 404 });
+    }
+    assert.equal(cancelled, true, "the unused response must be released before the fallback starts");
+    return new Response(png, { headers: { "content-type": "image/png" } });
+  });
+  assert.deepEqual(await provider.fetchSticker("1", true), { mime: "image/png", bytes: png });
+  assert.equal(consumed, 0);
+});
+
 test("CDN images stop oversized bodies early but accept the exact byte limit", async (t) => {
   const provider = new EvexLineProvider({}, "DESKTOPWIN", {});
   const limit = 2 * 1024 * 1024;
