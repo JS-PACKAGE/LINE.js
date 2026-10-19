@@ -9,8 +9,12 @@ export const CONTENT_LABEL: Record<string, string> = {
 
 /** Time of day only: the day itself is on the divider above each day's messages. */
 export function formatTime(timestamp: number): string {
-  // hourCycle h23 (not hour12:false) so midnight reads 00:xx rather than 24:xx.
-  return new Date(timestamp).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const date = new Date(timestamp);
+  const hours = date.getHours();
+  if (Number.isNaN(hours)) return "Invalid Date";
+  const minutes = date.getMinutes();
+  // Read local clock fields each time so timezone and DST changes are not cached.
+  return `${hours < 10 ? "0" : ""}${hours}:${minutes < 10 ? "0" : ""}${minutes}`;
 }
 
 function isYesterday(date: Date, today: Date): boolean {
