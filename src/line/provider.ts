@@ -1090,7 +1090,12 @@ export class EvexLineProvider implements LineProvider {
     const client = this.requireClient();
     const me = this.getProfile();
     const isVideo = media.mime.startsWith("video/");
-    const blob = new Blob([new Uint8Array(media.bytes)], { type: media.mime });
+    const bytes = media.bytes;
+    // Blob snapshots ArrayBuffer views itself; shared backing stores still need an ordinary copy.
+    const part = bytes.buffer instanceof ArrayBuffer
+      ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+      : new Uint8Array(bytes);
+    const blob = new Blob([part], { type: media.mime });
     const filename = isVideo ? `video.${media.mime === "video/quicktime" ? "mov" : "mp4"}` : `image.${media.mime === "image/png" ? "png" : media.mime === "image/gif" ? "gif" : "jpg"}`;
     // LINE shows this number as the clip length and never works it out itself.
     const durationMs = isVideo ? mp4DurationMs(media.bytes) : undefined;

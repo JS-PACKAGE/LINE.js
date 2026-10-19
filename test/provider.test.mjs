@@ -1312,3 +1312,34 @@ test("OpenChat history member lookups retain the 100-member cap and share the gl
   assert.equal(peak, 5);
   await provider.close();
 });
+
+test("media uploads exclude surrounding storage and retain their snapshot while the caller mutates the buffer", async (t) => {
+  for (const shared of [false, true]) await t.test(shared ? "shared backing store" : "ordinary backing store", async () => {
+    const backing = shared ? new SharedArrayBuffer(64) : new ArrayBuffer(64);
+    const envelope = Buffer.from(backing);
+    envelope.fill(0xa5);
+    const expected = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
+    const bytes = envelope.subarray(11, 11 + expected.length);
+    bytes.set(expected);
+    let release, started;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const uploading = new Promise((resolve) => { started = resolve; });
+    let received;
+    const base = fakeBase();
+    base.obs = {
+      async uploadObjTalk(_chat, _type, blob) {
+        started();
+        await gate;
+        received = Buffer.from(await blob.arrayBuffer());
+        return { objId: "9001" };
+      },
+    };
+    const { provider } = await activeProvider(base);
+    const pending = provider.sendMedia({ channelId: GROUP_A, kind: "group" }, { mime: "image/jpeg", bytes });
+    await Promise.race([uploading, pending]);
+    envelope.fill(0xee);
+    release();
+    await pending;
+    assert.deepEqual(received, expected);
+  });
+});
