@@ -127,6 +127,7 @@ let myUserId: string | undefined;
 // Other members' read positions per chat (last message each has read), used for "已讀" labels.
 let readPositions: Record<string, Record<string, bigint>> = {};
 const sortedReadPositions = new WeakMap<Record<string, bigint>, bigint[]>();
+let messageReadIds = new WeakMap<Message, bigint | null>();
 // OpenChat chat → the member id this account's sends came back with there (it differs from myUserId).
 let mySquareSenders: Record<string, string> = {};
 // Where the "未讀" divider sits in the chat that was just opened; dropped when switching chats.
@@ -198,6 +199,7 @@ function applyAuthState(state: AuthState): void {
     clearTimeout(readTimer);
     cancelMessageRender();
     messageDays = new WeakMap();
+    messageReadIds = new WeakMap();
     searchText = new WeakMap();
     channelSearchNames = new WeakMap();
     searchWindow.clear();
@@ -637,8 +639,13 @@ function readLabels(channelId: string, list: readonly Message[]): (string | unde
   }
   if (positions.length === 0) return [];
   return list.map((message) => {
-    if (message.senderId !== myUserId || message.channelKind === "square" || !/^\d{1,20}$/.test(message.messageId)) return undefined;
-    const id = BigInt(message.messageId);
+    if (message.senderId !== myUserId || message.channelKind === "square") return undefined;
+    let id = messageReadIds.get(message);
+    if (id === undefined) {
+      id = /^\d{1,20}$/.test(message.messageId) ? BigInt(message.messageId) : null;
+      messageReadIds.set(message, id);
+    }
+    if (id === null) return undefined;
     // First reader position at or past this message: everyone from there on has read it.
     let low = 0;
     let high = positions.length;
@@ -1404,6 +1411,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       renderedSearchQuery = undefined;
       renderedSearchHits = [];
       messageDays = new WeakMap();
+      messageReadIds = new WeakMap();
       searchText = new WeakMap();
       channelSearchNames = new WeakMap();
       messageIndices = {};
