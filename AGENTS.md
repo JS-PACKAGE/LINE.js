@@ -83,6 +83,8 @@ Gate 依 [PLAN.md](PLAN.md) 逐關驗收，不跳關；Gate 0 遠端需存在四
 
 E2EE 文字發送：linejs 3.4.2 被要求 E2EE 時的自動重試只把 `text` 加密，`MENTION` 等 metadata 只留在明文。`decryptE2EEMessage` 會把解密內容的其他欄位併回 metadata，由此推斷 LINE App 從加密內容讀取標記（尚未以真實帳號實測）。因此 adapter 以 `e2ee: false` 先送明文，被拒才自行用 `encryptE2EEMessage(to, { ...metadata, text })` 加密後送出（明文 metadata 照舊保留）；不得改回交給 linejs 重試。
 
+E2EE 群組金鑰（issue #2）：linejs 3.5.0 在 LINE 回 `NOT_FOUND`（成員變動後新世代尚未發到本裝置）時，會以 `tryRegisterE2EEGroupKey` 自行註冊群組金鑰，連解密路徑也會觸發；這可能與官方 App 建立的世代並存，使該群之後全面無法解密。adapter 於 `activate` 將其改為一律失敗（傳送失敗、訊息顯示佔位），不得恢復自行註冊。linejs 即時事件在解密失敗時會靜默丟棄訊息，adapter 包裝 `decryptE2EEMessage`，失敗時回傳原密文並標記為無法解密，讓即時訊息同樣 fail-closed 顯示佔位。
+
 LINE operation 與連線注意事項：linejs 未記載多數 operation 的參數排列，`SEND_CHAT_CHECKED`（手機已讀）只取 `param1` 且須為伺服器已知聊天室；群組／個人資料／聊天室成員變動不解析參數，只觸發節流的頻道清單重新整理（3 秒合併、最多每 30 秒一次），不得改成依參數猜測內容。頻道清單的最後一則訊息（`Channel.lastMessage`）是預覽，不登記媒體來源，不能藉此下載。WS 心跳：伺服器以協定層 Ping 每 30 秒檢查、兩輪無回應即關閉；網頁 `ping` 需 10 秒內收到 `pong`，回到前景立即探測。斷線記錄（網頁主控台、服務日誌 `WS_CLOSED`）只可含時間、close code、截短的 reason 與前後景狀態，不得含標頭、cookie 或 Token。
 
 PWA 注意事項：`web/public/sw.js` 只可快取公開靜態檔（`/`、`/assets/*`、`/icons/*`、manifest、favicon）；`/media/*`、`/ws` 與非 GET 請求絕不經手，避免私人內容在登出後殘留於 Cache Storage。新增靜態副檔名須同步 `src/http/server.ts` 的 mime 表。未讀數以 LINE 的 `unreadCount` 為準（talk `getMessageBoxes`、社群 `getSquareChatStatus`，盡力而為），連線時的訊息快照（`messages` 影格）不計未讀。
