@@ -187,6 +187,8 @@ export class EvexLineProvider implements LineProvider {
   // messages seen here, so the browser cannot use this session to probe arbitrary LINE objects.
   private mediaOrigins = new Map<string, { raw: LineMessage; square: boolean }>();
   private previewDecrypts = new Map<string, { raw: LineMessage; undecryptable: boolean }>();
+  // E2EE messages linejs could not decrypt; they stay ciphertext and become placeholders.
+  private undecryptable = new WeakSet<LineMessage>();
 
   constructor(
     private readonly storage: SessionStorage,
@@ -267,6 +269,7 @@ export class EvexLineProvider implements LineProvider {
   private async activate(base: BaseClient): Promise<void> {
     await this.storage.flush();
     if (this.stopped) throw new Error("LOGIN_STOPPED");
+    this.guardE2EE(base);
     const client = new Client(base);
     this.client = client;
     this.adminFlights.clear();
@@ -383,11 +386,32 @@ export class EvexLineProvider implements LineProvider {
   /** Fail closed: an E2EE message that cannot be decrypted stays a "cannot decrypt" placeholder, never a guess. */
   private async decryptTalk(client: Client, raw: LineMessage): Promise<{ raw: LineMessage; undecryptable: boolean }> {
     if (!raw.contentMetadata?.e2eeVersion) return { raw, undecryptable: false };
-    try {
-      return { raw: await client.base.e2ee.decryptE2EEMessage(raw), undecryptable: false };
-    } catch {
-      return { raw, undecryptable: true };
-    }
+    const decrypted = await client.base.e2ee.decryptE2EEMessage(raw);
+    return { raw: decrypted, undecryptable: this.undecryptable.has(raw) };
+  }
+
+  /**
+   * Issue #2. When LINE hands out no group key (right after a membership change, before the new
+   * generation reaches this device), linejs registers a key of its own. That generation then
+   * competes with the one the official apps create and members end up encrypting under keys
+   * this session does not hold. Creating keys is left to the official apps: here the lookup
+   * fails (a send fails, a message stays a placeholder) and LINE's own key is fetched next time.
+   *
+   * linejs decrypts live messages before emitting them and silently drops a message it cannot
+   * decrypt; returning the ciphertext instead turns it into a "cannot decrypt" placeholder.
+   */
+  private guardE2EE(base: BaseClient): void {
+    const e2ee = base.e2ee;
+    e2ee.tryRegisterE2EEGroupKey = () => Promise.reject(new Error("E2EE_GROUP_KEY_UNAVAILABLE"));
+    const decrypt = e2ee.decryptE2EEMessage.bind(e2ee);
+    e2ee.decryptE2EEMessage = async (raw) => {
+      try {
+        return await decrypt(raw);
+      } catch {
+        this.undecryptable.add(raw);
+        return raw;
+      }
+    };
   }
 
   private rememberMedia(raw: LineMessage, square: boolean): string | undefined {

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { BaseClient, InternalError } from "@evex/linejs/base";
 import { EvexLineProvider } from "../dist/line/provider.js";
 
 // The real adapter against a stand-in for linejs' BaseClient: LINE's answers are canned, the
@@ -719,6 +720,49 @@ test("talk history: an undecryptable message is a placeholder, decrypted ones ke
   assert.deepEqual(older.messages.map((message) => message.text), ["更早"]);
   assert.equal(older.hasMore, false);
   assert.deepEqual(requests, [3, 4]);
+});
+
+test("a group whose key LINE does not hand out gets no key of ours: sends fail, history and live messages are placeholders", async () => {
+  // Real linejs E2EE code; only LINE's answers are canned. Issue #2: a key registered here competes
+  // with the generation the official apps create after a membership change.
+  const values = new Map([[`e2eeKeys:${ME}`, JSON.stringify({ keyId: 7, privKey: Buffer.alloc(32, 1).toString("base64"), pubKey: Buffer.alloc(32, 2).toString("base64") })]]);
+  const base = new BaseClient({
+    device: "DESKTOPWIN",
+    storage: { async get(key) { return values.get(key); }, async set(key, value) { values.set(key, value); }, async delete(key) { values.delete(key); }, async clear() { values.clear(); }, async migrate() {} },
+  });
+  base.profile = { mid: ME, displayName: "我" };
+  const notFound = () => { throw new InternalError("RequestError", "not found", { code: "NOT_FOUND" }); };
+  const registrations = [];
+  const sends = [];
+  const keyId = (n) => Buffer.from([0, 0, 0, n]);
+  const e2ee = (id) => ({ id, to: GROUP_A, from: mid(2), toType: "GROUP", contentType: "NONE", createdTime: String(1_700_000_000_000 + Number(id)), deliveredTime: String(1_700_000_000_000 + Number(id)), contentMetadata: { e2eeVersion: "2" }, chunks: [Buffer.alloc(16), Buffer.alloc(32), Buffer.alloc(16), keyId(9), keyId(5)] });
+  Object.assign(base.talk, {
+    getE2EEGroupSharedKey: async () => notFound(),
+    getLastE2EEGroupSharedKey: async () => notFound(),
+    getLastE2EEPublicKeys: async (request) => { registrations.push(request); return {}; },
+    registerE2EEGroupKey: async (request) => { registrations.push(request); return {}; },
+    async sendMessage(request) {
+      sends.push(request);
+      throw Object.assign(new Error("e2ee required"), { data: { code: "E2EE_UPDATE_SENDER_KEY" } });
+    },
+    getContactsV2: async ({ mids }) => ({ contacts: Object.fromEntries(mids.map((m) => [m, { contact: { mid: m, displayName: "成員" } }])) }),
+    getRecentMessagesV2: async () => [e2ee("2")],
+  });
+  base.createPolling = () => ({
+    async *listenTalkEvents() { yield { type: "RECEIVE_MESSAGE", message: e2ee("3") }; },
+    async *listenSquareEvents() {},
+  });
+  const { provider, received } = await activeProvider(base);
+  const channel = { channelId: GROUP_A, kind: "group" };
+  await assert.rejects(provider.sendText(channel, "hi"));
+  assert.equal(sends.length, 1, "nothing encrypted is sent");
+  const page = await provider.fetchHistory(channel, 10);
+  assert.deepEqual(page.messages.map((message) => [message.messageId, message.decryptFailed]), [["2", true]]);
+  provider.client.listen({ talk: true, square: true });
+  await settle();
+  assert.deepEqual(received.map(({ message }) => [message.messageId, message.decryptFailed]), [["3", true]], "a live message linejs cannot decrypt is not dropped");
+  assert.deepEqual(registrations, [], "no group key is registered");
+  await provider.close();
 });
 
 test("received stickers become sticker media ids only for numeric ids; animated ones are marked", async () => {
