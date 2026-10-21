@@ -63,6 +63,7 @@
           <span id="channel-meta"></span>
           <div class="head-actions">
             <button id="search-toggle" type="button" class="ghost" aria-pressed="false" aria-controls="search-bar" aria-keyshortcuts="Control+K Meta+K" title="搜尋已載入的訊息（Ctrl／⌘＋K）">搜尋</button>
+            <button id="admin-token-toggle" type="button" class="ghost" aria-haspopup="dialog" aria-controls="admin-token-dialog" disabled>管理員權杖</button>
             <span id="listen-state" class="pill"></span>
             <button id="notify" type="button" class="ghost" aria-pressed="false">通知</button>
           </div>
@@ -125,6 +126,22 @@
         <div class="dialog-actions">
           <button id="confirm-cancel" type="button" class="ghost">取消</button>
           <button id="confirm-ok" type="button">確定</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="admin-token-dialog" aria-labelledby="admin-token-title" aria-describedby="admin-token-note">
+      <div class="dialog-body">
+        <h2 id="admin-token-title">管理員權杖</h2>
+        <p id="admin-token-channel"></p>
+        <p id="admin-token-note">此權杖僅供外部機器人驗證，一次成功使用後立即輪替；不會變更 LINE 管理員身分。具聊天室存取權的 API 也可讀取明文，請勿傳送到聊天或交給不信任的人。</p>
+        <label for="admin-token-value">目前權杖（可手動選取複製）</label>
+        <textarea id="admin-token-value" rows="3" readonly autocomplete="off" spellcheck="false" aria-describedby="admin-token-status"></textarea>
+        <p id="admin-token-status" role="status" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button id="admin-token-refresh" type="button" class="ghost">重新讀取</button>
+          <button id="admin-token-copy" type="button" disabled>複製</button>
+          <button id="admin-token-close" type="button" class="ghost" autofocus>關閉</button>
         </div>
       </div>
     </dialog>

@@ -32,6 +32,12 @@ export type ServerFrame =
   | { type: "history"; requestId: string; chatId: string; messages: Message[]; hasMore: boolean; cursor?: string }
   /** All administrators of the requested OpenChat, only to the bot connection that asked. */
   | ({ type: "chat:admins"; requestId: string; chatId: string } & ChatAdmins)
+  /** Current per-chat secret: answers a request (`requestId`), or is pushed to connected bots for allowed chats without one. */
+  | { type: "chat:admin-token"; requestId?: string; chatId: string; token: string; createdAt: number }
+  /** Successful one-time redemption; the replacement arrives separately as a pushed `chat:admin-token`. */
+  | { type: "chat:admin-token:consumed"; requestId: string; chatId: string }
+  /** Secret-free invalidation: pages refetch; bots get it when an allowed chat leaves the list. */
+  | { type: "chat:admin-token:changed"; chatId: string }
   | { type: "sent"; requestId: string; messageId: string }
   | { type: "read"; chatId: string; positions: ReadPosition[] }
   | { type: "stickers"; requestId: string; packages: StickerPackage[] }
@@ -53,6 +59,10 @@ export type ClientFrame =
   | { type: "history:fetch"; requestId: string; chatId: string; limit?: number; before?: string }
   /** Bot API only; restricted to known OpenChats in `api.chats`. */
   | { type: "chat:admins:get"; requestId: string; chatId: string }
+  /** Pages and bots; bots are restricted to known chats in `api.chats`. */
+  | { type: "chat:admin-token:get"; requestId: string; chatId: string }
+  /** Bots only: verifies and rotates the secret, without granting LINE or API permissions. */
+  | { type: "chat:admin-token:consume"; requestId: string; chatId: string; token: string }
   | { type: "message:send"; requestId: string; chatId: string; text?: string; mentions?: Mention[]; mediaId?: string; sticker?: { packageId: number; stickerId: number } }
   | { type: "chat:read"; chatId: string; messageId: string }
   /** Take back one of this account's own messages (pages only; bots cannot). */

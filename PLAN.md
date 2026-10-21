@@ -160,6 +160,8 @@
 
 > v1.18（續）：查詢成功僅授予同一機器人連線、同一聊天室以 `message:send.mentions` 標記該名單未發言管理員的權限，不寫入共享訊息快取。新查詢開始即撤銷舊授權，包含限流或後續失敗；只有最新查詢結果可授權，過期並行查詢回 `CHAT_ADMINS_FAILED`。斷線、登出／換帳號清除授權及舊結果；已顯示訊息寄件者仍依原規則可被標記。OpenChat 機器人排除自己訊息須用 `ownMemberId`，不是一般帳號 `profile.userId`。
 
+> v1.19（2026-10 小語裁示：聊天室一次性管理員權杖，協定版本仍為 2）：新增 `chat:admin-token:get { requestId, chatId }` → `chat:admin-token { requestId, chatId, token, createdAt }`。網頁從聊天室標頭「搜尋」旁的「管理員權杖」取得；小語另裁示權杖資訊必須經 `/api/ws` 告知連入的外掛：連線、登入完成、頻道清單更新與每次成功兌換後，主動推送 `api.chats` 內已知聊天室的 `chat:admin-token { chatId, token, createdAt }`（無 `requestId`），外掛也可主動查詢。每個聊天室以 32-byte 安全亂數產生 `chatadm_` 權杖，只存記憶體，登出／換帳號／重啟／聊天室移除即失效（外掛收 `chat:admin-token:changed { chatId }` 或非 `ready` 的 `auth:state`）。機器人限定 `chat:admin-token:consume { requestId, chatId, token }`：格式不合回 `INVALID_REQUEST`，錯誤或已用回 `CHAT_ADMIN_TOKEN_INVALID`；成功時同步替換為不同的新權杖、回 `chat:admin-token:consumed { requestId, chatId }`（不含新值），再把新權杖推送給所有外掛，網頁收不含祕密的 `chat:admin-token:changed` 後重新取得。成功由機器人自行決定授權，不改 LINE 管理員、不授予 API／mention 權限；因 API 可讀明文，不能證明曾使用 WEB 或具 LINE 管理員身分。
+
 > 本次驗證：typecheck、build 與 262 項測試通過；已以隔離 LINE 回應、實際 HTTP／WS Token 認證及正式 adapter 驗證 capability 握手、完整分頁、`ownMemberId`、未發言管理員的 MENTION metadata、跨連線拒絕與重新查詢撤銷。回歸測試另涵蓋聊天室／網頁隔離、空名單、失敗、限流、回應順序顛倒、斷線、登出／換帳號。尚未以真實 LINE 帳號或 NekoGuard 程序完成聯測，不宣稱通過 Gate。
 
 > 詐騙分析加速（協定版本仍為 2）：同一登入期間，網頁與 API 在完成既有資格／聊天室權限／限流驗證後，以 UTF-16 完整文字的 SHA-256 合併同內容的進行中請求，並重用成功結果（完成起有效 5 分鐘，命中不延長）；記憶體 LRU 最多 256 筆含進行中請求，不另存原文、不落盤。失敗不快取，登出／換帳號／關閉服務清除；等待期間文字變更、收回或移出訊息快取回 `INVALID_REQUEST`，舊帳號請求不得回填新快取。模型、完整文字、Noul／Choice 題目、回應格式及每分鐘限額不變，不新增自動分析或付費預熱；分析錯誤只記固定代碼。首次分析仍受真實上游及網路延遲限制。
@@ -356,7 +358,7 @@
 
 | type | 負載 |
 |---|---|
-| `hello` | `{ protocol: 2, serverVersion, capabilities? }`（僅 `/api/ws` 宣告 `capabilities: ["chat:admins"]`） |
+| `hello` | `{ protocol: 2, serverVersion, capabilities? }`（僅 `/api/ws` 宣告 `capabilities: ["chat:admins", "chat:admin-token"]`） |
 | `update:available` | `{ version, current, url }`（url 僅限本專案 GitHub Release 頁） |
 | `auth:state` | `{ state: "restoring"｜"idle"｜"authenticating"｜"ready"｜"error" }`（連線即送、變動廣播；不含祕密） |
 | `auth:qr` | `{ url }`（一次性；只送給發起 `auth:start` 的連線） |
@@ -364,6 +366,9 @@
 | `auth:ready` | `{ profile }` |
 | `profile` | `{ requestId, profile }`（回應 `profile:get`；只送給要求的連線） |
 | `chat:admins` | `{ requestId, chatId, ownMemberId, admins: ChatAdmin[] }`（只回要求的機器人連線） |
+| `chat:admin-token` | `{ requestId?, chatId, token, createdAt }`（有 `requestId`：回應要求者；無 `requestId`：主動推送給所有外掛，限 `api.chats`） |
+| `chat:admin-token:consumed` | `{ requestId, chatId }`（只回成功兌換的機器人，不含新權杖；新權杖另行推送） |
+| `chat:admin-token:changed` | `{ chatId }`（失效通知，不含祕密；網頁重新取得，外掛於 `api.chats` 聊天室移除時收到） |
 | `channels` | `{ channels: Channel[] }`（snapshot，連線即送、變動重送） |
 | `messages` | `{ chatId, messages: Message[] }`（連線時快照，同聊天室可分多個影格、依 ID 合併；舊訊息，不計未讀） |
 | `message` | `{ message: Message }`（即時新訊息） |
@@ -394,14 +399,16 @@
 | `scam:check` | `{ requestId, chatId, messageId }`（網頁每連線每分鐘 10 次；機器人限 `api.chats`、所有機器人合計每分鐘 10 次；只接受別人傳來、已顯示、未收回的文字訊息） |
 | `profile:get` | `{ requestId }`（自己的 `profile`；網頁與機器人皆可，不呼叫 LINE） |
 | `chat:admins:get` | `{ requestId, chatId }`（僅機器人 API；指定社群聊天室的全部管理員與共同管理員） |
+| `chat:admin-token:get` | `{ requestId, chatId }`（網頁可取任何已知聊天室；機器人限 `api.chats`） |
+| `chat:admin-token:consume` | `{ requestId, chatId, token }`（僅機器人；成功一次即輪替） |
 | `channels:refresh` | `{}` |
 | `api:token:create` / `api:token:revoke` | `{}`（產生或撤銷機器人 Token，並中斷所有機器人連線） |
 | `ping` | `{}` |
 
 ### 機器人 API（`/api/ws`）
 - 升級條件：`api.enabled`、**無 `Origin`**、`Authorization: Bearer linejs_…` 符合目前 Token；否則 403（同時超過 4 個連線回 429）。`Host` 不限制（同網頁）。
-- 連線時收到 `hello`、`auth:state`、`status`、`auth:ready`、僅含 `api.chats` 的 `channels`；之後只有這些聊天室的 `message`／`message:edit`。不重播、不給 `read`／`update:available`／`api:state`。
-- 可送：`message:send`（`requestId`、`chatId`、`text`、可選 `mentions`／`replyTo`；`mediaId`／`sticker` 回 `INVALID_REQUEST`）、`history:fetch`、`scam:check`（v1.16，回 `scam:result`）、`profile:get`（v1.17，回 `profile`）、`chat:admins:get`（v1.18，回 `chat:admins`）、`ping`；其餘 `UNKNOWN_TYPE`；`api.chats` 以外的聊天室回 `UNKNOWN_CHAT`。
+- 連線時收到 `hello`、`auth:state`、`status`、`auth:ready`、僅含 `api.chats` 的 `channels`，以及這些聊天室的 `chat:admin-token` 推送（v1.19）；之後只有這些聊天室的 `message`／`message:edit` 與權杖推送／失效通知。不重播、不給 `read`／`update:available`／`api:state`。
+- 可送：`message:send`（`requestId`、`chatId`、`text`、可選 `mentions`／`replyTo`；`mediaId`／`sticker` 回 `INVALID_REQUEST`）、`history:fetch`、`scam:check`（v1.16，回 `scam:result`）、`profile:get`（v1.17，回 `profile`）、`chat:admins:get`（v1.18，回 `chat:admins`）、`chat:admin-token:get`／`chat:admin-token:consume`（v1.19）、`ping`；其餘 `UNKNOWN_TYPE`；`api.chats` 以外的聊天室回 `UNKNOWN_CHAT`。
 - 限制：每連線 `limits.sendsPerSecond`，且全部機器人合計 `api.sendsPerMinute`（預設 20，≤120）。
 
 ### HTTP

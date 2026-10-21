@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
@@ -22,6 +22,7 @@ const HISTORY_PER_SECOND = 10;
 const NEW_CHANNEL_REFRESH_MS = 1000;
 const MAX_BOT_CONNECTIONS = 4;
 const READ_RANGE_FRESH_MS = 10_000;
+const CHAT_ADMIN_TOKEN = /^chatadm_[A-Za-z0-9_-]{43}$/;
 // Cache hits still consume the same request budget as paid TypeSafe calls.
 const SCAM_CHECKS_PER_MINUTE = 10;
 const SCAM_CACHE_TTL_MS = 5 * 60_000;
@@ -79,6 +80,8 @@ const GENERIC = {
   SEND_FAILED: "訊息發送失敗，請稍後重試；草稿已保留。",
   CHAT_ADMINS_UNSUPPORTED: "這個聊天室不支援查詢管理員。",
   CHAT_ADMINS_FAILED: "無法載入聊天室管理員，請稍後重試。",
+  CHAT_ADMIN_TOKEN_INVALID: "聊天室管理員權杖無效或已使用。",
+  CHAT_ADMIN_TOKEN_FAILED: "無法產生聊天室管理員權杖，請稍後重試。",
   RATE_LIMITED: "操作太頻繁，請稍後再試。",
   UNKNOWN_CHAT: "找不到這個聊天室。",
   UPLOAD_EXPIRED: "媒體已過期，請重新選擇。",
@@ -125,6 +128,9 @@ export function createHub(options: HubOptions): Hub {
   // Exact text only, shared after authorization; hashes avoid retaining another copy of private text.
   // Pending and completed entries share a bounded LRU, cleared at every account boundary.
   const scamCache = new Map<string, { result: Promise<ScamAnalysis>; expires: number }>();
+  // These plaintext secrets are account-local and never persisted, replayed or broadcast.
+  const chatAdminTokens = new Map<string, { token: string; bytes: Buffer; createdAt: number }>();
+  let chatAdminAccount: string | undefined;
   // Replay snapshots precede every later event on that socket. Only live encoded output is queued,
   // with the same byte budget as ws; cached snapshots are references, encoded one chunk at a time.
   const replays = new Map<WebSocket, {
@@ -390,6 +396,56 @@ export function createHub(options: HubOptions): Hub {
       // LINE errors can contain credentials or private member data; log only our own code.
       console.error("CHAT_ADMINS_FAILED");
       fail(socket, "CHAT_ADMINS_FAILED", requestId);
+    }
+  }
+
+  function newChatAdminToken(previous?: string): { token: string; bytes: Buffer; createdAt: number } {
+    const token = `chatadm_${randomBytes(32).toString("base64url")}`;
+    // Even an RNG failure returning repeated bytes must not leave a redeemed token usable.
+    if (token === previous) throw new Error("CHAT_ADMIN_TOKEN_FAILED");
+    return { token, bytes: Buffer.from(token), createdAt: Date.now() };
+  }
+
+  /** Owner's decision: connected plugins learn every allowed chat's current token without asking. */
+  function pushChatAdminTokens(sockets: Iterable<WebSocket>, chatIds: Iterable<string> = botScope): void {
+    if (login.state !== "ready") return;
+    const recipients = [...sockets];
+    if (recipients.length === 0) return;
+    for (const chatId of chatIds) {
+      if (!botScope.has(chatId) || !store.hasChannel(chatId)) continue;
+      let current = chatAdminTokens.get(chatId);
+      try {
+        if (!current) chatAdminTokens.set(chatId, current = newChatAdminToken());
+      } catch {
+        console.error("CHAT_ADMIN_TOKEN_FAILED");
+        continue;
+      }
+      sendEach(recipients, { type: "chat:admin-token", chatId, token: current.token, createdAt: current.createdAt });
+    }
+  }
+
+  function handleChatAdminToken(socket: WebSocket, frame: Record<string, unknown>, consume: boolean, scope?: ReadonlySet<string>): void {
+    const parsed = parseChatRequest(frame);
+    if (!parsed.ok) return fail(socket, "INVALID_REQUEST", parsed.requestId);
+    const { requestId, chatId } = parsed.value;
+    if (consume && (typeof frame.token !== "string" || !CHAT_ADMIN_TOKEN.test(frame.token))) return fail(socket, "INVALID_REQUEST", requestId);
+    if (login.state !== "ready" || !store.hasChannel(chatId) || (scope && !scope.has(chatId))) return fail(socket, "UNKNOWN_CHAT", requestId);
+    const current = chatAdminTokens.get(chatId);
+    if (consume && (!current || !timingSafeEqual(current.bytes, Buffer.from(frame.token as string)))) return fail(socket, "CHAT_ADMIN_TOKEN_INVALID", requestId);
+    try {
+      // No await between comparison and replacement: concurrent redemptions have only one winner.
+      // Generate first so RNG failure preserves the still-usable current secret.
+      const next = consume || !current ? newChatAdminToken(current?.token) : current;
+      chatAdminTokens.set(chatId, next);
+      if (consume) {
+        broadcast({ type: "chat:admin-token:changed", chatId });
+        send(socket, { type: "chat:admin-token:consumed", requestId, chatId });
+        pushChatAdminTokens(botWss.clients, [chatId]);
+      } else {
+        send(socket, { type: "chat:admin-token", requestId, chatId, token: next.token, createdAt: next.createdAt });
+      }
+    } catch {
+      fail(socket, "CHAT_ADMIN_TOKEN_FAILED", requestId);
     }
   }
 
@@ -691,7 +747,19 @@ export function createHub(options: HubOptions): Hub {
         // A logout while LINE was answering must not repopulate the cleared cache.
         if (account !== generation || login.state !== "ready") return;
         store.setChannels(channels);
+        const removed: string[] = [];
+        for (const chatId of chatAdminTokens.keys()) {
+          if (!store.hasChannel(chatId)) {
+            chatAdminTokens.delete(chatId);
+            removed.push(chatId);
+            broadcast({ type: "chat:admin-token:changed", chatId });
+          }
+        }
         broadcastChannels();
+        for (const chatId of removed) {
+          if (botScope.has(chatId)) broadcastBots({ type: "chat:admin-token:changed", chatId });
+        }
+        pushChatAdminTokens(botWss.clients);
       } catch {
         if (account !== generation) return;
         console.error("CHANNELS_FAILED");
@@ -715,6 +783,9 @@ export function createHub(options: HubOptions): Hub {
   }
 
   login.subscribe((state) => {
+    const account = state === "ready" ? provider.getProfile().userId : undefined;
+    if (account !== chatAdminAccount) chatAdminTokens.clear();
+    chatAdminAccount = account;
     if (state !== "ready") {
       // Logged out or failed: nothing from the previous account may stay in memory or on screen.
       generation += 1;
@@ -730,6 +801,7 @@ export function createHub(options: HubOptions): Hub {
       readFetches.clear();
       ownSquareSenders.clear();
       scamCache.clear();
+      chatAdminTokens.clear();
       for (const socket of botWss.clients) adminMentions.get(socket)?.clear();
       status = "starting";
     }
@@ -769,12 +841,13 @@ export function createHub(options: HubOptions): Hub {
     socket.once("close", () => grants.clear());
     const sendLimiter = new SlidingWindowLimiter(config.limits.sendsPerSecond, 1000);
     const historyLimiter = new SlidingWindowLimiter(HISTORY_PER_SECOND, 1000);
-    send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion, capabilities: ["chat:admins"] });
+    send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion, capabilities: ["chat:admins", "chat:admin-token"] });
     send(socket, { type: "auth:state", state: login.state });
     send(socket, { type: "status", state: status });
     if (login.state === "ready") {
       send(socket, { type: "auth:ready", profile: provider.getProfile() });
       send(socket, { type: "channels", channels: botChannels() });
+      pushChatAdminTokens([socket]);
     }
     // Bots start from "now": the connect-time message replay is for pages, and a bot must not re-answer old messages.
     socket.on("message", (data, isBinary) => {
@@ -790,6 +863,11 @@ export function createHub(options: HubOptions): Hub {
           return;
         case "chat:admins:get":
           void handleChatAdmins(socket, frame as Record<string, unknown>, grants, historyLimiter.allow());
+          return;
+        case "chat:admin-token:get":
+        case "chat:admin-token:consume":
+          if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else handleChatAdminToken(socket, frame as Record<string, unknown>, frame.type === "chat:admin-token:consume", botScope);
           return;
         case "message:send":
           // Both budgets: this connection's per-second one, and the all-bots per-minute one.
@@ -836,6 +914,10 @@ export function createHub(options: HubOptions): Hub {
           // Rare and sensitive: share the history budget so a script cannot churn tokens.
           if (historyLimiter.allow()) void handleApiToken(socket, frame as Record<string, unknown>, frame.type === "api:token:create");
           else fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          return;
+        case "chat:admin-token:get":
+          if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else handleChatAdminToken(socket, frame as Record<string, unknown>, false);
           return;
         case "channels:refresh":
           if (login.state === "ready") void refreshChannels();
@@ -942,6 +1024,7 @@ export function createHub(options: HubOptions): Hub {
       clearTimeout(refreshTimer);
       clearTimeout(listChangeTimer);
       scamCache.clear();
+      chatAdminTokens.clear();
       for (const socket of [...wss.clients, ...botWss.clients]) socket.close(1001);
       botWss.close();
       wss.close();

@@ -126,6 +126,8 @@ npm start
 | Client → Server | `history:fetch` / `message:send` | 載入歷史一頁／發送文字、圖片（先 `POST /media/upload`）或貼圖 |
 | Client → Server | `stickers:list` → `stickers` | 取得此帳號已擁有的貼圖包與貼圖 id |
 | Client → Server | `profile:get` → `profile` | `{ requestId }`：取得自己的 `profile`（`userId`、`displayName`、`pictureId?`，同 `auth:ready`）；只讀伺服器登入時取得的資料，不呼叫 LINE；未登入回 `INVALID_REQUEST` |
+| Client → Server | `chat:admin-token:get` → `chat:admin-token` | `{ requestId, chatId }`：取得該聊天室的一次性管理員權杖；只回要求者 `{ requestId, chatId, token, createdAt }` |
+| Server → Client | `chat:admin-token:changed` | `{ chatId }`：僅通知網頁權杖已失效，不含明文；已開啟的權杖視窗重新取得 |
 | Client → Server | `message:unsend` | `{ requestId, chatId, messageId }`：收回自己的訊息（僅網頁；伺服器只接受本帳號的訊息，與 `message:send` 共用頻率上限）；成功時廣播 `message:unsend` |
 | Client → Server | `message:react` | `{ requestId, chatId, messageId, reaction }`：`NICE`／`LOVE`／`FUN`／`AMAZING`／`SAD`／`OMG`，`null` 取消（僅網頁；只接受伺服器已顯示、未收回的訊息，與 `message:send` 共用頻率上限）；成功時廣播 `message:reactions` |
 | Client → Server | `chat:read` | 回報已讀到某則訊息（無回應；僅限伺服器已顯示過的訊息，每個位置只送一次） |
@@ -151,7 +153,7 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
      sendsPerMinute: 20          # 所有機器人合計每分鐘最多發送幾則（1～120，可省略，預設 20）
    ```
    `enabled: true` 卻沒有有效的 `chats` 時，服務啟動會直接失敗（避免「空清單＝全部」的誤會）。
-2. 產生 Token：`npm run cli -- token`（見 [CLI `token`](#token重新產生或撤銷機器人-api-token)）。Token 只顯示**一次**，伺服器只保存 SHA-256（`api-token.json`，權限 600，不入版控），之後無法再查看，忘記就重新產生。網頁沒有 Token 管理介面，只能用 CLI。
+2. 產生 API **連線用 Bearer Token**：`npm run cli -- token`（見 [CLI `token`](#token重新產生或撤銷機器人-api-token)）。Token 只顯示**一次**，伺服器只保存 SHA-256（`api-token.json`，權限 600，不入版控），之後無法再查看，忘記就重新產生。這種連線 Token 只能用 CLI 管理，與下述聊天室管理員權杖不同。
 3. 機器人連到 `ws://<host>:<port>/api/ws`（預設 `ws://127.0.0.1:3789/api/ws`），帶標頭 `Authorization: Bearer <Token>`。
 
 **連線規則**
@@ -167,18 +169,29 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 | 機器人 → 服務 | `scam:check` | `{ requestId, chatId, messageId }`：以 Jev 分析 `api.chats` 內**別人傳來**、服務已顯示（即時收到或 `history:fetch` 取得）的文字訊息；伺服器送自己快取的文字。需設定 `jev.token`（否則 `SCAM_CHECK_UNAVAILABLE`），所有機器人合計每分鐘 10 次，命中快取亦計入；只有實際上游請求依 TypeSafe 計費。成功回 `scam:result { requestId, chatId, messageId, analysis: { probability, tactic? } }` |
 | 機器人 → 服務 | `profile:get` | `{ requestId }`：隨時取得自己的 ID 與名稱，回 `profile { requestId, profile: { userId, displayName, pictureId? } }`（同 `auth:ready`；不呼叫 LINE，與 `history:fetch` 共用每連線每秒 10 次；未登入回 `INVALID_REQUEST`） |
 | 機器人 → 服務 | `chat:admins:get` | `{ requestId, chatId }`：取得指定社群聊天室的全部現任管理員與共同管理員（含未發言者）；只限 `api.chats`，與 `history:fetch`／`profile:get` 共用每連線每秒 10 次。只回要求者 `chat:admins { requestId, chatId, ownMemberId, admins: [{ userId, displayName, role, pictureId? }] }`；`role` 為 `admin`／`coAdmin`，`displayName` 是字串，`ownMemberId`（自己在該聊天室的成員 ID）與 `userId` 均符合 `/^p[A-Za-z0-9]{10,64}$/`。普通群組／私聊不支援（`CHAT_ADMINS_UNSUPPORTED`）；未登入或未知／未授權聊天室回 `UNKNOWN_CHAT`；LINE 查詢失敗、ID 不合法或分頁不完整回 `CHAT_ADMINS_FAILED`，不回部分名單。網頁 `/ws` 不提供此操作 |
+| 機器人 → 服務 | `chat:admin-token:get` | `{ requestId, chatId }`：取得 `api.chats` 內已知聊天室的明文權杖，回 `chat:admin-token { requestId, chatId, token, createdAt }` |
+| 機器人 → 服務 | `chat:admin-token:consume` | `{ requestId, chatId, token }`：成功即銷毀並替換權杖，回 `chat:admin-token:consumed { requestId, chatId }`（不含新值）；新權杖隨即以推送影格告知所有已連入外掛 |
 | 機器人 → 服務 | `ping` → `pong` | 保活；服務另以 WebSocket 協定層 Ping 每 30 秒檢查，連續兩輪未回應即斷線（一般 WebSocket 函式庫會自動回應） |
-| 服務 → 機器人 | `hello`、`auth:state`、`status` | 連線即送；`hello` 保留數字 `protocol: 2` 與 `serverVersion`，以 `capabilities: ["chat:admins"]` 宣告擴充。`auth:state` 不是 `ready`（LINE 尚未登入）時還不能收發 |
+| 服務 → 機器人 | `hello`、`auth:state`、`status` | 連線即送；`hello` 保留數字 `protocol: 2` 與 `serverVersion`，以 `capabilities: ["chat:admins", "chat:admin-token"]` 宣告擴充。`auth:state` 不是 `ready`（LINE 尚未登入）時還不能收發 |
 | 服務 → 機器人 | `auth:ready` | 含自己的 `profile.userId`，可排除一般聊天室中自己發的訊息；OpenChat 須改用 `chat:admins` 回應的 `ownMemberId` |
 | 服務 → 機器人 | `channels` | 只含 `api.chats` 內的聊天室；有變動時重送 |
+| 服務 → 機器人 | `chat:admin-token` | **主動推送**（無 `requestId`）`{ chatId, token, createdAt }`：連線時、登入完成、頻道清單更新與每次成功兌換後，推送 `api.chats` 內已知聊天室的目前權杖給所有已連入外掛 |
+| 服務 → 機器人 | `chat:admin-token:changed` | `{ chatId }`：`api.chats` 內聊天室從伺服器清單移除、權杖作廢時通知；不含明文。登出時以 `auth:state` 非 `ready` 表示全部作廢 |
 | 服務 → 機器人 | `message`、`message:edit`、`message:unsend` | 只有 `api.chats` 內聊天室的**即時**訊息、編輯與收回；包含你自己發的 |
 | 服務 → 機器人 | `sent`、`history`、`scam:result`、`profile`、`chat:admins`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`SCAM_CHECK_FAILED`、`CHAT_ADMINS_UNSUPPORTED`、`CHAT_ADMINS_FAILED`…） |
 
-其餘一律回 `UNKNOWN_TYPE`：沒有登入／登出、`chat:read`（已讀回報）、`message:unsend`（收回）、`message:react`（回應）、`channels:refresh`、貼圖清單、Token 管理。**不重播舊訊息**（機器人從「現在」開始，不會重複回應歷史；要歷史請用 `history:fetch`）；不給 `read`、`update:available`、`api:state`、`scam:state`；圖片／影片等媒體位元組也無法取得（機器人只看到訊息的 `contentType`）。
+其餘一律回 `UNKNOWN_TYPE`：沒有登入／登出、`chat:read`（已讀回報）、`message:unsend`（收回）、`message:react`（回應）、`channels:refresh`、貼圖清單、API 連線 Bearer Token 管理。**不重播舊訊息**（機器人從「現在」開始，不會重複回應歷史；要歷史請用 `history:fetch`）；不給 `read`、`update:available`、`api:state`、`scam:state`；圖片／影片等媒體位元組也無法取得（機器人只看到訊息的 `contentType`）。
 
 **管理員 mention 授權**：成功查詢後，同一連線可在同一聊天室以 `message:send.mentions` 標記剛查得、尚未發言的管理員；格式仍為 `{ userId, start, end }`（UTF-16 字串索引，指向以 `@` 開頭的文字範圍），每則最多 20 人。此額外授權不共享給其他連線、聊天室或網頁；重新查詢一開始即撤銷舊授權（包含限流或後續失敗），只有最新查詢成功才授予新名單；過期的並行查詢回 `CHAT_ADMINS_FAILED`。斷線、登出或換帳號清除授權及舊查詢結果；已顯示訊息的寄件者仍依原有規則可被標記。舊的 `chat:admins` **請求**不再接受（`UNKNOWN_TYPE`），只保留為回應名稱。
 
 已以隔離 LINE 回應、實際 HTTP／WS Token 認證驗證握手、完整分頁、自身成員 ID 與 mention 授權／撤銷；尚未使用真實 LINE 帳號或 NekoGuard 程序完成聯測，不宣稱 Gate 通過。
+
+**聊天室一次性管理員權杖**：網頁開啟聊天室，在上方「搜尋」旁按「管理員權杖」，即可查看、複製或重新取得目前權杖。每個聊天室獨立，首次查詢時以 32-byte 安全亂數建立（`chatadm_` 前綴＋base64url）；`createdAt` 為 Unix 毫秒。查看／重新取得不消耗、不輪替。權杖只存於記憶體、不入日誌或瀏覽器儲存，登出、換帳號、服務重啟或聊天室從伺服器清單移除後失效。
+
+- **WEB 與已認證 API 都能取得明文**（小語裁示）；外掛**不用請求即會經 `/api/ws` 收到推送**，也可用 `chat:admin-token:get` 主動查詢，皆僅限 `api.chats`。網頁可查看任何已知聊天室，即使機器人 API 未啟用；網頁的明文只回要求的分頁，不隨快照或網頁廣播傳送。
+- 只有 API 能兌換；取得／兌換與歷史、profile 共用每連線每秒 10 次額度。正確權杖只能成功兌換一次，並行請求只有一個成功；立即產生不同的新權杖。其他聊天室、錯誤或已使用的權杖回 `CHAT_ADMIN_TOKEN_INVALID`；格式錯誤回 `INVALID_REQUEST`，未登入／未知／未授權聊天室回 `UNKNOWN_CHAT`，產生失敗回 `CHAT_ADMIN_TOKEN_FAILED`，限流回 `RATE_LIMITED`。
+- 成功只代表該權杖已消耗；**由機器人自行決定授權對象與權限**，不修改 LINE 管理員、不授予額外 API／mention 權限，也不能拿它取代連線 Bearer Token。因 API 本身可讀明文，兌換**不能證明操作者曾使用 WEB 或具有 LINE 管理員身分**。
+- 網頁收到不含祕密的 `chat:admin-token:changed` 後清除舊值，視窗開啟時重新取得。關閉視窗、切換聊天、斷線與登出會清除畫面上的權杖；剪貼簿內容由使用者自行管理。
 
 **頻率與風險**
 - 每個連線受 `limits.sendsPerSecond`（≤5）限制，且所有機器人合計每分鐘不超過 `api.sendsPerMinute`；超過回 `RATE_LIMITED`。

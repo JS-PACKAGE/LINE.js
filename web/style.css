@@ -173,13 +173,17 @@ dialog#viewer button { position: fixed; top: 14px; right: 18px; background: #000
 .attachment video { width: 96px; }
 #attachment-info { flex: 1; min-width: 0; font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-dialog#confirm { border: 1px solid var(--line); border-radius: 16px; padding: 0; background: var(--surface); color: inherit; width: min(420px, calc(100vw - 32px)); box-shadow: 0 24px 60px #00000040; }
-dialog#confirm::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
+dialog#confirm, dialog#admin-token-dialog { border: 1px solid var(--line); border-radius: 16px; padding: 0; background: var(--surface); color: inherit; width: min(420px, calc(100vw - 32px)); box-shadow: 0 24px 60px #00000040; }
+dialog#confirm::backdrop, dialog#admin-token-dialog::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
 .dialog-body { padding: 24px; display: grid; gap: 10px; }
 .dialog-body h2 { margin: 0; font-size: 19px; }
 .dialog-body p { margin: 0; color: var(--muted); white-space: pre-line; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 12px; }
 .dialog-actions button { height: 40px; min-width: 84px; }
+#admin-token-dialog { max-height: calc(100dvh - 32px); overflow-y: auto; }
+#admin-token-channel { font-weight: 600; overflow-wrap: anywhere; }
+#admin-token-value { box-sizing: border-box; width: 100%; min-width: 0; resize: vertical; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); color: inherit; font: 14px/1.6 monospace; overflow-wrap: anywhere; }
+#admin-token-dialog .dialog-actions { flex-wrap: wrap; }
 #confirm-ok.danger { background: #b3261e; }
 #confirm-ok.danger:focus-visible { outline-color: #e8908a; }
 #notice { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 30; display: flex; align-items: center; gap: 12px; max-width: min(640px, calc(100vw - 24px)); padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 8px 28px #0000002e; font-size: 14px; line-height: 1.5; }
@@ -211,9 +215,9 @@ dialog#confirm::backdrop { background: #0a1410a0; backdrop-filter: blur(3px); }
   #app[data-drawer="open"] .sidebar { transform: none; visibility: visible; }
   #drawer-backdrop:not([hidden]) { display: block; position: fixed; inset: 0; z-index: 40; background: #0b151166; }
   #menu { display: inline-flex; }
-  .conversation-head { gap: 8px; padding: 10px 12px; }
+  .conversation-head { gap: 8px; padding: 10px 12px; flex-wrap: wrap; }
   .conversation-head h2 { min-width: 0; font-size: 16px; }
   #channel-meta { display: none; }
-  .head-actions { gap: 6px; }
+  .head-actions { gap: 6px; flex-wrap: wrap; justify-content: flex-end; max-width: 100%; }
   .head-actions .ghost { padding: 6px 10px; }
 }

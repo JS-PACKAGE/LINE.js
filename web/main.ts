@@ -48,6 +48,14 @@ const notice = createUpdateNotice($<HTMLElement>("#notice"));
 const offline = $<HTMLElement>("#offline");
 const menuButton = $<HTMLButtonElement>("#menu");
 const drawerBackdrop = $<HTMLElement>("#drawer-backdrop");
+const adminTokenToggle = $<HTMLButtonElement>("#admin-token-toggle");
+const adminTokenDialog = $<HTMLDialogElement>("#admin-token-dialog");
+const adminTokenChannel = $<HTMLParagraphElement>("#admin-token-channel");
+const adminTokenValue = $<HTMLTextAreaElement>("#admin-token-value");
+const adminTokenStatus = $<HTMLParagraphElement>("#admin-token-status");
+const adminTokenRefresh = $<HTMLButtonElement>("#admin-token-refresh");
+const adminTokenCopy = $<HTMLButtonElement>("#admin-token-copy");
+const adminTokenClose = $<HTMLButtonElement>("#admin-token-close");
 
 // Below 720px the sidebar is an off-canvas drawer opened from the hamburger button.
 function setDrawer(open: boolean): void {
@@ -164,6 +172,87 @@ function send(frame: ClientFrame): boolean {
   socket.send(JSON.stringify(frame));
   return true;
 }
+let adminTokenChat: string | undefined;
+let adminTokenPending: { requestId: string; chatId: string } | undefined;
+let adminTokenTimer: ReturnType<typeof setTimeout> | undefined;
+let adminTokenSequence = 0;
+let adminTokenVersion = 0;
+
+function clearAdminToken(): void {
+  adminTokenVersion++;
+  clearTimeout(adminTokenTimer);
+  adminTokenPending = undefined;
+  adminTokenValue.value = "";
+  adminTokenCopy.disabled = true;
+  adminTokenRefresh.disabled = false;
+  adminTokenStatus.textContent = "";
+}
+
+function closeAdminToken(): void {
+  clearAdminToken();
+  adminTokenChat = undefined;
+  adminTokenChannel.textContent = "";
+  if (adminTokenDialog.open) adminTokenDialog.close();
+}
+
+function requestAdminToken(): void {
+  clearAdminToken();
+  const chatId = adminTokenChat;
+  if (!adminTokenDialog.open || !signedIn || !chatId || chatId !== selected || !channelsById.has(chatId)) return;
+  const requestId = `admin-token-${++adminTokenSequence}`;
+  if (!send({ type: "chat:admin-token:get", requestId, chatId })) {
+    adminTokenStatus.textContent = "連線中斷，請重新連線後再試。";
+    return;
+  }
+  adminTokenPending = { requestId, chatId };
+  adminTokenRefresh.disabled = true;
+  adminTokenStatus.textContent = "正在讀取權杖…";
+  adminTokenTimer = setTimeout(() => {
+    if (adminTokenPending?.requestId !== requestId) return;
+    clearAdminToken();
+    adminTokenStatus.textContent = "讀取逾時，請按「重新讀取」再試。";
+  }, 15_000);
+}
+
+adminTokenToggle.addEventListener("click", () => {
+  if (!signedIn || !selected || !channelsById.has(selected)) return;
+  closeAdminToken();
+  adminTokenChat = selected;
+  adminTokenChannel.textContent = channelsById.get(selected)!.name;
+  adminTokenDialog.showModal();
+  adminTokenClose.focus();
+  requestAdminToken();
+});
+adminTokenRefresh.addEventListener("click", requestAdminToken);
+adminTokenClose.addEventListener("click", closeAdminToken);
+adminTokenDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeAdminToken();
+});
+adminTokenDialog.addEventListener("close", () => {
+  // A queued close event from an earlier opening must not erase a newly opened dialog.
+  if (!adminTokenDialog.open) closeAdminToken();
+});
+adminTokenDialog.addEventListener("click", (event) => {
+  if (event.target === adminTokenDialog) closeAdminToken();
+});
+adminTokenCopy.addEventListener("click", () => {
+  if (!adminTokenDialog.open || adminTokenCopy.disabled || !adminTokenValue.value) return;
+  const version = adminTokenVersion;
+  if (!navigator.clipboard?.writeText) {
+    adminTokenStatus.textContent = "此環境無法使用剪貼簿（需 HTTPS 或 localhost），請手動選取複製。";
+    adminTokenValue.focus();
+    adminTokenValue.select();
+    return;
+  }
+  // Start the write in this user gesture, without an async permission/read step that could
+  // resume after rotation. Late completion must not update a different token's dialog.
+  void navigator.clipboard.writeText(adminTokenValue.value).then(() => {
+    if (version === adminTokenVersion && adminTokenDialog.open) adminTokenStatus.textContent = "已複製；成功使用後此權杖會立即失效。";
+  }, () => {
+    if (version === adminTokenVersion && adminTokenDialog.open) adminTokenStatus.textContent = "無法複製，請手動選取權杖複製。";
+  });
+});
 
 // Who the "@" list offers: people who have spoken in the open chat (the server only accepts those), newest first.
 const composer = createComposer(send, {
@@ -202,6 +291,7 @@ function showLogin(text: string, canStart: boolean, label = "產生登入 QR cod
 function applyAuthState(state: AuthState): void {
   authState = state;
   if (state === "ready") return;
+  closeAdminToken();
   if (signedIn) {
     // Session lost after login: fall back to the login view instead of a dead chat.
     clearTimeout(searchTimer);
@@ -1124,6 +1214,7 @@ function drawMessages(anchor: MessageAnchor = "bottom"): void {
   cancelMessageRender();
   updateRetentionNote();
   const channel = selected ? channelsById.get(selected) : undefined;
+  adminTokenToggle.disabled = !signedIn || !channel || socket?.readyState !== WebSocket.OPEN;
   const title = channel?.name ?? "選擇一個聊天室";
   if (channelTitle.textContent !== title) channelTitle.textContent = title;
   // The header avatar is redrawn only when it would look different.
@@ -1433,6 +1524,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       halted = !notice.hello(frame);
       offline.hidden = true;
       if (halted) return;
+      closeAdminToken();
       // The server replays the full snapshot after every (re)connect.
       channels = [];
       orderedFriends = undefined;
@@ -1483,6 +1575,7 @@ async function handle(frame: ServerFrame): Promise<void> {
       pin.hidden = false;
       return;
     case "auth:ready":
+      if (myUserId !== frame.profile.userId) closeAdminToken();
       myUserId = frame.profile.userId;
       enterChat(frame.profile);
       return;
@@ -1496,6 +1589,7 @@ async function handle(frame: ServerFrame): Promise<void> {
         applyUnread(channel);
       }
       if (selected && !channelsById.has(selected)) {
+        closeAdminToken();
         selected = undefined;
         composer.setChannel(undefined);
       }
@@ -1519,6 +1613,17 @@ async function handle(frame: ServerFrame): Promise<void> {
       scheduleChannels();
       return;
     }
+    case "chat:admin-token":
+      if (!adminTokenDialog.open || !adminTokenPending || frame.requestId !== adminTokenPending.requestId ||
+          frame.chatId !== adminTokenPending.chatId || frame.chatId !== adminTokenChat || frame.chatId !== selected) return;
+      clearAdminToken();
+      adminTokenValue.value = frame.token;
+      adminTokenCopy.disabled = false;
+      adminTokenStatus.textContent = "權杖已讀取；成功使用一次後會立即輪替。";
+      return;
+    case "chat:admin-token:changed":
+      if (adminTokenDialog.open && frame.chatId === adminTokenChat) requestAdminToken();
+      return;
     case "chat:checked":
       // Read on the phone: whatever this page counted for that chat is read now.
       delete unread[frame.chatId];
@@ -1616,6 +1721,13 @@ async function handle(frame: ServerFrame): Promise<void> {
       return;
     case "error": {
       logoutButton.disabled = false;
+      if (frame.requestId?.startsWith("admin-token-")) {
+        if (frame.requestId === adminTokenPending?.requestId) {
+          clearAdminToken();
+          adminTokenStatus.textContent = "無法讀取權杖，請確認聊天室與連線狀態後重新讀取。";
+        }
+        return;
+      }
       const channelId = frame.requestId ? pendingHistory[frame.requestId] : undefined;
       if (frame.requestId && channelId) {
         delete pendingHistory[frame.requestId];
@@ -1676,6 +1788,8 @@ function connect(): void {
     if (socket !== self) return;
     socket = undefined;
     abandon = undefined;
+    closeAdminToken();
+    adminTokenToggle.disabled = true;
     clearTimeout(pongTimer);
     console.info("LINE.js 連線中斷", {
       at: new Date().toISOString(),
@@ -1775,6 +1889,7 @@ logoutButton.addEventListener("click", async () => {
     danger: true,
   });
   if (!confirmed) return;
+  closeAdminToken();
   logoutButton.disabled = true;
   send({ type: "auth:logout" });
 });
@@ -1783,6 +1898,7 @@ function openChat(id: string): void {
   if (!signedIn) return;
   if (searching) closeSearch();
   if (id !== selected) {
+    closeAdminToken();
     if (selected) {
       for (const requestId of Object.keys(pendingHistory)) if (pendingHistory[requestId] === selected) delete pendingHistory[requestId];
       const previous = historyOf[selected];
@@ -1869,4 +1985,5 @@ document.addEventListener("contextmenu", (event) => {
 registerServiceWorker();
 setInterval(heartbeat, PING_INTERVAL_MS);
 window.addEventListener("pagehide", clearSecrets);
+window.addEventListener("pagehide", closeAdminToken);
 connect();

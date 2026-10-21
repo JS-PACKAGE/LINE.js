@@ -5,6 +5,8 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
+import crypto from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
 import { createWebServer } from "../dist/http/server.js";
 import { createHub } from "../dist/ws/hub.js";
 import { ApiTokenStore } from "../dist/http/apiToken.js";
@@ -1796,6 +1798,228 @@ test("a bot can ask for this account's own id at any time, only while signed in"
 
 const SQUARE = `m${"a".repeat(32)}`;
 
+function adminTokenRequests() {
+  let sequence = 0;
+  return async (client, chatId = CHAT, token) => {
+    const requestId = `admin-token-${++sequence}`;
+    client.socket.send(JSON.stringify({
+      type: token === undefined ? "chat:admin-token:get" : "chat:admin-token:consume",
+      requestId, chatId, ...(token === undefined ? {} : { token }),
+    }));
+    return client.until((frame) => frame.requestId === requestId);
+  };
+}
+
+test("chat admin tokens are stable per chat, pushed only to bots, and preserve bot capabilities", async (t) => {
+  const env = await botEnv(t, { chats: [CHAT, OTHER] });
+  env.store.setChannels([
+    { channelId: CHAT, kind: "group", name: "第一群" },
+    { channelId: OTHER, kind: "group", name: "第二群" },
+  ]);
+  const bot = await env.open();
+  const observer = await env.open();
+  const ask = adminTokenRequests();
+  const first = await ask(bot);
+  assert.equal(first.type, "chat:admin-token");
+  assert.match(first.token, /^chatadm_[A-Za-z0-9_-]{43}$/);
+  assert.ok(Number.isSafeInteger(first.createdAt) && first.createdAt > 0 && first.createdAt <= Date.now());
+  const pushed = (client, chatId, token) => client.until((frame) => frame.type === "chat:admin-token" && frame.requestId === undefined && frame.chatId === chatId && frame.token === token);
+  assert.ok(await pushed(bot, CHAT, first.token), "connected plugins learn the token without asking");
+  assert.ok(await pushed(observer, CHAT, first.token));
+  assert.equal(env.page.frames.some((frame) => frame.type === "chat:admin-token"), false);
+  const same = await ask(env.page);
+  assert.equal(same.token, first.token);
+  assert.equal(same.createdAt, first.createdAt);
+  const other = await ask(bot, OTHER);
+  assert.notEqual(other.token, first.token);
+  assert.equal((await ask(bot)).token, first.token);
+  assert.equal((await ask(bot, OTHER)).token, other.token);
+  const hello = bot.frames.find((frame) => frame.type === "hello");
+  assert.equal(hello.protocol, 2);
+  assert.ok(hello.capabilities.includes("chat:admins"));
+  assert.ok(hello.capabilities.includes("chat:admin-token"));
+  assert.equal(env.provider.calls.length, 0, "tokens do not call LINE");
+  assert.equal(env.apiTokens.verify(env.token), true, "the bearer credential is unchanged");
+  assert.equal(env.apiTokens.verify(first.token), false, "chat secrets are not API credentials");
+});
+
+test("chat admin token consumption rotates before acknowledgement and rejects replay and cross-chat use", async (t) => {
+  const env = await botEnv(t, { chats: [CHAT, OTHER] });
+  env.store.setChannels([
+    { channelId: CHAT, kind: "group", name: "第一群" },
+    { channelId: OTHER, kind: "group", name: "第二群" },
+  ]);
+  const bot = await env.open();
+  const observer = await env.open();
+  const ask = adminTokenRequests();
+  const first = await ask(bot);
+  const other = await ask(bot, OTHER);
+  assert.equal((await ask(bot, OTHER, first.token)).code, "CHAT_ADMIN_TOKEN_INVALID");
+  assert.equal((await ask(bot, CHAT, `chatadm_${"A".repeat(43)}`)).code, "CHAT_ADMIN_TOKEN_INVALID");
+  const consumed = await ask(bot, CHAT, first.token);
+  assert.deepEqual(consumed, { type: "chat:admin-token:consumed", requestId: consumed.requestId, chatId: CHAT });
+  assert.deepEqual(await env.page.until((frame) => frame.type === "chat:admin-token:changed"), { type: "chat:admin-token:changed", chatId: CHAT });
+  const next = await ask(bot);
+  assert.notEqual(next.token, first.token);
+  assert.equal((await ask(bot, CHAT, first.token)).code, "CHAT_ADMIN_TOKEN_INVALID");
+  assert.equal((await ask(bot, OTHER)).token, other.token);
+  // Rotation is announced to every connected plugin; pages only get the secret-free invalidation.
+  for (const client of [bot, observer]) {
+    await client.until((frame) => frame.type === "chat:admin-token" && frame.requestId === undefined && frame.chatId === CHAT && frame.token === next.token);
+  }
+  await settle();
+  assert.equal(observer.frames.some((frame) => frame.type === "chat:admin-token:consumed" || frame.type === "chat:admin-token:changed"), false);
+  assert.equal(bot.frames.some((frame) => frame.type === "chat:admin-token:changed"), false);
+  assert.equal(env.page.frames.some((frame) => frame.type === "chat:admin-token"), false);
+  assert.equal(observer.frames.some((frame) => frame.type === "chat:admin-token" && frame.chatId === OTHER && frame.token !== other.token), false);
+  const errors = bot.frames.filter((frame) => frame.type === "error");
+  assert.equal(errors.some((frame) => JSON.stringify(frame).includes(first.token)), false);
+});
+
+test("two bots racing to consume one chat token have exactly one winner", async (t) => {
+  const env = await botEnv(t);
+  const first = await env.open();
+  const second = await env.open();
+  const ask = adminTokenRequests();
+  const { token } = await ask(first);
+  const replies = await Promise.all([ask(first, CHAT, token), ask(second, CHAT, token)]);
+  assert.equal(replies.filter((frame) => frame.type === "chat:admin-token:consumed").length, 1);
+  assert.equal(replies.filter((frame) => frame.code === "CHAT_ADMIN_TOKEN_INVALID").length, 1);
+  const replacement = await ask(second);
+  assert.notEqual(replacement.token, token);
+  assert.equal((await ask(first)).token, replacement.token);
+});
+
+test("chat admin tokens enforce scope and input shape; pages cannot consume", async (t) => {
+  const env = await botEnv(t);
+  env.store.setChannels([
+    { channelId: CHAT, kind: "group", name: "允許" },
+    { channelId: OTHER, kind: "group", name: "未允許" },
+  ]);
+  const bot = await env.open();
+  const ask = adminTokenRequests();
+  assert.equal((await ask(bot, OTHER)).code, "UNKNOWN_CHAT");
+  assert.equal((await ask(bot, SQUARE)).code, "UNKNOWN_CHAT");
+  assert.equal((await ask(bot, OTHER, `chatadm_${"A".repeat(43)}`)).code, "UNKNOWN_CHAT");
+  assert.equal((await ask(env.page, OTHER)).type, "chat:admin-token");
+  for (const [index, token] of [null, 1, "", "chatadm_short", `chatadm_${"+".repeat(43)}`].entries()) {
+    const requestId = `malformed-token-${index}`;
+    bot.socket.send(JSON.stringify({ type: "chat:admin-token:consume", requestId, chatId: CHAT, token }));
+    assert.equal((await bot.until((frame) => frame.requestId === requestId)).code, "INVALID_REQUEST");
+  }
+  bot.socket.send(JSON.stringify({ type: "chat:admin-token:get", requestId: "malformed-chat", chatId: "bad" }));
+  assert.equal((await bot.until((frame) => frame.requestId === "malformed-chat")).code, "INVALID_REQUEST");
+  const { token } = await ask(env.page);
+  env.page.socket.send(JSON.stringify({ type: "chat:admin-token:consume", requestId: "page-consume", chatId: CHAT, token }));
+  assert.equal((await env.page.until((frame) => frame.code === "UNKNOWN_TYPE")).code, "UNKNOWN_TYPE");
+  assert.equal((await ask(env.page)).token, token, "forbidden redemption leaves the secret usable");
+});
+
+test("plugins connected before login receive allowed chats' tokens on login, and an invalidation when a chat leaves", async (t) => {
+  const env = await botEnv(t, { chats: [CHAT, OTHER] });
+  env.provider.channels = [{ channelId: CHAT, kind: "group", name: "允許" }, { channelId: "c1", kind: "group", name: "未允許" }];
+  await env.login.logout();
+  const bot = env.bot();
+  t.after(() => bot.socket.close());
+  await bot.opened;
+  await bot.until((frame) => frame.type === "auth:state" && frame.state === "idle");
+  assert.equal(bot.frames.some((frame) => frame.type === "chat:admin-token"), false, "nothing to push while signed out");
+  await env.login.restore();
+  const pushedToken = await bot.until((frame) => frame.type === "chat:admin-token" && frame.chatId === CHAT);
+  assert.equal(pushedToken.requestId, undefined);
+  assert.equal((await adminTokenRequests()(bot)).token, pushedToken.token);
+  assert.equal(bot.frames.some((frame) => frame.type === "chat:admin-token" && frame.chatId !== CHAT), false, "unlisted or unknown chats are never pushed");
+  env.provider.channels = [];
+  env.page.socket.send(JSON.stringify({ type: "channels:refresh" }));
+  assert.deepEqual(await bot.until((frame) => frame.type === "chat:admin-token:changed"), { type: "chat:admin-token:changed", chatId: CHAT });
+});
+
+test("pages can retrieve chat tokens with the bot API disabled", async (t) => {
+  const env = await start(t);
+  await env.login.restore();
+  const page = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => page.socket.close());
+  await page.opened;
+  await page.until((frame) => frame.type === "channels");
+  assert.equal((await adminTokenRequests()(page)).type, "chat:admin-token");
+});
+
+test("chat token get and consume share the per-socket history/profile budget", async (t) => {
+  const env = await botEnv(t);
+  const bot = await env.open();
+  const other = await env.open();
+  const ask = adminTokenRequests();
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const { token } = await ask(bot);
+  bot.socket.send(JSON.stringify({ type: "history:fetch", requestId: "token-history", chatId: CHAT }));
+  for (let i = 0; i < 7; i += 1) bot.socket.send(JSON.stringify({ type: "profile:get", requestId: `token-profile-${i}` }));
+  assert.equal((await ask(bot, CHAT, token)).type, "chat:admin-token:consumed");
+  assert.equal((await ask(bot)).code, "RATE_LIMITED");
+  assert.equal((await ask(bot, CHAT, token)).code, "RATE_LIMITED");
+  assert.equal((await ask(other)).type, "chat:admin-token", "other sockets have independent budgets");
+  // botEnv used one page slot to create the bearer token.
+  for (let i = 0; i < 8; i += 1) env.page.socket.send(JSON.stringify({ type: "profile:get", requestId: `page-token-profile-${i}` }));
+  assert.equal((await ask(env.page)).type, "chat:admin-token");
+  assert.equal((await ask(env.page)).code, "RATE_LIMITED");
+});
+
+test("chat tokens are revoked across logout, account change and removed-chat refresh", async (t) => {
+  const env = await botEnv(t);
+  const bot = await env.open();
+  const ask = adminTokenRequests();
+  const first = await ask(bot);
+  await env.login.logout();
+  assert.equal((await ask(bot)).code, "UNKNOWN_CHAT");
+  assert.equal((await ask(bot, CHAT, first.token)).code, "UNKNOWN_CHAT");
+  await env.login.restore();
+  await settle();
+  assert.equal((await ask(bot, CHAT, first.token)).code, "CHAT_ADMIN_TOKEN_INVALID");
+  const next = await ask(bot);
+  assert.notEqual(next.token, first.token);
+  env.provider.getProfile = () => ({ userId: "another-account", displayName: "另一帳號" });
+  await env.login.restore();
+  await settle();
+  assert.equal((await ask(bot, CHAT, next.token)).code, "CHAT_ADMIN_TOKEN_INVALID");
+  const third = await ask(bot);
+  assert.notEqual(third.token, next.token);
+  env.provider.channels = [];
+  env.page.socket.send(JSON.stringify({ type: "channels:refresh" }));
+  await env.page.until((frame) => frame.type === "channels" && frame.channels.length === 0);
+  assert.equal((await ask(bot, CHAT, third.token)).code, "UNKNOWN_CHAT");
+  env.provider.channels = [{ channelId: CHAT, kind: "group", name: "重新加入" }];
+  env.page.socket.send(JSON.stringify({ type: "channels:refresh" }));
+  await settle();
+  // A fresh socket avoids making this lifecycle scenario depend on the request limiter.
+  const fresh = await env.open();
+  assert.equal((await ask(fresh, CHAT, third.token)).code, "CHAT_ADMIN_TOKEN_INVALID");
+  assert.notEqual((await ask(fresh)).token, third.token);
+});
+
+test("chat token RNG failures preserve the current token and never leak secrets", async (t) => {
+  const env = await botEnv(t);
+  const bot = await env.open();
+  const ask = adminTokenRequests();
+  const { token } = await ask(bot);
+  const logs = [];
+  t.mock.method(console, "error", (...args) => logs.push(args));
+  const rng = t.mock.method(crypto, "randomBytes", () => { throw new Error(token); });
+  syncBuiltinESMExports();
+  t.after(() => { rng.mock.restore(); syncBuiltinESMExports(); });
+  const failed = await ask(bot, CHAT, token);
+  assert.equal(failed.code, "CHAT_ADMIN_TOKEN_FAILED");
+  assert.equal(JSON.stringify(failed).includes(token), false);
+  assert.equal((await ask(bot)).token, token);
+  rng.mock.mockImplementation(() => Buffer.from(token.slice("chatadm_".length), "base64url"));
+  assert.equal((await ask(bot, CHAT, token)).code, "CHAT_ADMIN_TOKEN_FAILED", "repeated RNG output is not a rotation");
+  assert.equal((await ask(bot)).token, token);
+  assert.equal(env.page.frames.some((frame) => frame.type === "chat:admin-token:changed"), false);
+  rng.mock.restore();
+  syncBuiltinESMExports();
+  assert.equal((await ask(bot, CHAT, token)).type, "chat:admin-token:consumed");
+  assert.notEqual((await ask(bot)).token, token);
+  assert.equal(JSON.stringify(logs).includes(token), false);
+});
+
 test("chat:admins returns every administrator only to the requesting bot, without requiring cached messages", async (t) => {
   const env = await botEnv(t, { chats: [SQUARE] });
   env.store.setChannels([{ channelId: SQUARE, kind: "square", name: "社群聊天室" }]);
@@ -1946,6 +2170,18 @@ async function adminBotEnv(t) {
   });
   return { ...env, ask, mention };
 }
+
+test("redeeming a chat token never grants mention or LINE admin permissions", async (t) => {
+  const env = await adminBotEnv(t);
+  const bot = await env.open();
+  const first = await env.ask(bot, "chat:admin-token:get");
+  assert.equal((await env.mention(bot)).code, "INVALID_REQUEST");
+  assert.equal((await env.ask(bot, "chat:admin-token:consume", { token: first.token })).type, "chat:admin-token:consumed");
+  assert.equal((await env.mention(bot)).code, "INVALID_REQUEST");
+  assert.equal(env.provider.calls.length, 0);
+  assert.equal(env.apiTokens.verify(env.token), true);
+  assert.equal(env.apiTokens.verify(first.token), false);
+});
 
 test("queried silent admins may be mentioned only by that bot in that chat, not by pages or reconnects", async (t) => {
   const env = await adminBotEnv(t);
