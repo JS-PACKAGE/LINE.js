@@ -749,6 +749,8 @@ export function createHub(options: HubOptions): Hub {
         // A logout while LINE was answering must not repopulate the cleared cache.
         if (account !== generation || login.state !== "ready") return;
         store.setChannels(channels);
+        // Joins are pushed only to bots, so only their allowed OpenChat chats cost LINE requests.
+        provider.watchSquareJoins(config.api.enabled ? [...botScope].filter((chatId) => store.channelOf(chatId)?.kind === "square") : []);
         const removed: string[] = [];
         for (const chatId of chatAdminTokens.keys()) {
           if (!store.hasChannel(chatId)) {

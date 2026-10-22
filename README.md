@@ -178,7 +178,7 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 | 服務 → 機器人 | `channels` | 只含 `api.chats` 內的聊天室；有變動時重送 |
 | 服務 → 機器人 | `chat:admin-token` | **主動推送**（無 `requestId`）`{ chatId, token, createdAt }`：連線時、登入完成、頻道清單更新與每次成功兌換後，推送 `api.chats` 內已知聊天室的目前權杖給所有已連入外掛 |
 | 服務 → 機器人 | `chat:admin-token:changed` | `{ chatId }`：`api.chats` 內聊天室從伺服器清單移除、權杖作廢時通知；不含明文。登出時以 `auth:state` 非 `ready` 表示全部作廢 |
-| 服務 → 機器人 | `chat:member-joined` | `{ chatId, member: { userId, displayName, pictureId? } }`：有人加入 `api.chats` 內的社群聊天室時，推送給所有已連入的機器人（取自 LINE 的社群即時事件；`userId` 為社群成員 ID，符合 `/^p[A-Za-z0-9]{10,64}$/`；包含本帳號自己加入）。不重播、網頁不收；只限社群，一般群組不送。服務日誌記錄 `LINE 社群成員加入：chat=… member=… name="…" picture=https://obs.line-scdn.net/…`（含暱稱與大頭貼網址；沒有大頭貼時 `picture=-`） |
+| 服務 → 機器人 | `chat:member-joined` | `{ chatId, member: { userId, displayName, pictureId? } }`：有人加入 `api.chats` 內的社群聊天室時，推送給所有已連入的機器人（LINE 只在各社群聊天室自己的事件串回報加入，因此服務會讀取 `api.chats` 內社群的事件：該社群有新訊息或 LINE 的「新成員」通知時立即讀取，另每 30 秒保底一次，最慢約 30 秒；會多出對 LINE 的請求，社群越多越多。登入後第一次會先讀到最新位置，之前的加入不推送；`userId` 為社群成員 ID，符合 `/^p[A-Za-z0-9]{10,64}$/`；包含本帳號自己加入）。不重播、網頁不收；只限社群，一般群組不送。服務日誌記錄 `LINE 社群成員加入：chat=… member=… name="…" picture=https://obs.line-scdn.net/…`（含暱稱與大頭貼網址；沒有大頭貼時 `picture=-`） |
 | 服務 → 機器人 | `message`、`message:edit`、`message:unsend` | 只有 `api.chats` 內聊天室的**即時**訊息、編輯與收回；包含你自己發的 |
 | 服務 → 機器人 | `sent`、`history`、`scam:result`、`profile`、`chat:admins`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`SCAM_CHECK_FAILED`、`CHAT_ADMINS_UNSUPPORTED`、`CHAT_ADMINS_FAILED`…） |
 

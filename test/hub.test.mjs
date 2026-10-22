@@ -32,6 +32,8 @@ class FakeProvider {
   logoutError = undefined;
   async logout() { if (this.logoutError) throw this.logoutError; return this.logoutResult; }
   async close() {}
+  watchedJoins = [];
+  watchSquareJoins(chatIds) { this.watchedJoins = [...chatIds]; }
   async fetchSticker(id) {
     if (id === "404") return undefined;
     if (id === "500") throw new Error("upstream down");
@@ -1862,6 +1864,16 @@ test("an OpenChat join reaches every bot allowed that chat, never pages, other c
   for (const client of [first, second, env.page]) {
     assert.deepEqual(client.frames.filter((frame) => frame.type === "chat:member-joined").map((frame) => frame.chatId), client === env.page ? [] : [SQUARE]);
   }
+});
+
+test("only the bots' allowed OpenChat chats are watched for joins", async (t) => {
+  const env = await start(t, { restore: false, api: { enabled: true, chats: [SQUARE, CHAT] } });
+  env.provider.channels = [{ channelId: SQUARE, kind: "square", name: "社群" }, { channelId: CHAT, kind: "group", name: "群組" }, { channelId: `m${"z".repeat(32)}`, kind: "square", name: "清單外" }];
+  env.provider.restoreResult = true;
+  await env.login.restore();
+  const deadline = Date.now() + 2000;
+  while (env.provider.watchedJoins.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(env.provider.watchedJoins, [SQUARE]);
 });
 
 test("chat admin token consumption rotates before acknowledgement and rejects replay and cross-chat use", async (t) => {

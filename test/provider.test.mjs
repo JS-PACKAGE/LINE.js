@@ -54,20 +54,39 @@ async function activeProvider(base, client = {}) {
   return { provider, received, errors, reactions, joined, emit: (...args) => provider.client.emit(...args) };
 }
 
-test("an OpenChat join is reported with the member's name and picture, which their messages then use; malformed joins are dropped", async () => {
-  const { joined, received, emit } = await activeProvider(fakeBase());
+test("OpenChat joins are read from the watched chat's own events: history is skipped, new joins are reported once, malformed ones dropped", async () => {
   const member = `p${"j".repeat(32)}`;
-  const join = (payload) => emit("square:event", { type: "NOTIFIED_JOIN_SQUARE_CHAT", payload: { notifiedJoinSquareChat: payload } });
-  join({ squareChatMid: SQUARE, joinedMember: { squareMemberMid: member, displayName: "新朋友", profileImageObsHash: "0hAbCdEfGh", role: "MEMBER" } });
-  emit("square:event", { type: 2, payload: { notifiedJoinSquareChat: { squareChatMid: SQUARE, joinedMember: { squareMemberMid: OWN_MEMBER, displayName: "" } } } });
-  for (const bad of [
-    { squareChatMid: GROUP_A, joinedMember: { squareMemberMid: member, displayName: "x" } },
-    { squareChatMid: SQUARE, joinedMember: { squareMemberMid: mid(1), displayName: "x" } },
-    { squareChatMid: SQUARE, joinedMember: { squareMemberMid: member, displayName: 5 } },
-    { squareChatMid: SQUARE, joinedMember: { squareMemberMid: member, displayName: "x", profileImageObsHash: 1 } },
-    { squareChatMid: SQUARE },
-    undefined,
-  ]) join(bad);
+  const joinEvent = (joined, type = "NOTIFIED_JOIN_SQUARE_CHAT") => ({ type, payload: { notifiedJoinSquareChat: joined } });
+  const valid = (squareMemberMid, displayName, extra = {}) => joinEvent({ squareChatMid: SQUARE, joinedMember: { squareMemberMid, displayName, ...extra } });
+  const requests = [];
+  // LINE's answers, in order: two history pages, then whatever happened since the last sync token.
+  const answers = [
+    { events: [valid(`p${"o".repeat(32)}`, "老成員")], syncToken: "s0", continuationToken: "c1" },
+    { events: [valid(`p${"q".repeat(32)}`, "也很老")], syncToken: "s1" },
+    {
+      events: [
+        valid(member, "新朋友", { profileImageObsHash: "0hAbCdEfGh", role: "MEMBER" }),
+        joinEvent({ squareChatMid: SQUARE, joinedMember: { squareMemberMid: OWN_MEMBER, displayName: "" } }, 2),
+        joinEvent({ squareChatMid: GROUP_A, joinedMember: { squareMemberMid: member, displayName: "x" } }),
+        valid(mid(1), "x"),
+        valid(member, 5),
+        valid(member, "x", { profileImageObsHash: 1 }),
+        joinEvent({ squareChatMid: SQUARE }),
+        joinEvent(undefined),
+      ],
+      syncToken: "s2",
+    },
+    { events: [], syncToken: "s2" },
+  ];
+  const base = fakeBase({ square: { async fetchSquareChatEvents(request) { requests.push(request); return answers.shift() ?? { events: [], syncToken: "s2" }; } } });
+  const { provider, joined, received, emit } = await activeProvider(base);
+  // The account-wide stream never carries who joined; such an event there is ignored.
+  emit("square:event", valid(member, "推播串"));
+  provider.watchSquareJoins([SQUARE, GROUP_A]);
+  await settle();
+  assert.deepEqual(joined, [], "joins from before the watch are history");
+  emit("square:event", { type: "NOTIFICATION_NEW_CHAT_MEMBER", payload: { notificationNewChatMember: { squareChatMid: SQUARE, squareChatName: "社群" } } });
+  await settle();
   assert.deepEqual(joined, [
     [SQUARE, { userId: member, displayName: "新朋友", pictureId: "avatar-o-0hAbCdEfGh" }],
     [SQUARE, { userId: OWN_MEMBER, displayName: "" }],
@@ -75,6 +94,18 @@ test("an OpenChat join is reported with the member's name and picture, which the
   emit("square:message", { raw: { message: { id: "77", to: SQUARE, from: member, contentType: "NONE", text: "嗨", createdTime: String(1_700_000_000_077), contentMetadata: {} } } });
   await settle();
   assert.deepEqual(received.map(({ message }) => [message.senderName, message.senderPictureId]), [["新朋友", "avatar-o-0hAbCdEfGh"]]);
+  assert.equal(joined.length, 2, "a later fetch reports nothing twice");
+  assert.deepEqual(requests.map(({ squareChatMid, syncToken, continuationToken }) => [squareChatMid, syncToken, continuationToken]), [
+    [SQUARE, undefined, undefined],
+    [SQUARE, "s0", "c1"],
+    [SQUARE, "s1", undefined],
+    [SQUARE, "s2", undefined],
+  ]);
+  const client = provider.client;
+  await provider.close();
+  client.emit("square:event", { type: "NOTIFICATION_NEW_CHAT_MEMBER", payload: { notificationNewChatMember: { squareChatMid: SQUARE } } });
+  await settle();
+  assert.equal(requests.length, 4, "a closed session stops watching");
 });
 
 const talk = (id, to, from, text, extra = {}) => ({ raw: { id, to, from, toType: "GROUP", contentType: "NONE", text, createdTime: String(1_700_000_000_000 + Number(id)), contentMetadata: {}, ...extra } });
