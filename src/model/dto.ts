@@ -45,6 +45,13 @@ export interface ChatAdmins {
   admins: ChatAdmin[];
 }
 
+/** Someone who just joined an OpenChat chat, as LINE's NOTIFIED_JOIN_SQUARE_CHAT reports them. */
+export interface JoinedMember {
+  userId: string;
+  displayName: string;
+  pictureId?: string;
+}
+
 /** A tagged person inside a text message: `text.slice(start, end)` is "@name". */
 export interface Mention {
   userId: string;

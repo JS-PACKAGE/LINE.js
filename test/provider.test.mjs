@@ -38,19 +38,44 @@ async function activeProvider(base, client = {}) {
   const received = [];
   const errors = [];
   const reactions = [];
+  const joined = [];
   const storage = { async flush() {}, async get() {}, async set() {} };
   const provider = new EvexLineProvider(storage, "DESKTOPWIN", {
     onMessage: (message, kind) => received.push({ message, kind }),
     onRead() {}, onStatus() {}, onError: (code) => errors.push(code),
     onReactions: (...args) => reactions.push(args),
+    onMemberJoined: (...args) => joined.push(args),
   });
   // Listening would start real polling; the tests emit events themselves.
   provider.listen = () => {};
   provider.base = base;
   await provider.activate(base);
   Object.assign(provider.client, client);
-  return { provider, received, errors, reactions, emit: (...args) => provider.client.emit(...args) };
+  return { provider, received, errors, reactions, joined, emit: (...args) => provider.client.emit(...args) };
 }
+
+test("an OpenChat join is reported with the member's name and picture, which their messages then use; malformed joins are dropped", async () => {
+  const { joined, received, emit } = await activeProvider(fakeBase());
+  const member = `p${"j".repeat(32)}`;
+  const join = (payload) => emit("square:event", { type: "NOTIFIED_JOIN_SQUARE_CHAT", payload: { notifiedJoinSquareChat: payload } });
+  join({ squareChatMid: SQUARE, joinedMember: { squareMemberMid: member, displayName: "新朋友", profileImageObsHash: "0hAbCdEfGh", role: "MEMBER" } });
+  emit("square:event", { type: 2, payload: { notifiedJoinSquareChat: { squareChatMid: SQUARE, joinedMember: { squareMemberMid: OWN_MEMBER, displayName: "" } } } });
+  for (const bad of [
+    { squareChatMid: GROUP_A, joinedMember: { squareMemberMid: member, displayName: "x" } },
+    { squareChatMid: SQUARE, joinedMember: { squareMemberMid: mid(1), displayName: "x" } },
+    { squareChatMid: SQUARE, joinedMember: { squareMemberMid: member, displayName: 5 } },
+    { squareChatMid: SQUARE, joinedMember: { squareMemberMid: member, displayName: "x", profileImageObsHash: 1 } },
+    { squareChatMid: SQUARE },
+    undefined,
+  ]) join(bad);
+  assert.deepEqual(joined, [
+    [SQUARE, { userId: member, displayName: "新朋友", pictureId: "avatar-o-0hAbCdEfGh" }],
+    [SQUARE, { userId: OWN_MEMBER, displayName: "" }],
+  ]);
+  emit("square:message", { raw: { message: { id: "77", to: SQUARE, from: member, contentType: "NONE", text: "嗨", createdTime: String(1_700_000_000_077), contentMetadata: {} } } });
+  await settle();
+  assert.deepEqual(received.map(({ message }) => [message.senderName, message.senderPictureId]), [["新朋友", "avatar-o-0hAbCdEfGh"]]);
+});
 
 const talk = (id, to, from, text, extra = {}) => ({ raw: { id, to, from, toType: "GROUP", contentType: "NONE", text, createdTime: String(1_700_000_000_000 + Number(id)), contentMetadata: {}, ...extra } });
 

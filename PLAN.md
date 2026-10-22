@@ -164,6 +164,8 @@
 
 > issue #2 修正（2026-10）：adapter 禁止 linejs 在 LINE 未發下群組金鑰時自行註冊（`tryRegisterE2EEGroupKey`），避免與官方 App 的新世代並存；代價是成員剛變動、LINE 尚未發下新金鑰時傳送失敗、訊息顯示佔位，待官方 App 建立新金鑰後恢復。即時訊息解密失敗不再被 linejs 靜默丟棄，改為「無法解密」佔位。驗證：以真實 linejs E2EE 程式碼與隔離 LINE 回應（群組金鑰 `NOT_FOUND`）確認傳送、歷史與即時路徑皆不註冊金鑰（修正前發出 2 次註冊流程，即時訊息被丟棄）。根因為推論：issue 回報的同世代雙金鑰與自行註冊吻合，但未以真實帳號重現 LINE 伺服器端行為；既有已損壞的世代無法由本修正修復，需由新成員加入觸發換代。
 
+> v1.20（2026-10 小語裁示：社群成員加入通知，協定版本仍為 2）：LINE 社群即時事件 `NOTIFIED_JOIN_SQUARE_CHAT` 有型別化負載（`squareChatMid`、`joinedMember`），adapter 驗證格式後記住成員名稱／大頭照，並由 hub 以 `chat:member-joined { chatId, member: { userId, displayName, pictureId? } }` 推送給所有機器人連線（限 `api.chats`、已登入、不重播、網頁不收），`hello.capabilities` 加入 `chat:member-joined`。服務日誌記錄 `LINE 社群成員加入：chat=… member=…`（只含 ID）。一般群組不在範圍：其成員變動 operation 參數未記載，依規範不猜測。驗證：以正式 adapter、HTTP／`/api/ws` 隔離環境確認兩個機器人皆收到、網頁與清單外聊天室不收、日誌不含名稱；未以真實 LINE 帳號驗證事件實際送達。
+
 > 本次驗證：typecheck、build 與 262 項測試通過；已以隔離 LINE 回應、實際 HTTP／WS Token 認證及正式 adapter 驗證 capability 握手、完整分頁、`ownMemberId`、未發言管理員的 MENTION metadata、跨連線拒絕與重新查詢撤銷。回歸測試另涵蓋聊天室／網頁隔離、空名單、失敗、限流、回應順序顛倒、斷線、登出／換帳號。尚未以真實 LINE 帳號或 NekoGuard 程序完成聯測，不宣稱通過 Gate。
 
 > 詐騙分析加速（協定版本仍為 2）：同一登入期間，網頁與 API 在完成既有資格／聊天室權限／限流驗證後，以 UTF-16 完整文字的 SHA-256 合併同內容的進行中請求，並重用成功結果（完成起有效 5 分鐘，命中不延長）；記憶體 LRU 最多 256 筆含進行中請求，不另存原文、不落盤。失敗不快取，登出／換帳號／關閉服務清除；等待期間文字變更、收回或移出訊息快取回 `INVALID_REQUEST`，舊帳號請求不得回填新快取。模型、完整文字、Noul／Choice 題目、回應格式及每分鐘限額不變，不新增自動分析或付費預熱；分析錯誤只記固定代碼。首次分析仍受真實上游及網路延遲限制。
@@ -360,7 +362,7 @@
 
 | type | 負載 |
 |---|---|
-| `hello` | `{ protocol: 2, serverVersion, capabilities? }`（僅 `/api/ws` 宣告 `capabilities: ["chat:admins", "chat:admin-token"]`） |
+| `hello` | `{ protocol: 2, serverVersion, capabilities? }`（僅 `/api/ws` 宣告 `capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined"]`） |
 | `update:available` | `{ version, current, url }`（url 僅限本專案 GitHub Release 頁） |
 | `auth:state` | `{ state: "restoring"｜"idle"｜"authenticating"｜"ready"｜"error" }`（連線即送、變動廣播；不含祕密） |
 | `auth:qr` | `{ url }`（一次性；只送給發起 `auth:start` 的連線） |
@@ -371,6 +373,7 @@
 | `chat:admin-token` | `{ requestId?, chatId, token, createdAt }`（有 `requestId`：回應要求者；無 `requestId`：主動推送給所有外掛，限 `api.chats`） |
 | `chat:admin-token:consumed` | `{ requestId, chatId }`（只回成功兌換的機器人，不含新權杖；新權杖另行推送） |
 | `chat:admin-token:changed` | `{ chatId }`（失效通知，不含祕密；網頁重新取得，外掛於 `api.chats` 聊天室移除時收到） |
+| `chat:member-joined` | `{ chatId, member: { userId, displayName, pictureId? } }`（社群 `NOTIFIED_JOIN_SQUARE_CHAT`；只推給機器人，限 `api.chats`，不重播；日誌只記 ID） |
 | `channels` | `{ channels: Channel[] }`（snapshot，連線即送、變動重送） |
 | `messages` | `{ chatId, messages: Message[] }`（連線時快照，同聊天室可分多個影格、依 ID 合併；舊訊息，不計未讀） |
 | `message` | `{ message: Message }`（即時新訊息） |

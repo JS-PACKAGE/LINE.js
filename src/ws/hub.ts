@@ -9,7 +9,7 @@ import type { ApiTokenStore } from "../http/apiToken.js";
 import type { ScamAnalyzer } from "../jev/client.js";
 import { SlidingWindowLimiter } from "../limit.js";
 import type { MediaService } from "../media/service.js";
-import type { Channel, ChannelKind, Message, Reactions, ReadPosition, ScamAnalysis } from "../model/dto.js";
+import type { Channel, ChannelKind, JoinedMember, Message, Reactions, ReadPosition, ScamAnalysis } from "../model/dto.js";
 import type { UpdateInfo } from "../update/checker.js";
 import { withMyReaction, type ChatStore } from "../model/store.js";
 import { PROTOCOL_VERSION, type ClientFrame, type ListenState, type ServerFrame } from "./protocol.js";
@@ -61,6 +61,8 @@ export interface Hub {
   handleChecked(chatId: string): void;
   /** A message's reactions changed on LINE (undefined: nobody reacts now). */
   handleReactions(chatId: string, messageId: string, reactions: Reactions | undefined): void;
+  /** Someone joined an OpenChat chat: every bot allowed that chat is told. */
+  handleMemberJoined(chatId: string, member: JoinedMember): void;
   /** Names, pictures or members changed somewhere: the list is fetched again (settled and rate limited). */
   handleChatsChanged(): void;
   /** Announces (or clears) the newest known release to everyone connected and to later connections. */
@@ -841,7 +843,7 @@ export function createHub(options: HubOptions): Hub {
     socket.once("close", () => grants.clear());
     const sendLimiter = new SlidingWindowLimiter(config.limits.sendsPerSecond, 1000);
     const historyLimiter = new SlidingWindowLimiter(HISTORY_PER_SECOND, 1000);
-    send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion, capabilities: ["chat:admins", "chat:admin-token"] });
+    send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion, capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined"] });
     send(socket, { type: "auth:state", state: login.state });
     send(socket, { type: "status", state: status });
     if (login.state === "ready") {
@@ -993,6 +995,9 @@ export function createHub(options: HubOptions): Hub {
     handleUnsend: takeBack,
     handleReactions(chatId, messageId, reactions) {
       if (login.state === "ready") updateReactions(chatId, messageId, reactions);
+    },
+    handleMemberJoined(chatId, member) {
+      if (login.state === "ready" && botScope.has(chatId)) broadcastBots({ type: "chat:member-joined", chatId, member });
     },
     handleChecked(chatId) {
       const before = store.channelOf(chatId);

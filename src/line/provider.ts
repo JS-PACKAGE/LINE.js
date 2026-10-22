@@ -3,7 +3,7 @@ import { BaseClient, type Device, type FetchLike } from "@evex/linejs/base";
 import { LINEStruct } from "@evex/linejs/thrift";
 import type { Message as LineMessage, SquareMessage as LineSquareMessage } from "@evex/linejs-types";
 import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
-import type { Channel, ChannelRef, ChatAdmin, ChatAdmins, HistoryPage, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
+import type { Channel, ChannelRef, ChatAdmin, ChatAdmins, HistoryPage, JoinedMember, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
 import { withMyReaction } from "../model/store.js";
 import { discardResponse, readResponseText } from "../response.js";
 import { memberRole, mentionMetadata, parseMentions, replyTarget } from "./members.js";
@@ -34,6 +34,8 @@ export interface ProviderEvents {
    * Talk chats have no parsed live event: their reactions come with the message and with history.
    */
   onReactions: (chatId: string, messageId: string, reactions: Reactions | undefined) => void;
+  /** Someone joined an OpenChat chat (NOTIFIED_JOIN_SQUARE_CHAT). */
+  onMemberJoined: (chatId: string, member: JoinedMember) => void;
   onStatus: (state: "listening" | "reconnecting") => void;
   onError: (code: "SESSION_WRITE_FAILED" | "LINE_LISTEN_FAILED" | "MESSAGE_PARSE_FAILED") => void;
 }
@@ -106,6 +108,7 @@ const LOOKUP_RETRY_MS = 5 * 60 * 1000;
 const MAX_LOOKUP_MISSES = 2000;
 const TALK_USER_MID = /^u[0-9a-f]{32}$/;
 const SQUARE_MEMBER_MID = /^p[A-Za-z0-9]{10,64}$/;
+const SQUARE_CHAT_MID = /^m[A-Za-z0-9]{10,64}$/;
 const STICKER_PACKS_CACHE_MS = 10 * 60 * 1000;
 const PACK_META_CONCURRENCY = 4;
 const UNREAD_MAX_PAGES = 20;
@@ -334,6 +337,22 @@ export class EvexLineProvider implements LineProvider {
           this.updateSquareMessage(update.squareChatMid, update.messageId, { reactions });
           this.events.onReactions(update.squareChatMid, update.messageId, reactions);
         }
+      } else if (type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2") {
+        const joined = event.payload?.notifiedJoinSquareChat;
+        const member = joined?.joinedMember;
+        // Typed payload, but still LINE input: anything off-shape is dropped, never guessed at.
+        if (typeof joined?.squareChatMid !== "string" || !SQUARE_CHAT_MID.test(joined.squareChatMid)
+          || typeof member?.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(member.squareMemberMid)
+          || typeof member.displayName !== "string"
+          || (member.profileImageObsHash !== undefined && typeof member.profileImageObsHash !== "string")) return;
+        const pictureId = avatarMediaId("obs", member.profileImageObsHash);
+        // Their first messages then show the right name and picture without another lookup.
+        this.rememberProfile(member.squareMemberMid, member.displayName, pictureId, true, memberRole(member.role));
+        this.events.onMemberJoined(joined.squareChatMid, {
+          userId: member.squareMemberMid,
+          displayName: member.displayName,
+          ...(pictureId ? { pictureId } : {}),
+        });
       }
     });
     this.listen();

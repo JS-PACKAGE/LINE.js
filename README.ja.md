@@ -173,11 +173,12 @@ HTTP：`GET /media/:mediaId`（スタンプ、スタンプパックのアイコ�
 | ボット → サービス | `chat:admin-token:get` | `{ requestId, chatId }`：`api.chats` 内の既知のチャットの平文トークンを取得。`chat:admin-token { requestId, chatId, token, createdAt }` を返します |
 | ボット → サービス | `chat:admin-token:consume` | `{ requestId, chatId, token }`：成功時に即座に無効化して交換し、`chat:admin-token:consumed { requestId, chatId }`（新しい値は含まない）を返します。続けて新しいトークンを接続中の全プラグインにプッシュします |
 | ボット → サービス | `ping` → `pong` | 接続維持。サービスは WebSocket プロトコルレベルの Ping でも 30 秒ごとに確認し、2 回続けて応答がなければ切断します（一般的な WebSocket ライブラリは自動で応答します） |
-| サービス → ボット | `hello`、`auth:state`、`status` | 接続時に送信。`hello` は数値の `protocol: 2` と `serverVersion` を維持し、`capabilities: ["chat:admins", "chat:admin-token"]` で拡張を宣言します。`auth:state` が `ready` でない場合（LINE 未ログイン）、まだ送受信できません |
+| サービス → ボット | `hello`、`auth:state`、`status` | 接続時に送信。`hello` は数値の `protocol: 2` と `serverVersion` を維持し、`capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined"]` で拡張を宣言します。`auth:state` が `ready` でない場合（LINE 未ログイン）、まだ送受信できません |
 | サービス → ボット | `auth:ready` | 自分の `profile.userId` を含み、通常のチャットで自分が送ったメッセージを除外できます。OpenChat では代わりに `chat:admins` 応答の `ownMemberId` を使います |
 | サービス → ボット | `channels` | `api.chats` のチャットルームのみ。変更時に再送します |
 | サービス → ボット | `chat:admin-token` | **プッシュ**（`requestId` なし）`{ chatId, token, createdAt }`：接続時、ログイン完了時、チャンネル一覧の更新時、消費成功のたびに、`api.chats` 内の既知チャットの現在のトークンを接続中の全プラグインに送ります |
 | サービス → ボット | `chat:admin-token:changed` | `{ chatId }`：`api.chats` 内のチャットがサーバーの一覧から外れ、トークンが無効化されたことを通知します（平文なし）。ログアウト時は `ready` 以外の `auth:state` で全トークン無効を示します |
+| サービス → ボット | `chat:member-joined` | `{ chatId, member: { userId, displayName, pictureId? } }`：`api.chats` 内の OpenChat に誰かが参加すると、接続中のすべてのボットに通知します（LINE の OpenChat リアルタイムイベントから取得。`userId` は OpenChat のメンバー ID で `/^p[A-Za-z0-9]{10,64}$/` に一致。本アカウント自身の参加も含む）。再送せず、Web には送らず、OpenChat のみ（通常のグループは通知しません）。サービスログには `LINE 社群成員加入：chat=… member=…`（ID のみ、名前は含まない）を記録します |
 | サービス → ボット | `message`、`message:edit`、`message:unsend` | `api.chats` のチャットルームの**リアルタイム**メッセージ、編集、送信取消のみ。自分が送ったものも含みます |
 | サービス → ボット | `sent`、`history`、`scam:result`、`profile`、`chat:admins`、`error` | 対応するリクエストへの応答。エラーは汎用コードのみ（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`SCAM_CHECK_FAILED`、`CHAT_ADMINS_UNSUPPORTED`、`CHAT_ADMINS_FAILED`…） |
 

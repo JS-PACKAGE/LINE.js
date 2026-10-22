@@ -31,6 +31,11 @@ async function main(): Promise<void> {
     onChecked: (chatId) => hub.handleChecked(chatId),
     onChatsChanged: () => hub.handleChatsChanged(),
     onReactions: (chatId, messageId, reactions) => hub.handleReactions(chatId, messageId, reactions),
+    onMemberJoined: (chatId, member) => {
+      // Ids only: display names are personal data and stay out of the log.
+      console.info(`LINE 社群成員加入：chat=${chatId} member=${member.userId}`);
+      hub.handleMemberJoined(chatId, member);
+    },
     onStatus: (state) => {
       console.info(`LINE 狀態：${state}`);
       hub.setStatus(state);

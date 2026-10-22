@@ -1843,6 +1843,27 @@ test("chat admin tokens are stable per chat, pushed only to bots, and preserve b
   assert.equal(env.apiTokens.verify(first.token), false, "chat secrets are not API credentials");
 });
 
+test("an OpenChat join reaches every bot allowed that chat, never pages, other chats or a signed-out session", async (t) => {
+  const env = await botEnv(t, { chats: [SQUARE] });
+  const [first, second] = [await env.open(), await env.open()];
+  assert.ok(first.frames.find((frame) => frame.type === "hello").capabilities.includes("chat:member-joined"));
+  const member = { userId: `p${"j".repeat(32)}`, displayName: "新朋友", pictureId: "avatar-o-0hAbCdEfGh" };
+  const outside = `m${"z".repeat(32)}`;
+  env.hub.handleMemberJoined(outside, { userId: `p${"k".repeat(32)}`, displayName: "別處" });
+  env.hub.handleMemberJoined(SQUARE, member);
+  const expected = { type: "chat:member-joined", chatId: SQUARE, member };
+  assert.deepEqual(await first.until((frame) => frame.type === "chat:member-joined"), expected);
+  assert.deepEqual(await second.until((frame) => frame.type === "chat:member-joined"), expected);
+  await env.login.logout();
+  env.hub.handleMemberJoined(SQUARE, member);
+  // A ping round trip orders the check after anything the join could have sent.
+  first.socket.send(JSON.stringify({ type: "ping" }));
+  await first.until((frame) => frame.type === "pong");
+  for (const client of [first, second, env.page]) {
+    assert.deepEqual(client.frames.filter((frame) => frame.type === "chat:member-joined").map((frame) => frame.chatId), client === env.page ? [] : [SQUARE]);
+  }
+});
+
 test("chat admin token consumption rotates before acknowledgement and rejects replay and cross-chat use", async (t) => {
   const env = await botEnv(t, { chats: [CHAT, OTHER] });
   env.store.setChannels([

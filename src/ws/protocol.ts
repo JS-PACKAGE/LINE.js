@@ -1,4 +1,4 @@
-import type { AuthState, Channel, ChatAdmins, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, ScamAnalysis, StickerPackage } from "../model/dto.js";
+import type { AuthState, Channel, ChatAdmins, JoinedMember, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, ScamAnalysis, StickerPackage } from "../model/dto.js";
 
 export type ListenState = "starting" | "listening" | "reconnecting";
 
@@ -38,6 +38,8 @@ export type ServerFrame =
   | { type: "chat:admin-token:consumed"; requestId: string; chatId: string }
   /** Secret-free invalidation: pages refetch; bots get it when an allowed chat leaves the list. */
   | { type: "chat:admin-token:changed"; chatId: string }
+  /** Someone joined an OpenChat chat. Bots only, and only for chats in `api.chats`. */
+  | { type: "chat:member-joined"; chatId: string; member: JoinedMember }
   | { type: "sent"; requestId: string; messageId: string }
   | { type: "read"; chatId: string; positions: ReadPosition[] }
   | { type: "stickers"; requestId: string; packages: StickerPackage[] }
