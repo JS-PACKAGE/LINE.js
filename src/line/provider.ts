@@ -107,8 +107,6 @@ const SQUARE_MAX_MESSAGES = SQUARE_PAGE_SIZE * SQUARE_MAX_PAGES;
 const CONTACT_BATCH = 100;
 const SQUARE_LOOKUP_CONCURRENCY = 5;
 const MAX_LOOKUPS_PER_CALL = 100;
-// A per-chat event fetch also runs as soon as the chat shows activity; this is only the floor.
-const JOIN_POLL_MS = 30_000;
 const LOOKUP_TIMEOUT_MS = 5000;
 const LOOKUP_RETRY_MS = 5 * 60 * 1000;
 // Past this many remembered failures, expired ones are dropped (they no longer block a retry anyway).
@@ -213,7 +211,6 @@ export class EvexLineProvider implements LineProvider {
   // OpenChat chats watched for joins: LINE reports a join only in the chat's own event stream
   // (fetchSquareChatEvents), never in the account-wide push stream that `listen` follows.
   private joinWatches = new Map<string, JoinWatch>();
-  private joinTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly storage: SessionStorage,
@@ -323,10 +320,7 @@ export class EvexLineProvider implements LineProvider {
     const talkChat = (raw: LineMessage): string => (raw.to === profile.userId ? raw.from : raw.to);
     client.on("message", (message) => deliver(talkChat(message.raw), "talk", message.raw.from, () => this.talkToMessage(message.raw, profile.userId), "new", chatEventMids(message.raw.contentMetadata)));
     client.on("message:edit", (message) => deliver(talkChat(message.raw), "talk", message.raw.from, () => this.talkToMessage(message.raw, profile.userId), "edit"));
-    client.on("square:message", (message) => {
-      deliver(message.raw.message.to, "square", message.raw.message.from, () => this.squareToMessage(message.raw), "new");
-      this.checkJoins(message.raw.message.to);
-    });
+    client.on("square:message", (message) => deliver(message.raw.message.to, "square", message.raw.message.from, () => this.squareToMessage(message.raw), "new"));
     client.on("event", (operation) => {
       if (this.client !== client) return;
       const type = String(operation.type);
@@ -346,6 +340,8 @@ export class EvexLineProvider implements LineProvider {
     });
     client.on("square:event", (event) => {
       if (this.client !== client) return;
+      // Every account-wide push may follow a join: read each watched chat's own events right away.
+      for (const chatId of this.joinWatches.keys()) this.checkJoins(chatId);
       const type = String(event.type);
       if (type === "NOTIFIED_DESTROY_MESSAGE" || type === "5") {
         const destroyed = event.payload?.notifiedDestroyMessage;
@@ -362,10 +358,6 @@ export class EvexLineProvider implements LineProvider {
           this.updateSquareMessage(update.squareChatMid, update.messageId, { reactions });
           this.events.onReactions(update.squareChatMid, update.messageId, reactions);
         }
-      } else if (type === "NOTIFICATION_NEW_CHAT_MEMBER" || type === "42") {
-        // Carries only the chat: who joined is read from that chat's own event stream.
-        const chatId = event.payload?.notificationNewChatMember?.squareChatMid;
-        if (typeof chatId === "string") this.checkJoins(chatId);
       }
     });
     this.listen();
@@ -380,12 +372,6 @@ export class EvexLineProvider implements LineProvider {
       if (this.joinWatches.get(chatId)?.client === client) continue;
       this.joinWatches.set(chatId, { client, caughtUp: false, again: false });
       this.checkJoins(chatId);
-    }
-    if (wanted.size === 0) {
-      clearInterval(this.joinTimer);
-      this.joinTimer = undefined;
-    } else {
-      this.joinTimer ??= setInterval(() => { for (const chatId of this.joinWatches.keys()) this.checkJoins(chatId); }, JOIN_POLL_MS);
     }
   }
 
@@ -452,7 +438,8 @@ export class EvexLineProvider implements LineProvider {
     this.events.onMemberJoined(chatId, {
       userId: member.squareMemberMid,
       displayName: member.displayName,
-      ...(pictureId ? { pictureId } : {}),
+      // pictureId only exists for a validated hash, so the URL never carries anything else.
+      ...(pictureId ? { pictureId, pictureUrl: `https://obs.line-scdn.net/${pictureId.slice("avatar-o-".length)}` } : {}),
     });
   }
 
@@ -1548,8 +1535,6 @@ export class EvexLineProvider implements LineProvider {
     this.previewDecrypts.clear();
     this.stickerPackages = undefined;
     this.squareCache.clear();
-    clearInterval(this.joinTimer);
-    this.joinTimer = undefined;
     this.joinWatches.clear();
     this.retryDelay = 1000;
     if (!base) return;

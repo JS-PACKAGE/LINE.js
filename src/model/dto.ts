@@ -49,7 +49,10 @@ export interface ChatAdmins {
 export interface JoinedMember {
   userId: string;
   displayName: string;
+  /** Served by this service's `/media/` route (needs the browser cookie). */
   pictureId?: string;
+  /** The same picture on LINE's public CDN, for bots and the log. */
+  pictureUrl?: string;
 }
 
 /** A tagged person inside a text message: `text.slice(start, end)` is "@name". */

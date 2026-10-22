@@ -33,8 +33,7 @@ async function main(): Promise<void> {
     onReactions: (chatId, messageId, reactions) => hub.handleReactions(chatId, messageId, reactions),
     onMemberJoined: (chatId, member) => {
       // 小語's decision: name and picture are logged. JSON quoting keeps a crafted name to one log line.
-      const picture = member.pictureId ? `https://obs.line-scdn.net/${member.pictureId.slice("avatar-o-".length)}` : "-";
-      console.info(`LINE 社群成員加入：chat=${chatId} member=${member.userId} name=${JSON.stringify(member.displayName)} picture=${picture}`);
+      console.info(`LINE 社群成員加入：chat=${chatId} member=${member.userId} name=${JSON.stringify(member.displayName)} picture=${member.pictureUrl ?? "-"}`);
       hub.handleMemberJoined(chatId, member);
     },
     onStatus: (state) => {

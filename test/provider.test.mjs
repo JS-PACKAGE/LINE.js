@@ -54,7 +54,7 @@ async function activeProvider(base, client = {}) {
   return { provider, received, errors, reactions, joined, emit: (...args) => provider.client.emit(...args) };
 }
 
-test("OpenChat joins are read from the watched chat's own events: history is skipped, new joins are reported once, malformed ones dropped", async () => {
+test("every account-wide OpenChat push reads the watched chats' own events: history is skipped, new joins are reported once, malformed ones dropped", async () => {
   const member = `p${"j".repeat(32)}`;
   const joinEvent = (joined, type = "NOTIFIED_JOIN_SQUARE_CHAT") => ({ type, payload: { notifiedJoinSquareChat: joined } });
   const valid = (squareMemberMid, displayName, extra = {}) => joinEvent({ squareChatMid: SQUARE, joinedMember: { squareMemberMid, displayName, ...extra } });
@@ -85,13 +85,17 @@ test("OpenChat joins are read from the watched chat's own events: history is ski
   provider.watchSquareJoins([SQUARE, GROUP_A]);
   await settle();
   assert.deepEqual(joined, [], "joins from before the watch are history");
-  emit("square:event", { type: "NOTIFICATION_NEW_CHAT_MEMBER", payload: { notificationNewChatMember: { squareChatMid: SQUARE, squareChatName: "社群" } } });
+  // Any push counts, whatever its type: here an unrelated status change of another chat.
+  emit("square:event", { type: "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", payload: {} });
   await settle();
   assert.deepEqual(joined, [
-    [SQUARE, { userId: member, displayName: "新朋友", pictureId: "avatar-o-0hAbCdEfGh" }],
+    [SQUARE, { userId: member, displayName: "新朋友", pictureId: "avatar-o-0hAbCdEfGh", pictureUrl: "https://obs.line-scdn.net/0hAbCdEfGh" }],
     [SQUARE, { userId: OWN_MEMBER, displayName: "" }],
   ]);
-  emit("square:message", { raw: { message: { id: "77", to: SQUARE, from: member, contentType: "NONE", text: "嗨", createdTime: String(1_700_000_000_077), contentMetadata: {} } } });
+  // linejs emits every push as "square:event" first; a message is one more push.
+  const message = { message: { id: "77", to: SQUARE, from: member, contentType: "NONE", text: "嗨", createdTime: String(1_700_000_000_077), contentMetadata: {} } };
+  emit("square:event", { type: "NOTIFICATION_MESSAGE", payload: { notificationMessage: { squareChatMid: SQUARE, squareMessage: message } } });
+  emit("square:message", { raw: message });
   await settle();
   assert.deepEqual(received.map(({ message }) => [message.senderName, message.senderPictureId]), [["新朋友", "avatar-o-0hAbCdEfGh"]]);
   assert.equal(joined.length, 2, "a later fetch reports nothing twice");
@@ -103,7 +107,7 @@ test("OpenChat joins are read from the watched chat's own events: history is ski
   ]);
   const client = provider.client;
   await provider.close();
-  client.emit("square:event", { type: "NOTIFICATION_NEW_CHAT_MEMBER", payload: { notificationNewChatMember: { squareChatMid: SQUARE } } });
+  client.emit("square:event", { type: "NOTIFICATION_MESSAGE", payload: {} });
   await settle();
   assert.equal(requests.length, 4, "a closed session stops watching");
 });
