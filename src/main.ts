@@ -32,8 +32,9 @@ async function main(): Promise<void> {
     onChatsChanged: () => hub.handleChatsChanged(),
     onReactions: (chatId, messageId, reactions) => hub.handleReactions(chatId, messageId, reactions),
     onMemberJoined: (chatId, member) => {
-      // Ids only: display names are personal data and stay out of the log.
-      console.info(`LINE 社群成員加入：chat=${chatId} member=${member.userId}`);
+      // 小語's decision: name and picture are logged. JSON quoting keeps a crafted name to one log line.
+      const picture = member.pictureId ? `https://obs.line-scdn.net/${member.pictureId.slice("avatar-o-".length)}` : "-";
+      console.info(`LINE 社群成員加入：chat=${chatId} member=${member.userId} name=${JSON.stringify(member.displayName)} picture=${picture}`);
       hub.handleMemberJoined(chatId, member);
     },
     onStatus: (state) => {

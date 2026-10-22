@@ -178,7 +178,7 @@ HTTP：`GET /media/:mediaId`（スタンプ、スタンプパックのアイコ�
 | サービス → ボット | `channels` | `api.chats` のチャットルームのみ。変更時に再送します |
 | サービス → ボット | `chat:admin-token` | **プッシュ**（`requestId` なし）`{ chatId, token, createdAt }`：接続時、ログイン完了時、チャンネル一覧の更新時、消費成功のたびに、`api.chats` 内の既知チャットの現在のトークンを接続中の全プラグインに送ります |
 | サービス → ボット | `chat:admin-token:changed` | `{ chatId }`：`api.chats` 内のチャットがサーバーの一覧から外れ、トークンが無効化されたことを通知します（平文なし）。ログアウト時は `ready` 以外の `auth:state` で全トークン無効を示します |
-| サービス → ボット | `chat:member-joined` | `{ chatId, member: { userId, displayName, pictureId? } }`：`api.chats` 内の OpenChat に誰かが参加すると、接続中のすべてのボットに通知します（LINE の OpenChat リアルタイムイベントから取得。`userId` は OpenChat のメンバー ID で `/^p[A-Za-z0-9]{10,64}$/` に一致。本アカウント自身の参加も含む）。再送せず、Web には送らず、OpenChat のみ（通常のグループは通知しません）。サービスログには `LINE 社群成員加入：chat=… member=…`（ID のみ、名前は含まない）を記録します |
+| サービス → ボット | `chat:member-joined` | `{ chatId, member: { userId, displayName, pictureId? } }`：`api.chats` 内の OpenChat に誰かが参加すると、接続中のすべてのボットに通知します（LINE の OpenChat リアルタイムイベントから取得。`userId` は OpenChat のメンバー ID で `/^p[A-Za-z0-9]{10,64}$/` に一致。本アカウント自身の参加も含む）。再送せず、Web には送らず、OpenChat のみ（通常のグループは通知しません）。サービスログには `LINE 社群成員加入：chat=… member=… name="…" picture=https://obs.line-scdn.net/…`（表示名とプロフィール画像の URL を含む。画像がない場合は `picture=-`）を記録します |
 | サービス → ボット | `message`、`message:edit`、`message:unsend` | `api.chats` のチャットルームの**リアルタイム**メッセージ、編集、送信取消のみ。自分が送ったものも含みます |
 | サービス → ボット | `sent`、`history`、`scam:result`、`profile`、`chat:admins`、`error` | 対応するリクエストへの応答。エラーは汎用コードのみ（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`SCAM_CHECK_FAILED`、`CHAT_ADMINS_UNSUPPORTED`、`CHAT_ADMINS_FAILED`…） |
 
