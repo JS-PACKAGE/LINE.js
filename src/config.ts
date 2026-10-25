@@ -14,8 +14,6 @@ export interface Config {
   update: { check: boolean };
   /** Bot endpoint (/api/ws). Off unless enabled; the token is created from the web page, never stored here. */
   api: { enabled: boolean; chats: string[]; sendsPerMinute: number };
-  /** Scam-probability check (TypeSafe Jev). Off unless a token is set; the token never leaves the server except to TypeSafe. */
-  jev: { token?: string; model: string };
   limits: {
     frameMaxBytes: number;
     textMaxLength: number;
@@ -32,10 +30,6 @@ const DEFAULT_API_SENDS_PER_MINUTE = 20;
 // A hostname, an IPv4 address or an IPv6 address (no brackets, no port).
 const SERVER_HOST = /^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|[0-9A-Fa-f:]{2,45})$/;
 const DEFAULT_UPLOAD_VIDEO_MAX_BYTES = 50 * 1024 * 1024;
-const DEFAULT_JEV_MODEL = "jev-1.13.0";
-// Printable ASCII without spaces: the token goes into an HTTP header as is.
-const JEV_TOKEN = /^[\x21-\x7e]{1,512}$/;
-const JEV_MODEL = /^[A-Za-z0-9._-]{1,64}$/;
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -85,11 +79,6 @@ export async function loadConfig(root = process.cwd()): Promise<Config> {
     // A bot only ever reaches the chats listed here, so an empty list is a mistake, not "everything".
     if (!Array.isArray(api.chats) || api.chats.length === 0 || api.chats.length > 100 || !api.chats.every((id) => typeof id === "string" && CHAT_ID.test(id))) throw new Error("CONFIG_INVALID");
   }
-  // Optional and off by default: an empty or missing token means no message text ever goes to TypeSafe.
-  const jev = data.jev === undefined || data.jev === null ? {} : record(data.jev);
-  const jevToken = jev.token === undefined || jev.token === null || jev.token === "" ? undefined : jev.token;
-  if (jevToken !== undefined && (typeof jevToken !== "string" || !JEV_TOKEN.test(jevToken))) throw new Error("CONFIG_INVALID");
-  if (jev.model !== undefined && (typeof jev.model !== "string" || !JEV_MODEL.test(jev.model))) throw new Error("CONFIG_INVALID");
   // Any address is allowed, and the file is authoritative; the default stays loopback-only.
   if (typeof server.host !== "string" || !SERVER_HOST.test(server.host)) throw new Error("CONFIG_INVALID");
   const devices: readonly string[] = [
@@ -111,7 +100,6 @@ export async function loadConfig(root = process.cwd()): Promise<Config> {
       chats: apiEnabled ? [...new Set(api.chats as string[])] : [],
       sendsPerMinute: api.sendsPerMinute === undefined ? DEFAULT_API_SENDS_PER_MINUTE : integer(api.sendsPerMinute, 120),
     },
-    jev: { ...(jevToken !== undefined ? { token: jevToken } : {}), model: (jev.model as string | undefined) ?? DEFAULT_JEV_MODEL },
     limits: {
       frameMaxBytes: integer(limits.frameMaxBytes, 256 * 1024),
       textMaxLength: integer(limits.textMaxLength, 8000),

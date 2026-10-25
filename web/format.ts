@@ -1,4 +1,4 @@
-import type { Message, MessageCard, ScamAnalysis, ScamTactic } from "../src/model/dto.js";
+import type { Message, MessageCard } from "../src/model/dto.js";
 
 // Text-only helpers for times, sizes and one-line previews. No DOM and no page state, so the tests can
 // import this source directly.
@@ -66,23 +66,4 @@ export function previewOf(message: Message): string {
   const text = message.text?.replace(/\s+/g, " ").trim();
   if (!text && message.card) return `［${CONTENT_LABEL[message.contentType] ?? "訊息"}］${cardTitle(message.card).slice(0, 60)}`;
   return text ? (text.length > 60 ? `${text.slice(0, 60)}…` : text) : `［${CONTENT_LABEL[message.contentType] ?? "訊息"}］`;
-}
-
-const SCAM_TACTIC_LABEL: Record<ScamTactic, string> = {
-  investment: "假投資／飆股群", impersonation: "假冒機關、銀行或客服", phishing: "釣魚連結、騙取密碼或驗證碼",
-  shopping: "網購、解除分期付款", friend: "冒充親友借錢", romance: "感情詐騙", job: "求職打工、租借帳戶",
-  prize: "中獎、贈品", loan: "貸款、代辦", other: "其他手法",
-};
-
-/**
- * A scam check as dialog text. The bands follow TypeSafe's own example thresholds (above 0.8 counts
- * as yes, 0.2 or less as no, anything between needs a person to judge).
- */
-export function scamSummary(analysis: ScamAnalysis): string {
-  const { probability, tactic } = analysis;
-  const verdict = probability > 0.8 ? "高度疑似詐騙" : probability > 0.2 ? "無法確定，請小心查證" : "不太像詐騙";
-  const lines = [`詐騙機率：${Math.round(probability * 100)}%（${verdict}）`];
-  // Which kind of scam it resembles only matters when it may be one.
-  if (probability > 0.2 && tactic) lines.push(`若為詐騙，最接近的手法：${SCAM_TACTIC_LABEL[tactic.kind]}（信心 ${Math.round(tactic.confidence * 100)}%）`);
-  return lines.join("\n");
 }

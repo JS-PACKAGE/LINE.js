@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 // Browser code without DOM or page state: imported from source (Node ≥ 22 strips types).
-import { dayLabel, formatBytes, formatTime, listTime, previewOf, scamSummary } from "../web/format.ts";
+import { dayLabel, formatBytes, formatTime, listTime, previewOf } from "../web/format.ts";
 
 const at = (y, m, d, h = 12, min = 0) => new Date(y, m - 1, d, h, min).getTime();
 const NOW = at(2026, 10, 10, 9);
@@ -100,14 +100,4 @@ test("a quote preview is one line of at most 60 characters, or names what the me
   assert.equal(previewOf({ ...base, contentType: "IMAGE", mediaId: "msg-1" }), "［圖片］");
   assert.equal(previewOf({ ...base, contentType: "WEIRD" }), "［訊息］");
   assert.equal(previewOf({ ...base, text: "祕密", unsent: true }), "［已收回的訊息］", "a taken-back message never leaks its text");
-});
-
-test("a scam check reads as a band (above 0.8 likely, 0.2 or less unlikely), and names the tactic only when a scam is plausible", () => {
-  const phishing = { kind: "phishing", confidence: 0.704 };
-  const likely = scamSummary({ probability: 0.93, tactic: phishing });
-  assert.equal(likely, "詐騙機率：93%（高度疑似詐騙）\n若為詐騙，最接近的手法：釣魚連結、騙取密碼或驗證碼（信心 70%）");
-  assert.match(scamSummary({ probability: 0.8 }), /^詐騙機率：80%（無法確定，請小心查證）/);
-  const unlikely = scamSummary({ probability: 0.2, tactic: phishing });
-  assert.match(unlikely, /^詐騙機率：20%（不太像詐騙）/);
-  assert.doesNotMatch(unlikely, /手法/);
 });

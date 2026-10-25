@@ -8,7 +8,7 @@
 
 ## 定案用途與範圍
 
-完整目標包含 QR 掃碼登入／登出、session 復用、好友／群組／聊天室／社群清單、即時訊息及編輯事件、歷史分頁、文字／圖片／貼圖發送，以及圖片／GIF／影片／語音／貼圖的顯示與檔案下載；另可選用 TypeSafe Jev 對別人的文字訊息做詐騙機率分析。不提供公開部署、多帳號、通話或套件發布；尚未交付的功能以 Gate 狀態為準。
+完整目標包含 QR 掃碼登入／登出、session 復用、好友／群組／聊天室／社群清單、即時訊息及編輯事件、歷史分頁、文字／圖片／貼圖發送，以及圖片／GIF／影片／語音／貼圖的顯示與檔案下載。不提供公開部署、多帳號、通話或套件發布；尚未交付的功能以 Gate 狀態為準。
 
 本作品使用非官方 LINE API，可能造成帳號限制或封鎖。**請先用次要帳號驗證**，不要直接以主帳號測試。
 
@@ -59,7 +59,7 @@ npm start
 - **收回**：對方（或你在其他裝置上）收回訊息時，該訊息改為「XX 已收回訊息」（自己的顯示「你已收回訊息」），引用它的回覆顯示「［已收回的訊息］」，圖片／影片／語音／檔案也不再提供下載；收回通知比訊息本身先到時同樣只顯示佔位。只處理本服務已收過的訊息 id，不依通知內容猜測是哪一則。自己的訊息可在右鍵選單按「收回」（會先確認；LINE 只允許收回一段時間內送出的訊息，被拒時顯示一般錯誤）；社群裡要先從此頁送過訊息，服務才認得你在該社群的成員 id。
 - **回應（reaction）**：訊息下方顯示 LINE 六種預設回應（👍 讚、❤️ 愛心、😆 好笑、😲 驚訝、😢 難過、😱 天啊）的人數，你按過的會標亮；右鍵選單「回應…」或點小膠囊即可送出，點自己已選的回應則取消（對方會看到，與送出訊息共用頻率上限）。一般聊天室的回應隨訊息與歷史載入，LINE 的即時回應通知格式尚未驗證，因此他人的新回應要重新載入歷史才會出現；社群另有即時狀態事件（`NOTIFIED_UPDATE_MESSAGE_STATUS`）會即時更新。LINE 新版的自訂回應不顯示。
 - **@ 提及**：在群組、聊天室或社群的輸入框打 `@` 會列出在此聊天室發過言的人（最近發言者在前），繼續打字可篩選，↑／↓ 選擇、Enter 或 Tab 確認、Esc 關閉（輸入法選字中的 Enter 不會選取）；也可點訊息上的人名或用右鍵選單「@ 提及」。只有從清單或人名加入、且 `@名字` 仍完整留在文字中的才會成為真正的標記，自己手打的 `@名字` 只是文字。端對端加密聊天室的標記資料會一併放進加密內容，不只留在明文（尚未以真實帳號確認 LINE App 的顯示）。收到的訊息裡被 @ 的人名以強調色顯示，@ 你或 @All 另加黃色底色；範圍以 LINE 附帶的提及資料為準，資料不合（超出文字、重疊）的部分不標示。社群裡你的成員 id 與帳號不同，因此社群中 @ 你的訊息只有一般強調色。
-- **詐騙機率分析**（需設定 `jev.token`，見[設定](#設定)）：對**別人傳來的文字訊息**按右鍵（觸控長按）選「詐騙機率分析」，結果以對話框顯示：詐騙機率與判讀（> 80% 高度疑似詐騙、≤ 20% 不太像詐騙，其間為無法確定、請小心查證）；機率超過 20% 時另列最接近的手法與信心（假投資／飆股群、假冒機關／銀行／客服、釣魚連結、網購／解除分期付款、冒充親友借錢、感情詐騙、求職打工／租借帳戶、中獎贈品、貸款代辦、其他）。自己的訊息、已收回、無法解密、系統訊息與非文字訊息不提供此選項；未設定金鑰時選單不出現。每次分析都會把那一則文字送到 TypeSafe 並計費，結果只是模型估計。
+- 詐騙訊息分析已移除，改由 NekoGuard 專案提供。
 - **桌面通知**：右上「通知」按一下會向瀏覽器要求通知權限並開啟（按鈕轉為強調色；設定存在瀏覽器的 localStorage，再按一次關閉）。只在頁面不在前景時通知他人傳來的新訊息；每個聊天室最多一則通知，新訊息會取代舊的；點通知回到頁面並開啟該聊天室，讀過後通知自動收起。通知內容（寄件者與訊息摘要）會出現在作業系統的通知中心。需要安全環境（`127.0.0.1`／`localhost` 或 HTTPS），其他 http 位址不顯示此按鈕。
 - **草稿**：切換聊天室時，未送出的文字（含 @ 提及與回覆對象）保留在原聊天室，回來時還原；只存頁面記憶體，重新整理或登出即清除。已選取的圖片／影片不保留。
 - **端對端加密群組的金鑰**：本服務不自行建立群組金鑰，只使用 LINE 發下的金鑰。群組成員剛變動、LINE 還沒發下新金鑰時，此時傳送會失敗（草稿保留），收到的訊息（含即時訊息）顯示「無法解密」；成員用官方 App 發言、LINE 建立新金鑰後即恢復。這是為了避免本服務建立的金鑰與官方 App 的金鑰並存，導致整個群組之後都無法解密（[#2](https://github.com/JS-PACKAGE/LINE.js/issues/2)）。
@@ -86,7 +86,7 @@ npm start
 
 ## 設定
 
-`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`chat`、`update`、`api`、`jev`、`limits`（`chat`、`update`、`api`、`jev` 區段與 `limits.downloadMaxBytes`、`limits.uploadVideoMaxBytes` 可省略，舊設定檔照常運作；`api` 與 `jev` 預設關閉）。
+`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`chat`、`update`、`api`、`limits`（`chat`、`update`、`api` 區段與 `limits.downloadMaxBytes`、`limits.uploadVideoMaxBytes` 可省略，舊設定檔照常運作；`api` 預設關閉）。已移除的 `jev` 區段若仍留在舊 `config.yaml` 中會被忽略，不會報錯。
 
 - 監聽 host：預設且建議 `127.0.0.1`。以 `config.yaml` 為準，可改為其他主機名稱、IPv4 或 IPv6；程式不再強制本機迴路。網頁沒有帳號密碼，能連到該位址的人就能操作已登入的 LINE 帳號，啟動時非本機位址會印出警告。**不限制 `Host` 標頭**：不論監聽哪個位址，用任何 IP 或網域名稱連入都可以（例如反向代理、區網名稱、通道服務）；`Origin`、cookie 與 Token 檢查不變，`Sec-Fetch-Site: cross-site` 的請求仍拒絕。代價是不再防 DNS rebinding（攻擊者網域解析到本機位址時，該網頁與自己同源）。
 - port：預設 `3789`，可調整；host 與 port 從 `config.yaml` 讀取，程式不得寫死。
@@ -98,8 +98,6 @@ npm start
 - 收到的媒體與檔案：每個最多 50MB（`limits.downloadMaxBytes`），超過者只顯示類型標籤（檔案的下載會失敗）。
 - 媒體下載排程：全域實際並行最多 4 個、FIFO 等待最多 64 個，相同 ID 共用請求；佇列滿時回既有 HTTP 404，可稍後重試。收回／登出取消等待並拒絕舊結果；已啟動工作保留槽位至上游結束，不冒充已取消下載。
 - 機器人 API：預設關閉；`api.enabled`、`api.chats`（必填、至少一個聊天室 id）、`api.sendsPerMinute`（預設 20、≤120）。細節見[機器人 API](#機器人-apiapiws)。
-- 詐騙訊息分析（選用）：在 `jev.token` 填入 [TypeSafe](https://console.typesafe.ai/keys) 的 API 金鑰並重啟後，網頁對**別人傳來的文字訊息**按右鍵（觸控長按）會出現「詐騙機率分析」，以 TypeSafe 的 Jev 決策模型估計詐騙機率（> 80% 高度疑似、≤ 20% 不太像，中間為無法確定）與最接近的手法。需要新分析時，只有點選的那一則文字會送到 `api.typesafe.ai`（伺服器取自己快取的內容，不採用網頁傳來的文字；不送寄件者或聊天室），實際上游請求依 TypeSafe 計費、每個網頁連線每分鐘最多 10 次查詢。機器人也可透過[機器人 API](#機器人-apiapiws) 的 `scam:check` 分析 `api.chats` 內的訊息（所有機器人合計每分鐘最多 10 次）。金鑰只留在伺服器，不送網頁、不入日誌；`jev.model` 預設固定 `jev-1.13.0`。結果是模型估計，僅供參考。`token` 留空或省略即停用。
-- 分析加速：同一登入期間，網頁與 API 對**完全相同文字**的同時查詢共用一個上游請求；成功結果自完成起有效 5 分鐘，重查直接回覆，不再送出文字。記憶體 LRU 最多 256 筆（含進行中請求），只以文字雜湊索引、不另存原文、不落盤；失敗不快取，登出／換帳號清除。每次仍檢查訊息資格、聊天室權限與原有限流；等待時文字變更、收回或移出訊息快取，回 `INVALID_REQUEST` 而非舊結果。模型、題目與完整文字不變；首次分析新內容仍取決於 Jev／網路耗時，未保證真實上游延遲。
 
 ## 通訊協定
 
@@ -136,8 +134,6 @@ npm start
 | Client → Server | `channels:refresh` / `ping` → `pong` | 重新載入頻道／連線保活（伺服器回 `pong`，網頁以此判斷連線仍通） |
 | Server → Client | `api:state` / `api:token` | 機器人 API 狀態（只給網頁）／剛產生的 Token（只送給要求的那個連線，僅此一次） |
 | Client → Server | `api:token:create` / `api:token:revoke` | 產生或撤銷機器人 Token（僅網頁連線可用，機器人不行） |
-| Server → Client | `scam:state` / `scam:result` | 是否已設定 Jev 金鑰（只給網頁，連線即送）／分析結果 `{ requestId, chatId, messageId, analysis: { probability, tactic? } }`（只送給要求的連線） |
-| Client → Server | `scam:check` | `{ requestId, chatId, messageId }`：分析別人傳來、伺服器已顯示且未收回的文字訊息（網頁每連線每分鐘 10 次；機器人見[機器人 API](#機器人-apiapiws)；未設定金鑰回 `SCAM_CHECK_UNAVAILABLE`，失敗回 generic `SCAM_CHECK_FAILED`） |
 
 HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、收到的圖片／影片／語音；支援 Range）與 `POST /media/upload`（圖片／影片上傳）皆需瀏覽器 cookie 與同源。WS 不傳媒體位元組。
 
@@ -167,7 +163,6 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 |---|---|---|
 | 機器人 → 服務 | `message:send` | `{ requestId, chatId, text, mentions?, replyTo? }`：**只能文字**；`mediaId`／`sticker` 回 `INVALID_REQUEST`。成功回 `sent { requestId, messageId }` |
 | 機器人 → 服務 | `history:fetch` | `{ requestId, chatId, limit?, before? }`：與網頁相同的分頁，但不附已讀快照 |
-| 機器人 → 服務 | `scam:check` | `{ requestId, chatId, messageId }`：以 Jev 分析 `api.chats` 內**別人傳來**、服務已顯示（即時收到或 `history:fetch` 取得）的文字訊息；伺服器送自己快取的文字。需設定 `jev.token`（否則 `SCAM_CHECK_UNAVAILABLE`），所有機器人合計每分鐘 10 次，命中快取亦計入；只有實際上游請求依 TypeSafe 計費。成功回 `scam:result { requestId, chatId, messageId, analysis: { probability, tactic? } }` |
 | 機器人 → 服務 | `profile:get` | `{ requestId }`：隨時取得自己的 ID 與名稱，回 `profile { requestId, profile: { userId, displayName, pictureId? } }`（同 `auth:ready`；不呼叫 LINE，與 `history:fetch` 共用每連線每秒 10 次；未登入回 `INVALID_REQUEST`） |
 | 機器人 → 服務 | `chat:admins:get` | `{ requestId, chatId }`：取得指定社群聊天室的全部現任管理員與共同管理員（含未發言者）；只限 `api.chats`，與 `history:fetch`／`profile:get` 共用每連線每秒 10 次。只回要求者 `chat:admins { requestId, chatId, ownMemberId, admins: [{ userId, displayName, role, pictureId? }] }`；`role` 為 `admin`／`coAdmin`，`displayName` 是字串，`ownMemberId`（自己在該聊天室的成員 ID）與 `userId` 均符合 `/^p[A-Za-z0-9]{10,64}$/`。普通群組／私聊不支援（`CHAT_ADMINS_UNSUPPORTED`）；未登入或未知／未授權聊天室回 `UNKNOWN_CHAT`；LINE 查詢失敗、ID 不合法或分頁不完整回 `CHAT_ADMINS_FAILED`，不回部分名單。網頁 `/ws` 不提供此操作 |
 | 機器人 → 服務 | `chat:admin-token:get` | `{ requestId, chatId }`：取得 `api.chats` 內已知聊天室的明文權杖，回 `chat:admin-token { requestId, chatId, token, createdAt }` |
@@ -180,9 +175,9 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 | 服務 → 機器人 | `chat:admin-token:changed` | `{ chatId }`：`api.chats` 內聊天室從伺服器清單移除、權杖作廢時通知；不含明文。登出時以 `auth:state` 非 `ready` 表示全部作廢 |
 | 服務 → 機器人 | `chat:member-joined` | `{ chatId, member: { userId, displayName, pictureId?, pictureUrl? } }`：有人加入 `api.chats` 內的社群聊天室時，推送給所有已連入的機器人（LINE 只在各社群聊天室自己的事件串回報加入，因此服務會讀取 `api.chats` 內社群的事件：每次收到 LINE 的社群推播（任何類型）時立即讀取每個社群，沒有定時輪詢；會多出對 LINE 的請求，社群越多越多。登入後第一次會先讀到最新位置，之前的加入不推送；`userId` 為社群成員 ID，符合 `/^p[A-Za-z0-9]{10,64}$/`；`pictureUrl` 為 LINE 公開 CDN 上的大頭貼連結（`https://obs.line-scdn.net/…`，沒有大頭貼時省略），`pictureId` 則是本服務 `/media/` 路徑用的 ID；包含本帳號自己加入）。不重播、網頁不收；只限社群，一般群組不送。服務日誌記錄 `LINE 社群成員加入：chat=… member=… name="…" picture=https://obs.line-scdn.net/…`（含暱稱與大頭貼網址；沒有大頭貼時 `picture=-`） |
 | 服務 → 機器人 | `message`、`message:edit`、`message:unsend` | 只有 `api.chats` 內聊天室的**即時**訊息、編輯與收回；包含你自己發的 |
-| 服務 → 機器人 | `sent`、`history`、`scam:result`、`profile`、`chat:admins`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`SCAM_CHECK_FAILED`、`CHAT_ADMINS_UNSUPPORTED`、`CHAT_ADMINS_FAILED`…） |
+| 服務 → 機器人 | `sent`、`history`、`profile`、`chat:admins`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`CHAT_ADMINS_UNSUPPORTED`、`CHAT_ADMINS_FAILED`…） |
 
-其餘一律回 `UNKNOWN_TYPE`：沒有登入／登出、`chat:read`（已讀回報）、`message:unsend`（收回）、`message:react`（回應）、`channels:refresh`、貼圖清單、API 連線 Bearer Token 管理。**不重播舊訊息**（機器人從「現在」開始，不會重複回應歷史；要歷史請用 `history:fetch`）；不給 `read`、`update:available`、`api:state`、`scam:state`；圖片／影片等媒體位元組也無法取得（機器人只看到訊息的 `contentType`）。
+其餘一律回 `UNKNOWN_TYPE`：沒有登入／登出、`chat:read`（已讀回報）、`message:unsend`（收回）、`message:react`（回應）、`channels:refresh`、貼圖清單、API 連線 Bearer Token 管理。**不重播舊訊息**（機器人從「現在」開始，不會重複回應歷史；要歷史請用 `history:fetch`）；不給 `read`、`update:available`、`api:state`；圖片／影片等媒體位元組也無法取得（機器人只看到訊息的 `contentType`）。
 
 **管理員 mention 授權**：成功查詢後，同一連線可在同一聊天室以 `message:send.mentions` 標記剛查得、尚未發言的管理員；格式仍為 `{ userId, start, end }`（UTF-16 字串索引，指向以 `@` 開頭的文字範圍），每則最多 20 人。此額外授權不共享給其他連線、聊天室或網頁；重新查詢一開始即撤銷舊授權（包含限流或後續失敗），只有最新查詢成功才授予新名單；過期的並行查詢回 `CHAT_ADMINS_FAILED`。斷線、登出或換帳號清除授權及舊查詢結果；已顯示訊息的寄件者仍依原有規則可被標記。舊的 `chat:admins` **請求**不再接受（`UNKNOWN_TYPE`），只保留為回應名稱。
 
@@ -197,7 +192,6 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 
 **頻率與風險**
 - 每個連線受 `limits.sendsPerSecond`（≤5）限制，且所有機器人合計每分鐘不超過 `api.sendsPerMinute`；超過回 `RATE_LIMITED`。
-- `scam:check` 另有所有機器人合計每分鐘 10 次的上限（與網頁的額度分開），超過回 `RATE_LIMITED`。
 - 機器人以**你的真人帳號**發言，頻繁或機械式的發送可能觸發 LINE 風控。請保守設定上限，並先用次要帳號。
 
 ```js
@@ -209,20 +203,6 @@ ws.on("message", (data) => {
   if (frame.type === "auth:ready") me = frame.profile.userId;
   if (frame.type === "message" && frame.message.senderId !== me && frame.message.text === "ping") {
     ws.send(JSON.stringify({ type: "message:send", requestId: "r1", chatId: frame.message.channelId, text: "pong" }));
-  }
-});
-```
-
-分析別人傳來的訊息（需設定 `jev.token`）：`analysis.probability` 為 0～1 的詐騙機率；`tactic` 可能沒有，有的話 `kind` 為 `investment`（假投資）、`impersonation`（假冒機關／銀行／客服）、`phishing`（釣魚）、`shopping`（網購／解除分期）、`friend`（冒充親友）、`romance`（感情）、`job`（求職打工／租借帳戶）、`prize`（中獎）、`loan`（貸款）、`other` 之一，`confidence` 為 0～1。只有實際上游請求依 TypeSafe 計費；包含快取命中的所有機器人查詢合計每分鐘仍只有 10 次，請只挑需要的訊息分析（例如下面只看含網址的訊息）。
-
-```js
-ws.on("message", (data) => {
-  const frame = JSON.parse(data);
-  if (frame.type === "message" && frame.message.senderId !== me && /https?:\/\//.test(frame.message.text ?? "")) {
-    ws.send(JSON.stringify({ type: "scam:check", requestId: frame.message.messageId, chatId: frame.message.channelId, messageId: frame.message.messageId }));
-  }
-  if (frame.type === "scam:result" && frame.analysis.probability > 0.8) {
-    ws.send(JSON.stringify({ type: "message:send", requestId: `warn-${frame.messageId}`, chatId: frame.chatId, text: "⚠️ 疑似詐騙訊息", replyTo: frame.messageId }));
   }
 });
 ```
@@ -412,10 +392,6 @@ API 頻道同步優化已驗證：API 連線先依 `api.chats` 篩選再排序�
 | 2000 | 195.54 | 111.70 | 298.03 | 212.87 |
 
 量測使用正式 HTTP／WS hub 與隔離 LINE provider，不包含 LINE 上游、AI 推論或瀏覽器繪製時間；已檢查所有連線的文字影格、內容、順序與筆數。未操作真實 LINE 帳號，不代表 Gate 通過。
-
-詐騙分析加速已驗證：typecheck、build 與 273 項測試通過，涵蓋請求合併、精確文字比對、到期、LRU 淘汰、失敗重試、權限、限流及登出／換帳號隔離。實際 HTTP／WS cookie 與 Token 認證 smoke 使用正式 JevClient、隔離且固定延遲 200ms 的上游：同內容的網頁與 API 同時查詢後再重查，上游請求由 3 次降為 1 次，重查由約 203ms 降為 0.46ms。這不是實際 TypeSafe 延遲，未呼叫付費 API、未操作真實 LINE 帳號，亦不代表 Gate 通過。
-
-本次修改（詐騙訊息分析）已驗證：typecheck、build、200 項測試全部通過，`npm audit --audit-level=high` 無漏洞；以無頭 Chromium 與隔離 provider（假的分析器）確認右鍵選單只對別人的文字訊息出現「詐騙機率分析」、結果對話框內容與單一按鈕，以及之後其他確認框仍有取消鍵；以無效金鑰呼叫真實 TypeSafe 端點得到 401（端點與認證方式正確）。**未驗證**：以有效金鑰取得真實分析結果（沒有金鑰）、真實 LINE 帳號上的操作。
 
 前一次修改已驗證：typecheck、build、193 項測試全部通過，`npm audit --audit-level=high` 無漏洞。無頭且以 `--mute-audio` 禁止音訊輸出的 Chromium，使用隔離 provider 驗證搜尋排序與即時更新、初次歷史失敗重試、回應更新保留圖片 DOM、登出清理；另啟動實際 `dist/main.js` 並確認未登入畫面。未操作真實 LINE 帳號，這些結果不代表 Gate 通過。以下保留先前版本的實測紀錄：
 

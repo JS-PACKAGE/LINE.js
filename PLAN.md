@@ -41,7 +41,7 @@
 - 多帳號、多使用者、帳號系統與權限。
 - 檔案（FILE）的預覽與播放（v1.14 裁示：可下載，見下）。
 - 網頁端發送檔案、發送影片／語音；訊息編輯送出（linejs 僅支援接收 `message:edit`）、收回他人訊息。
-- 通話（linejs 具 call 能力但不在範圍）、社群管理操作（邀請／踢人／公告）、Timeline／Moa 相簿、貼圖商店、自動回覆／AI Agent 整合（v1.15 的詐騙機率分析只在使用者點選或機器人明確請求時估計單則訊息，服務本身不自動處理訊息，不屬此項）。
+- 通話（linejs 具 call 能力但不在範圍）、社群管理操作（邀請／踢人／公告）、Timeline／Moa 相簿、貼圖商店、自動回覆／AI Agent 整合。
 
 ### 硬性要求
 
@@ -165,6 +165,8 @@
 > issue #2 修正（2026-10）：adapter 禁止 linejs 在 LINE 未發下群組金鑰時自行註冊（`tryRegisterE2EEGroupKey`），避免與官方 App 的新世代並存；代價是成員剛變動、LINE 尚未發下新金鑰時傳送失敗、訊息顯示佔位，待官方 App 建立新金鑰後恢復。即時訊息解密失敗不再被 linejs 靜默丟棄，改為「無法解密」佔位。驗證：以真實 linejs E2EE 程式碼與隔離 LINE 回應（群組金鑰 `NOT_FOUND`）確認傳送、歷史與即時路徑皆不註冊金鑰（修正前發出 2 次註冊流程，即時訊息被丟棄）。根因為推論：issue 回報的同世代雙金鑰與自行註冊吻合，但未以真實帳號重現 LINE 伺服器端行為；既有已損壞的世代無法由本修正修復，需由新成員加入觸發換代。
 
 > v1.20（2026-10 小語裁示：社群成員加入通知，協定版本仍為 2）：`NOTIFIED_JOIN_SQUARE_CHAT` 有型別化負載（`squareChatMid`、`joinedMember`），但 LINE 只在各社群自己的 `fetchSquareChatEvents` 事件串回報（linejs `SquareChat.listen` 亦是逐聊天室輪詢），不在 `listen` 的全域推播串；初版誤聽全域串，實際部署未出現紀錄。改為 adapter 讀取 `api.chats` 內社群的事件串（小語裁示：每收到一次全帳號社群推播 `fetchMyEvents`（任何類型）就立即讀全部，不設計時器；每聊天室同時一個請求；登入後先讀到最新位置，之前的加入不報），驗證格式後記住成員名稱／大頭照，並由 hub 以 `chat:member-joined { chatId, member: { userId, displayName, pictureId?, pictureUrl? } }` 推送給所有機器人連線（限 `api.chats`、已登入、不重播、網頁不收），`hello.capabilities` 加入 `chat:member-joined`。服務日誌記錄 `LINE 社群成員加入：chat=… member=… name="…" picture=https://obs.line-scdn.net/…`（小語裁示：含暱稱與大頭貼網址）。一般群組不在範圍：其成員變動 operation 參數未記載，依規範不猜測。驗證：以正式 adapter、HTTP／`/api/ws` 隔離環境確認登入前的加入不推送、任一社群推播立即讀取並推送、日誌含暱稱與大頭貼網址，同時推送給所有已連入的 `/api/ws` 客戶端；尚未以真實 LINE 帳號確認事件實際送達。
+
+> v1.21（小語裁示：詐騙機率分析移交 NekoGuard，協定版本仍為 2）：移除 `jev` 設定區段、`src/jev/`、`scam:check`／`scam:state`／`scam:result` 與相關錯誤碼、網頁右鍵選單「詐騙機率分析」；舊設定檔的 `jev` 區段會被忽略。v1.15、v1.16 與詐騙分析加速的紀錄僅保留為歷史。驗證：typecheck、build 與 346 項測試通過；以含舊 `jev` 區段的設定啟動實際 `dist/main.js`，服務正常啟動、網頁連線不再收到 `scam:state`，`scam:check` 回 `UNKNOWN_TYPE`（機器人連線同樣由測試確認）。
 
 > 本次驗證：typecheck、build 與 262 項測試通過；已以隔離 LINE 回應、實際 HTTP／WS Token 認證及正式 adapter 驗證 capability 握手、完整分頁、`ownMemberId`、未發言管理員的 MENTION metadata、跨連線拒絕與重新查詢撤銷。回歸測試另涵蓋聊天室／網頁隔離、空名單、失敗、限流、回應順序顛倒、斷線、登出／換帳號。尚未以真實 LINE 帳號或 NekoGuard 程序完成聯測，不宣稱通過 Gate。
 
@@ -388,8 +390,6 @@
 | `sent` | `{ requestId, messageId }` |
 | `api:state` | `{ enabled, chats: string[], createdAt? }`（只給網頁連線；`createdAt` 為目前 Token 的建立時間，無 Token 則省略） |
 | `api:token` | `{ token }`（新 Token；**只送給發起 `api:token:create` 的連線、僅此一次**，不入日誌） |
-| `scam:state` | `{ enabled }`（是否設定 `jev.token`；只給網頁，不含金鑰） |
-| `scam:result` | `{ requestId, chatId, messageId, analysis: { probability, tactic?: { kind, confidence } } }`（只送給發起 `scam:check` 的連線） |
 | `error` | `{ requestId?, code, message }`（generic） |
 | `status` | `{ state: "starting"｜"listening"｜"reconnecting" }` |
 
@@ -401,7 +401,6 @@
 | `history:fetch` | `{ requestId, chatId, limit?, before? }` |
 | `message:send` | `{ requestId, chatId, text?, mediaId?, sticker?: { packageId, stickerId } }` |
 | `message:react` | `{ requestId, chatId, messageId, reaction: "NICE"｜"LOVE"｜"FUN"｜"AMAZING"｜"SAD"｜"OMG"｜null }`（僅網頁，與 `message:send` 共用頻率上限） |
-| `scam:check` | `{ requestId, chatId, messageId }`（網頁每連線每分鐘 10 次；機器人限 `api.chats`、所有機器人合計每分鐘 10 次；只接受別人傳來、已顯示、未收回的文字訊息） |
 | `profile:get` | `{ requestId }`（自己的 `profile`；網頁與機器人皆可，不呼叫 LINE） |
 | `chat:admins:get` | `{ requestId, chatId }`（僅機器人 API；指定社群聊天室的全部管理員與共同管理員） |
 | `chat:admin-token:get` | `{ requestId, chatId }`（網頁可取任何已知聊天室；機器人限 `api.chats`） |
@@ -413,7 +412,7 @@
 ### 機器人 API（`/api/ws`）
 - 升級條件：`api.enabled`、**無 `Origin`**、`Authorization: Bearer linejs_…` 符合目前 Token；否則 403（同時超過 4 個連線回 429）。`Host` 不限制（同網頁）。
 - 連線時收到 `hello`、`auth:state`、`status`、`auth:ready`、僅含 `api.chats` 的 `channels`，以及這些聊天室的 `chat:admin-token` 推送（v1.19）；之後只有這些聊天室的 `message`／`message:edit` 與權杖推送／失效通知。不重播、不給 `read`／`update:available`／`api:state`。
-- 可送：`message:send`（`requestId`、`chatId`、`text`、可選 `mentions`／`replyTo`；`mediaId`／`sticker` 回 `INVALID_REQUEST`）、`history:fetch`、`scam:check`（v1.16，回 `scam:result`）、`profile:get`（v1.17，回 `profile`）、`chat:admins:get`（v1.18，回 `chat:admins`）、`chat:admin-token:get`／`chat:admin-token:consume`（v1.19）、`ping`；其餘 `UNKNOWN_TYPE`；`api.chats` 以外的聊天室回 `UNKNOWN_CHAT`。
+- 可送：`message:send`（`requestId`、`chatId`、`text`、可選 `mentions`／`replyTo`；`mediaId`／`sticker` 回 `INVALID_REQUEST`）、`history:fetch`、`profile:get`（v1.17，回 `profile`）、`chat:admins:get`（v1.18，回 `chat:admins`）、`chat:admin-token:get`／`chat:admin-token:consume`（v1.19）、`ping`；其餘 `UNKNOWN_TYPE`；`api.chats` 以外的聊天室回 `UNKNOWN_CHAT`。
 - 限制：每連線 `limits.sendsPerSecond`，且全部機器人合計 `api.sendsPerMinute`（預設 20，≤120）。
 
 ### HTTP
@@ -458,9 +457,8 @@ Media   { mediaId, mime, size, kind: "image"｜"sticker"｜"video"｜"audio" }
 9. 依賴釘選版本；`npm audit` 無 high 以上（Gate 4 驗收）。
 10. 解密／解析失敗 **fail-closed**：顯示佔位，不降級猜測內容。
 11. 機器人 API（v1.11）：預設關閉；Bearer Token（只存雜湊、一次性顯示）、不得帶 `Origin`、影格白名單、`api.chats` 範圍、全域每分鐘發送上限、最多 4 連線、換／撤銷 Token 立即斷線。
-12. 詐騙機率分析（v1.15、v1.16）：`jev.token` 有值才啟用；金鑰只作為送往 TypeSafe 的 Bearer 標頭、不送網頁、不入日誌；只在使用者點選或機器人請求時送出伺服器快取的那一則他人文字；網頁每連線每分鐘 10 次，機器人限 `api.chats`、合計每分鐘 10 次；回應 fail-closed、錯誤 generic。
 
-錯誤日誌修正：移除 WS 各操作與程序例外處理的上游錯誤文字，沿用管理員／詐騙查詢的固定碼模式。歷史失敗回歸測試確認錯誤名稱與訊息不進日誌；typecheck、build、314 項測試通過。正式 HTTP／WS 隔離失敗回 generic `HISTORY_FAILED`，日誌只有該碼；另在暫存設定、無 session、停用更新的環境啟動實際 `dist/main.js`，未處理 rejection 後仍可接受 HTTP，未捕捉 exception 記固定碼後 exit 1 並移除 pid，兩者均未輸出注入的假敏感文字。不接觸真實帳號，也不改既有錯誤回應或關閉流程。
+錯誤日誌修正：移除 WS 各操作與程序例外處理的上游錯誤文字，沿用管理員查詢的固定碼模式。歷史失敗回歸測試確認錯誤名稱與訊息不進日誌；typecheck、build、314 項測試通過。正式 HTTP／WS 隔離失敗回 generic `HISTORY_FAILED`，日誌只有該碼；另在暫存設定、無 session、停用更新的環境啟動實際 `dist/main.js`，未處理 rejection 後仍可接受 HTTP，未捕捉 exception 記固定碼後 exit 1 並移除 pid，兩者均未輸出注入的假敏感文字。不接觸真實帳號，也不改既有錯誤回應或關閉流程。
 
 ---
 

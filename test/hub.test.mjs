@@ -130,7 +130,7 @@ async function freePort() {
   return port;
 }
 
-async function start(t, { restore = true, readReceipts = true, api = {}, scam } = {}) {
+async function start(t, { restore = true, readReceipts = true, api = {} } = {}) {
   const port = await freePort();
   const root = await mkdtemp(join(tmpdir(), "linejs-hub-"));
   await writeFile(join(root, "index.html"), "<!doctype html><title>test</title>");
@@ -148,7 +148,7 @@ async function start(t, { restore = true, readReceipts = true, api = {}, scam } 
   const media = new MediaService(1024, provider);
   const apiTokens = new ApiTokenStore(join(root, "api-token.json"));
   const web = createWebServer(config, root, media, apiTokens);
-  const hub = createHub({ server: web.server, authorizeUpgrade: web.authorizeUpgrade, authorizeApiUpgrade: web.authorizeApiUpgrade, apiTokens, config, login, provider, store, media, serverVersion: "test", ...(scam ? { scam } : {}) });
+  const hub = createHub({ server: web.server, authorizeUpgrade: web.authorizeUpgrade, authorizeApiUpgrade: web.authorizeApiUpgrade, apiTokens, config, login, provider, store, media, serverVersion: "test" });
   await new Promise((resolve) => web.server.listen(port, "127.0.0.1", resolve));
   t.after(async () => {
     hub.close();
@@ -1015,239 +1015,6 @@ test("reactions: only shown, real messages; a change (or taking it back) reaches
   assert.equal(env.store.get("701", CHAT).reactions, undefined);
 });
 
-test("scam check: only someone else's shown text is rated, its stored copy is what goes out, and failures stay generic", async (t) => {
-  const rated = [];
-  const scam = {
-    failure: undefined,
-    async analyzeScam(text) {
-      rated.push(text);
-      if (this.failure) throw this.failure;
-      return { probability: 0.91, tactic: { kind: "phishing", confidence: 0.7 } };
-    },
-  };
-  const env = await signedIn(t, { scam });
-  assert.deepEqual(env.client.frames.find((frame) => frame.type === "scam:state"), { type: "scam:state", enabled: true });
-  const base = { channelId: CHAT, channelKind: "group", senderName: "小明", contentType: "NONE", createdAt: 1 };
-  env.hub.handleMessage({ ...base, messageId: "801", senderId: "u1", text: "您的帳戶異常，請點連結驗證" }, "new");
-  env.hub.handleMessage({ ...base, messageId: "802", senderId: "u-me", text: "我自己說的" }, "new");
-  env.hub.handleMessage({ ...base, messageId: "803", senderId: "u1", contentType: "IMAGE", mediaId: "msg-803" }, "new");
-  env.hub.handleMessage({ ...base, messageId: "804", senderId: "u1", text: "等等收回" }, "new");
-  env.hub.handleUnsend(CHAT, "804");
-  for (const [requestId, messageId] of [["k1", "802"], ["k2", "803"], ["k3", "804"], ["k4", "999"]]) {
-    env.request({ type: "scam:check", requestId, chatId: CHAT, messageId });
-    assert.equal((await env.client.until((frame) => frame.requestId === requestId)).code, "INVALID_REQUEST", messageId);
-  }
-  assert.deepEqual(rated, [], "nothing is sent to TypeSafe for own, non-text, taken-back or unknown messages");
-
-  // Text the page puts in the frame is ignored: the server's own copy of message 801 is what gets rated.
-  env.request({ type: "scam:check", requestId: "k5", chatId: CHAT, messageId: "801", text: "安全的內容" });
-  assert.deepEqual(await env.client.until((frame) => frame.type === "scam:result"), {
-    type: "scam:result", requestId: "k5", chatId: CHAT, messageId: "801", analysis: { probability: 0.91, tactic: { kind: "phishing", confidence: 0.7 } },
-  });
-  assert.deepEqual(rated, ["您的帳戶異常，請點連結驗證"]);
-
-  scam.failure = new Error("status 401 key=ts_secret");
-  env.hub.handleMessage({ ...base, messageId: "801", senderId: "u1", text: "修改後的可疑內容" }, "edit");
-  env.request({ type: "scam:check", requestId: "k6", chatId: CHAT, messageId: "801" });
-  const failure = await env.client.until((frame) => frame.requestId === "k6");
-  assert.equal(failure.code, "SCAM_CHECK_FAILED");
-  assert.ok(!JSON.stringify(failure).includes("ts_secret"));
-
-  scam.failure = undefined;
-  // Six checks spent above; the per-page budget is ten per minute.
-  for (let i = 0; i < 5; i += 1) env.request({ type: "scam:check", requestId: `r${i}`, chatId: CHAT, messageId: "801" });
-  await env.client.until((frame) => frame.requestId === "r3" && frame.type === "scam:result");
-  assert.equal((await env.client.until((frame) => frame.requestId === "r4")).code, "RATE_LIMITED");
-});
-
-test("without a Jev token pages are told the scam check is off and requests are refused before anything is sent", async (t) => {
-  const env = await signedIn(t);
-  assert.deepEqual(env.client.frames.find((frame) => frame.type === "scam:state"), { type: "scam:state", enabled: false });
-  env.hub.handleMessage({ messageId: "801", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "嗨", contentType: "NONE", createdAt: 1 }, "new");
-  env.request({ type: "scam:check", requestId: "k1", chatId: CHAT, messageId: "801" });
-  assert.equal((await env.client.until((frame) => frame.requestId === "k1")).code, "SCAM_CHECK_UNAVAILABLE");
-});
-
-test("scam checks share exact-text work across pages and bots, but different text never waits for it", async (t) => {
-  const pending = Promise.withResolvers();
-  const started = Promise.withResolvers();
-  const rated = [];
-  const env = await botEnv(t, {}, { scam: { analyzeScam(text) {
-    rated.push(text);
-    if (text === "可疑內容") { started.resolve(); return pending.promise; }
-    return Promise.resolve({ probability: 0.1 });
-  } } });
-  const bot = await env.open();
-  const base = { channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", contentType: "NONE", createdAt: 1 };
-  for (const [messageId, text] of [["801", "可疑內容"], ["802", "可疑內容"], ["803", "可疑內容 "]]) {
-    env.hub.handleMessage({ ...base, messageId, text }, "new");
-  }
-  env.page.socket.send(JSON.stringify({ type: "scam:check", requestId: "page", chatId: CHAT, messageId: "801" }));
-  await started.promise;
-  bot.socket.send(JSON.stringify({ type: "scam:check", requestId: "bot", chatId: CHAT, messageId: "802" }));
-  bot.socket.send(JSON.stringify({ type: "scam:check", requestId: "different", chatId: CHAT, messageId: "803" }));
-  assert.equal((await bot.until((f) => f.requestId === "different")).analysis.probability, 0.1);
-  assert.deepEqual(rated, ["可疑內容", "可疑內容 "], "no trimming, approximate matching or global queue");
-  pending.resolve({ probability: 0.9, tactic: { kind: "phishing", confidence: 0.8 } });
-  for (const [client, requestId, messageId] of [[env.page, "page", "801"], [bot, "bot", "802"]]) {
-    assert.deepEqual(await client.until((f) => f.requestId === requestId), {
-      type: "scam:result", requestId, chatId: CHAT, messageId,
-      analysis: { probability: 0.9, tactic: { kind: "phishing", confidence: 0.8 } },
-    });
-  }
-  bot.socket.send(JSON.stringify({ type: "scam:check", requestId: "cached", chatId: CHAT, messageId: "801" }));
-  assert.equal((await bot.until((f) => f.requestId === "cached")).analysis.probability, 0.9);
-  assert.equal(rated.length, 2);
-  assert.equal(env.page.frames.some((f) => ["bot", "cached", "different"].includes(f.requestId)), false);
-  assert.equal(bot.frames.some((f) => f.requestId === "page"), false);
-  env.hub.handleMessage({ ...base, channelId: OTHER, messageId: "804", text: "可疑內容" }, "new");
-  bot.socket.send(JSON.stringify({ type: "scam:check", requestId: "denied", chatId: OTHER, messageId: "804" }));
-  assert.equal((await bot.until((f) => f.requestId === "denied")).code, "UNKNOWN_CHAT", "a hit cannot bypass chat authorization");
-  env.hub.handleUnsend(CHAT, "801");
-  bot.socket.send(JSON.stringify({ type: "scam:check", requestId: "unsent", chatId: CHAT, messageId: "801" }));
-  assert.equal((await bot.until((f) => f.requestId === "unsent")).code, "INVALID_REQUEST");
-});
-
-test("scam result expiry is measured from completion and cache hits do not extend it", async (t) => {
-  const pending = Promise.withResolvers();
-  const started = Promise.withResolvers();
-  let calls = 0;
-  const env = await signedIn(t, { scam: { analyzeScam() {
-    calls++;
-    if (calls === 1) { started.resolve(); return pending.promise; }
-    return Promise.resolve({ probability: 0.2 });
-  } } });
-  env.hub.handleMessage({ messageId: "801", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "可疑內容", contentType: "NONE", createdAt: 1 }, "new");
-  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
-  const ask = async (requestId) => {
-    env.request({ type: "scam:check", requestId, chatId: CHAT, messageId: "801" });
-    return env.client.until((f) => f.requestId === requestId);
-  };
-  const first = ask("first");
-  await started.promise;
-  t.mock.timers.tick(10_000);
-  pending.resolve({ probability: 0.9 });
-  await first;
-  t.mock.timers.tick(299_999);
-  assert.equal((await ask("fresh")).analysis.probability, 0.9);
-  assert.equal(calls, 1);
-  t.mock.timers.tick(1);
-  assert.equal((await ask("expired")).analysis.probability, 0.2);
-  assert.equal(calls, 2);
-});
-
-test("a shared failed scam check is not cached and never leaks the upstream error", async (t) => {
-  const pending = Promise.withResolvers();
-  const started = Promise.withResolvers();
-  const logs = [];
-  t.mock.method(console, "error", (...args) => logs.push(args));
-  let calls = 0;
-  const env = await signedIn(t, { scam: { analyzeScam() {
-    calls++;
-    if (calls === 1) { started.resolve(); return pending.promise; }
-    return Promise.resolve({ probability: 0.4 });
-  } } });
-  env.hub.handleMessage({ messageId: "801", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "可疑內容", contentType: "NONE", createdAt: 1 }, "new");
-  for (const requestId of ["first", "shared"]) env.request({ type: "scam:check", requestId, chatId: CHAT, messageId: "801" });
-  await started.promise;
-  env.request({ type: "ping" });
-  await env.client.until((f) => f.type === "pong");
-  pending.reject(new Error("credential ts_secret and private message"));
-  for (const id of ["first", "shared"]) {
-    const reply = await env.client.until((f) => f.requestId === id);
-    assert.equal(reply.code, "SCAM_CHECK_FAILED");
-    assert.ok(!JSON.stringify(reply).includes("ts_secret"));
-  }
-  assert.equal(calls, 1);
-  assert.ok(!JSON.stringify(logs).includes("ts_secret"));
-  env.request({ type: "scam:check", requestId: "retry", chatId: CHAT, messageId: "801" });
-  assert.equal((await env.client.until((f) => f.requestId === "retry")).analysis.probability, 0.4);
-  assert.equal(calls, 2);
-});
-
-test("scam results cannot describe text edited, withdrawn or evicted while analysis was pending", async (t) => {
-  for (const change of ["edit", "unsend", "evict"]) await t.test(change, async (t) => {
-    const pending = Promise.withResolvers();
-    const started = Promise.withResolvers();
-    const env = await signedIn(t, { scam: { analyzeScam() { started.resolve(); return pending.promise; } } });
-    const message = { messageId: "801", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "原文", contentType: "NONE", createdAt: 1 };
-    env.hub.handleMessage(message, "new");
-    env.request({ type: "scam:check", requestId: "pending", chatId: CHAT, messageId: "801" });
-    await started.promise;
-    if (change === "edit") env.hub.handleMessage({ ...message, text: "修改後" }, "edit");
-    else if (change === "unsend") env.hub.handleUnsend(CHAT, "801");
-    else for (let i = 0; i < 500; i++) env.store.upsert({ ...message, messageId: `${1000 + i}`, createdAt: i + 2 }, false);
-    pending.resolve({ probability: 0.9 });
-    assert.equal((await env.client.until((f) => f.requestId === "pending")).code, "INVALID_REQUEST");
-  });
-});
-
-test("logout clears scam results and old pending success or failure cannot replace a new account's cache", async (t) => {
-  for (const outcome of ["success", "failure"]) await t.test(outcome, async (t) => {
-    const pending = Promise.withResolvers();
-    const started = Promise.withResolvers();
-    let calls = 0;
-    const env = await signedIn(t, { scam: { analyzeScam(text) {
-      calls++;
-      if (calls === 2) { started.resolve(); return pending.promise; }
-      return Promise.resolve({ probability: calls === 1 ? 0.9 : 0.2 });
-    } } });
-    const message = { messageId: "801", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "先前完成", contentType: "NONE", createdAt: 1 };
-    const ask = async (requestId, messageId = "801") => {
-      env.request({ type: "scam:check", requestId, chatId: CHAT, messageId });
-      return env.client.until((f) => f.requestId === requestId);
-    };
-    env.hub.handleMessage(message, "new");
-    assert.equal((await ask("completed")).analysis.probability, 0.9);
-    env.hub.handleMessage({ ...message, messageId: "802", text: "等待中" }, "new");
-    env.request({ type: "scam:check", requestId: "old-pending", chatId: CHAT, messageId: "802" });
-    await started.promise;
-    await env.login.logout();
-    env.provider.getProfile = () => ({ userId: "u-new", displayName: "新帳號" });
-    await env.login.restore();
-    env.hub.handleMessage(message, "new");
-    env.hub.handleMessage({ ...message, messageId: "802", text: "等待中" }, "new");
-    assert.equal((await ask("new-completed")).analysis.probability, 0.2);
-    assert.equal((await ask("new-pending", "802")).analysis.probability, 0.2);
-    if (outcome === "success") pending.resolve({ probability: 0.99 });
-    else pending.reject(new Error("old account error"));
-    assert.equal((await ask("after-old", "802")).analysis.probability, 0.2);
-    assert.equal(calls, 4);
-    assert.equal(env.client.frames.some((f) => f.requestId === "old-pending"), false);
-  });
-});
-
-test("scam cache evicts least-recently-used results at its bound", async (t) => {
-  let calls = 0;
-  const env = await signedIn(t, { scam: { async analyzeScam() { calls++; return { probability: 0.3 }; } } });
-  let client = env.client;
-  let onConnection = 0;
-  let sequence = 0;
-  const ask = async (id) => {
-    if (onConnection === 10) {
-      client.socket.close();
-      client = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
-      t.after(() => client.socket.close());
-      await client.opened;
-      onConnection = 0;
-    }
-    onConnection++;
-    const requestId = `cache-${++sequence}`;
-    client.socket.send(JSON.stringify({ type: "scam:check", requestId, chatId: CHAT, messageId: `${id}` }));
-    assert.equal((await client.until((f) => f.requestId === requestId)).type, "scam:result");
-  };
-  for (let i = 1; i <= 257; i++) {
-    env.hub.handleMessage({ messageId: `${i}`, channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: `內容${i}`, contentType: "NONE", createdAt: i }, "new");
-    if (i === 257) await ask(1);
-    await ask(i);
-  }
-  assert.equal(calls, 257);
-  await ask(1);
-  assert.equal(calls, 257, "recently used result survives eviction");
-  await ask(2);
-  assert.equal(calls, 258, "least recently used result must be analyzed again");
-});
-
 test("in OpenChat the account's own member id is learned from its sends before anything there can be taken back", async (t) => {
   const env = await start(t);
   const SQUARE = `m${"s".repeat(32)}`;
@@ -1587,8 +1354,8 @@ test("a newer release is announced to every client, including ones that connect 
 
 const OTHER = `c${"b".repeat(32)}`;
 
-async function botEnv(t, options = {}, { scam } = {}) {
-  const env = await start(t, { api: { enabled: true, chats: [CHAT], ...options }, scam });
+async function botEnv(t, options = {}) {
+  const env = await start(t, { api: { enabled: true, chats: [CHAT], ...options } });
   await env.login.restore();
   const page = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
   t.after(() => page.socket.close());
@@ -2321,7 +2088,7 @@ test("logout and account replacement clear admin grants and require a fresh memb
   assert.equal((await env.mention(bot, CO_ADMIN)).type, "sent");
 });
 
-test("everything outside send, history, chat admins, scam check, profile and ping is unknown to a bot", async (t) => {
+test("everything outside send, history, chat admins, profile and ping is unknown to a bot", async (t) => {
   const env = await botEnv(t);
   const bot = await env.open();
   const frames = [
@@ -2330,6 +2097,7 @@ test("everything outside send, history, chat admins, scam check, profile and pin
     { type: "message:unsend", requestId: "u1", chatId: CHAT, messageId: "11" },
     { type: "message:react", requestId: "r1", chatId: CHAT, messageId: "11", reaction: "NICE" },
     { type: "chat:admins", requestId: "obsolete", chatId: SQUARE },
+    { type: "scam:check", requestId: "k1", chatId: CHAT, messageId: "11" },
   ];
   for (const frame of frames) bot.socket.send(JSON.stringify(frame));
   await bot.until(() => bot.frames.filter((frame) => frame.type === "error").length === frames.length);
@@ -2338,39 +2106,6 @@ test("everything outside send, history, chat admins, scam check, profile and pin
   assert.equal(env.apiTokens.verify(env.token), true);
   assert.equal(env.provider.calls.some((call) => call[0] === "read" || call[0] === "stickers" || call[0] === "unsend" || call[0] === "react"), false);
   bot.socket.send(JSON.stringify({ type: "ping" }));
-});
-
-test("a bot can rate someone else's text only in an allowed chat, on one budget shared by all bots", async (t) => {
-  const rated = [];
-  const env = await botEnv(t, {}, { scam: { async analyzeScam(text) { rated.push(text); return { probability: 0.12 }; } } });
-  const first = await env.open();
-  const second = await env.open();
-  const ask = async (bot, frame) => {
-    bot.socket.send(JSON.stringify(frame));
-    return bot.until((reply) => reply.requestId === frame.requestId);
-  };
-  const base = { channelKind: "group", senderName: "小明", contentType: "NONE", createdAt: 1 };
-  env.hub.handleMessage({ ...base, messageId: "901", channelId: CHAT, senderId: "u1", text: "抽獎中獎請匯款" }, "new");
-  env.hub.handleMessage({ ...base, messageId: "902", channelId: OTHER, senderId: "u1", text: "別群的訊息" }, "new");
-  env.hub.handleMessage({ ...base, messageId: "903", channelId: CHAT, senderId: "u-me", text: "我自己說的" }, "new");
-  assert.deepEqual(await ask(first, { type: "scam:check", requestId: "b1", chatId: CHAT, messageId: "901", text: "安全的內容" }), {
-    type: "scam:result", requestId: "b1", chatId: CHAT, messageId: "901", analysis: { probability: 0.12 },
-  });
-  assert.equal((await ask(first, { type: "scam:check", requestId: "b2", chatId: OTHER, messageId: "902" })).code, "UNKNOWN_CHAT");
-  assert.equal((await ask(first, { type: "scam:check", requestId: "b3", chatId: CHAT, messageId: "903" })).code, "INVALID_REQUEST");
-  assert.deepEqual(rated, ["抽獎中獎請匯款"], "only the allowed chat's stored text went out");
-  // Three checks spent on the first connection; a second connection draws on the same ten per minute.
-  for (let i = 0; i < 7; i += 1) assert.equal((await ask(second, { type: "scam:check", requestId: `c${i}`, chatId: CHAT, messageId: "901" })).type, "scam:result");
-  assert.equal((await ask(second, { type: "scam:check", requestId: "c7", chatId: CHAT, messageId: "901" })).code, "RATE_LIMITED");
-  assert.equal(rated.length, 1, "cached results still consume the shared request budget");
-});
-
-test("a bot is refused the scam check when no Jev token is set", async (t) => {
-  const env = await botEnv(t);
-  const bot = await env.open();
-  env.hub.handleMessage({ messageId: "901", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "嗨", contentType: "NONE", createdAt: 1 }, "new");
-  bot.socket.send(JSON.stringify({ type: "scam:check", requestId: "b1", chatId: CHAT, messageId: "901" }));
-  assert.equal((await bot.until((frame) => frame.requestId === "b1")).code, "SCAM_CHECK_UNAVAILABLE");
 });
 
 test("bots share one send budget per minute across connections, on top of the per-connection limit", async (t) => {

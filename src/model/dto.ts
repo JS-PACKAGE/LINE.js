@@ -103,18 +103,6 @@ export interface StickerPackage {
   animated: boolean;
 }
 
-/** Kinds of scam the analysis can name (see src/jev/client.ts for what each one covers). */
-export const SCAM_TACTICS = ["investment", "impersonation", "phishing", "shopping", "friend", "romance", "job", "prize", "loan", "other"] as const;
-export type ScamTactic = (typeof SCAM_TACTICS)[number];
-
-/** A model's estimate for one received text: the chance it is a scam, and the kind of scam it most resembles. */
-export interface ScamAnalysis {
-  /** 0 (not a scam) to 1 (a scam). */
-  probability: number;
-  /** Absent when the model's answer could not be read. */
-  tactic?: { kind: ScamTactic; confidence: number };
-}
-
 export interface Message {
   messageId: string;
   channelId: string;

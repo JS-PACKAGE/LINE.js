@@ -5,8 +5,6 @@ export interface ConfirmOptions {
   cancelLabel?: string;
   /** Styles the confirm button as destructive and focuses "cancel" first. */
   danger?: boolean;
-  /** Information only: shows just the confirm button. */
-  notice?: boolean;
 }
 
 /**
@@ -25,7 +23,6 @@ export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
   ok.textContent = options.confirmLabel;
   cancel.textContent = options.cancelLabel ?? "取消";
   ok.classList.toggle("danger", options.danger === true);
-  cancel.hidden = options.notice === true;
 
   const { promise, resolve } = Promise.withResolvers<boolean>();
   const finish = (): void => {

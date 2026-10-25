@@ -6,10 +6,9 @@ import type { Config } from "../config.js";
 import type { LoginController } from "../line/login.js";
 import type { LineProvider } from "../line/provider.js";
 import type { ApiTokenStore } from "../http/apiToken.js";
-import type { ScamAnalyzer } from "../jev/client.js";
 import { SlidingWindowLimiter } from "../limit.js";
 import type { MediaService } from "../media/service.js";
-import type { Channel, ChannelKind, JoinedMember, Message, Reactions, ReadPosition, ScamAnalysis } from "../model/dto.js";
+import type { Channel, ChannelKind, JoinedMember, Message, Reactions, ReadPosition } from "../model/dto.js";
 import type { UpdateInfo } from "../update/checker.js";
 import { withMyReaction, type ChatStore } from "../model/store.js";
 import { PROTOCOL_VERSION, type ClientFrame, type ListenState, type ServerFrame } from "./protocol.js";
@@ -23,10 +22,6 @@ const NEW_CHANNEL_REFRESH_MS = 1000;
 const MAX_BOT_CONNECTIONS = 4;
 const READ_RANGE_FRESH_MS = 10_000;
 const CHAT_ADMIN_TOKEN = /^chatadm_[A-Za-z0-9_-]{43}$/;
-// Cache hits still consume the same request budget as paid TypeSafe calls.
-const SCAM_CHECKS_PER_MINUTE = 10;
-const SCAM_CACHE_TTL_MS = 5 * 60_000;
-const SCAM_CACHE_MAX_ENTRIES = 256;
 // A connection that has not answered a ping by the next round is gone (a sleeping laptop, a dropped
 // network): it is closed so broadcasts stop piling up behind it and the page can reconnect.
 const HEARTBEAT_MS = 30_000;
@@ -47,8 +42,6 @@ export interface HubOptions {
   /** Bot endpoint (/api/ws): Host, no Origin and a valid bearer token. */
   authorizeApiUpgrade: (request: IncomingMessage) => boolean;
   apiTokens: ApiTokenStore;
-  /** Set when config.yaml has a Jev token: enables `scam:check`. */
-  scam?: ScamAnalyzer;
 }
 
 export interface Hub {
@@ -92,8 +85,6 @@ const GENERIC = {
   API_FAILED: "無法更新 API Token，請稍後重試。",
   UNSEND_FAILED: "無法收回這則訊息，請稍後重試。",
   REACT_FAILED: "無法送出回應，請稍後重試。",
-  SCAM_CHECK_UNAVAILABLE: "未啟用詐騙訊息分析。",
-  SCAM_CHECK_FAILED: "詐騙機率分析失敗，請稍後重試。",
 } as const;
 
 function updateFrame(info: UpdateInfo): ServerFrame {
@@ -101,13 +92,11 @@ function updateFrame(info: UpdateInfo): ServerFrame {
 }
 
 export function createHub(options: HubOptions): Hub {
-  const { server, authorizeUpgrade, authorizeApiUpgrade, config, login, provider, store, media, serverVersion, apiTokens, scam } = options;
+  const { server, authorizeUpgrade, authorizeApiUpgrade, config, login, provider, store, media, serverVersion, apiTokens } = options;
   const wss = new WebSocketServer({ noServer: true, maxPayload: config.limits.frameMaxBytes });
   const botWss = new WebSocketServer({ noServer: true, maxPayload: config.limits.frameMaxBytes });
   const botScope: ReadonlySet<string> = new Set(config.api.chats);
   const botSendLimiter = new SlidingWindowLimiter(config.api.sendsPerMinute, 60_000);
-  // Shared by every bot connection: several connections must not multiply the paid TypeSafe calls.
-  const botScamLimiter = new SlidingWindowLimiter(SCAM_CHECKS_PER_MINUTE, 60_000);
   let status: ListenState = "starting";
   let refreshing: Promise<void> | undefined;
   // State can become ready again before an old LINE request settles; "ready" alone is not an account boundary.
@@ -127,9 +116,6 @@ export function createHub(options: HubOptions): Hub {
   const ownSquareSenders = new Map<string, string>();
   // Extra mention permission belongs only to the requesting bot and chat, never the shared message cache.
   const adminMentions = new WeakMap<WebSocket, Map<string, Set<string>>>();
-  // Exact text only, shared after authorization; hashes avoid retaining another copy of private text.
-  // Pending and completed entries share a bounded LRU, cleared at every account boundary.
-  const scamCache = new Map<string, { result: Promise<ScamAnalysis>; expires: number }>();
   // These plaintext secrets are account-local and never persisted, replayed or broadcast.
   const chatAdminTokens = new Map<string, { token: string; bytes: Buffer; createdAt: number }>();
   let chatAdminAccount: string | undefined;
@@ -587,60 +573,6 @@ export function createHub(options: HubOptions): Hub {
     }
   }
 
-  /**
-   * The text sent to TypeSafe is the server's own copy of a message it has shown, from someone else:
-   * a client cannot use this to send arbitrary text out, or to rate its own messages. Bots are also
-   * held to their `api.chats` scope.
-   */
-  async function handleScamCheck(socket: WebSocket, frame: Record<string, unknown>, scope?: ReadonlySet<string>): Promise<void> {
-    const parsed = parseMessageRequest(frame);
-    if (!parsed.ok) return fail(socket, "INVALID_REQUEST", parsed.requestId);
-    const { requestId, chatId, messageId } = parsed.value;
-    if (!scam) return fail(socket, "SCAM_CHECK_UNAVAILABLE", requestId);
-    if (login.state !== "ready" || !store.channelOf(chatId) || (scope && !scope.has(chatId))) return fail(socket, "UNKNOWN_CHAT", requestId);
-    const message = store.get(messageId, chatId);
-    const mine = message !== undefined && (message.senderId === provider.getProfile().userId || message.senderId === ownSquareSenders.get(chatId));
-    if (!message?.text || mine || message.unsent || message.decryptFailed || message.contentType === "CHATEVENT") return fail(socket, "INVALID_REQUEST", requestId);
-    const account = generation;
-    try {
-      const key = createHash("sha256").update(message.text, "utf16le").digest("hex");
-      let entry = scamCache.get(key);
-      if (entry && entry.expires <= Date.now()) {
-        scamCache.delete(key);
-        entry = undefined;
-      }
-      if (entry) {
-        scamCache.delete(key);
-        scamCache.set(key, entry);
-      } else {
-        const fresh = {
-          result: scam.analyzeScam(message.text).then((analysis) => {
-            fresh.expires = Date.now() + SCAM_CACHE_TTL_MS;
-            return analysis;
-          }).catch((error: unknown) => {
-            // An old failed request must not remove a replacement or a new account's result.
-            if (scamCache.get(key) === fresh) scamCache.delete(key);
-            throw error;
-          }),
-          expires: Infinity,
-        };
-        entry = fresh;
-        scamCache.set(key, fresh);
-        if (scamCache.size > SCAM_CACHE_MAX_ENTRIES) scamCache.delete(scamCache.keys().next().value!);
-      }
-      const analysis = await entry.result;
-      if (account !== generation || login.state !== "ready") return;
-      const current = store.get(messageId, chatId);
-      if (!current || current.text !== message.text || current.senderId !== message.senderId || current.unsent
-        || current.decryptFailed || current.contentType === "CHATEVENT") return fail(socket, "INVALID_REQUEST", requestId);
-      send(socket, { type: "scam:result", requestId, chatId, messageId, analysis });
-    } catch {
-      if (account !== generation) return;
-      console.error("SCAM_CHECK_FAILED");
-      fail(socket, "SCAM_CHECK_FAILED", requestId);
-    }
-  }
-
   /** Stores and announces new reactions; returns the message as now cached, or undefined if nothing changed. */
   function updateReactions(chatId: string, messageId: string, reactions: Reactions | undefined): Message | undefined {
     const before = store.channelOf(chatId);
@@ -804,7 +736,6 @@ export function createHub(options: HubOptions): Hub {
       seenReads.clear();
       readFetches.clear();
       ownSquareSenders.clear();
-      scamCache.clear();
       chatAdminTokens.clear();
       for (const socket of botWss.clients) adminMentions.get(socket)?.clear();
       status = "starting";
@@ -878,10 +809,6 @@ export function createHub(options: HubOptions): Hub {
           if (!sendLimiter.allow() || !botSendLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
           else void handleSend(socket, frame as Record<string, unknown>, botScope);
           return;
-        case "scam:check":
-          if (!botScamLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
-          else void handleScamCheck(socket, frame as Record<string, unknown>, botScope);
-          return;
         case "profile:get":
           if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
           else handleProfile(socket, frame as Record<string, unknown>);
@@ -897,13 +824,11 @@ export function createHub(options: HubOptions): Hub {
     // Per connection: a runaway script must not be able to hammer LINE through us.
     const sendLimiter = new SlidingWindowLimiter(config.limits.sendsPerSecond, 1000);
     const historyLimiter = new SlidingWindowLimiter(HISTORY_PER_SECOND, 1000);
-    const scamLimiter = new SlidingWindowLimiter(SCAM_CHECKS_PER_MINUTE, 60_000);
     send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion });
     if (update) send(socket, updateFrame(update));
     send(socket, { type: "auth:state", state: login.state });
     send(socket, { type: "status", state: status });
     send(socket, apiState());
-    send(socket, { type: "scam:state", enabled: scam !== undefined });
     if (login.state === "ready") sendReady(socket);
 
     socket.on("message", (data, isBinary) => {
@@ -936,10 +861,6 @@ export function createHub(options: HubOptions): Hub {
           // Visible to the other side like a send, so it shares the send budget.
           if (!sendLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
           else void handleReactRequest(socket, frame as Record<string, unknown>);
-          return;
-        case "scam:check":
-          if (!scamLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
-          else void handleScamCheck(socket, frame as Record<string, unknown>);
           return;
         case "chat:read":
           // Silent on purpose (see handleChatRead); the shared limiter keeps a script from hammering LINE.
@@ -1030,7 +951,6 @@ export function createHub(options: HubOptions): Hub {
       clearInterval(heartbeat);
       clearTimeout(refreshTimer);
       clearTimeout(listChangeTimer);
-      scamCache.clear();
       chatAdminTokens.clear();
       for (const socket of [...wss.clients, ...botWss.clients]) socket.close(1001);
       botWss.close();
