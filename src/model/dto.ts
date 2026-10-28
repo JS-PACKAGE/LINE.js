@@ -83,7 +83,9 @@ export type MessageCard =
   /** `fileId` (served by `/media/:id` as a download only) is set when the server can fetch it. */
   | { kind: "file"; name: string; size?: number; fileId?: string }
   /** LINE's own text stand-in for a rich card. */
-  | { kind: "flex"; altText: string };
+  | { kind: "flex"; altText: string }
+  /** A group or OpenChat note (記事本) post notification; `preview` is LINE's own excerpt, not the full post. */
+  | { kind: "note"; postId: string; preview?: string };
 
 /** LINE's six predefined reactions; newer custom reactions are not shown. */
 export const REACTION_KINDS = ["NICE", "LOVE", "FUN", "AMAZING", "SAD", "OMG"] as const;

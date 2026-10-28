@@ -40,6 +40,13 @@ export type ServerFrame =
   | { type: "chat:admin-token:changed"; chatId: string }
   /** Someone joined an OpenChat chat. Bots only, and only for chats in `api.chats`. */
   | { type: "chat:member-joined"; chatId: string; member: JoinedMember }
+  /**
+   * A note (記事本) post was announced in a group or OpenChat chat. Bots only, only for chats in `api.chats`.
+   * `text` is the post as LINE's note API returns it; when that fails `error` is set and only `preview`
+   * (LINE's excerpt in the chat notification) may be there.
+   */
+  | ({ type: "chat:note-posted"; chatId: string; messageId: string; postId: string; senderId: string; senderName: string; createdAt: number; preview?: string }
+    & ({ text: string } | { error: "NOTE_FETCH_FAILED" }))
   | { type: "sent"; requestId: string; messageId: string }
   | { type: "read"; chatId: string; positions: ReadPosition[] }
   | { type: "stickers"; requestId: string; packages: StickerPackage[] }

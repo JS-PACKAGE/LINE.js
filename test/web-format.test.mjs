@@ -97,6 +97,8 @@ test("a quote preview is one line of at most 60 characters, or names what the me
   assert.equal(previewOf({ ...base, text: "字".repeat(61) }), `${"字".repeat(60)}…`);
   assert.equal(previewOf({ ...base, text: "字".repeat(60) }), "字".repeat(60));
   assert.equal(previewOf({ ...base, contentType: "FILE", card: { kind: "file", name: "報告.pdf", fileId: "file-1" } }), "［檔案］報告.pdf");
+  assert.equal(previewOf({ ...base, contentType: "POSTNOTIFICATION", card: { kind: "note", postId: "p1", preview: "週六集合" } }), "［記事本］週六集合");
+  assert.equal(previewOf({ ...base, contentType: "POSTNOTIFICATION", card: { kind: "note", postId: "p1" } }), "［記事本］新貼文");
   assert.equal(previewOf({ ...base, contentType: "IMAGE", mediaId: "msg-1" }), "［圖片］");
   assert.equal(previewOf({ ...base, contentType: "WEIRD" }), "［訊息］");
   assert.equal(previewOf({ ...base, text: "祕密", unsent: true }), "［已收回的訊息］", "a taken-back message never leaks its text");

@@ -56,6 +56,7 @@ npm start
 - **LINE 表情貼**：收到的訊息若含 LINE 表情貼，會在文字中以小圖顯示；整則只有表情貼時放大顯示。圖片由伺服器向 LINE 公開 CDN 代取（瀏覽器不直接連 LINE），只顯示靜態圖；取不到時保留原本的替代文字。網頁目前不能送出 LINE 表情貼（一般 emoji 照常可輸入）。
 - **成員人數**：群組、多人聊天室與社群在對話標題列（以及沒有最新訊息時的聊天列表）顯示目前人數，例如「社群 · 345 人」。人數取自載入聊天列表時 LINE 回傳的資料（社群為該聊天室的成員數，取不到時不顯示）；群組成員變動會觸發清單重新整理而更新，社群人數則在下次重新整理聊天列表時更新。
 - **系統訊息**：LINE 的成員異動事件（`CHATEVENT`，目前支援 `C_MI`）顯示為置中的灰色小膠囊，例如「XX 新增 OO 至群組」；其他未確認含義的事件類型一律顯示「［系統訊息］」佔位，不猜測內容。
+- **記事本**：群組與社群的記事本發文通知（LINE 的 `POSTNOTIFICATION`；群組為 `serviceType: GB`、社群為 `SN`）以「記事本」小卡顯示 LINE 在通知裡附帶的摘要，沒有摘要時顯示「新貼文」；網頁不另外抓取全文。相簿與分享的 LINE VOOM 貼文同屬此類型，仍只顯示「［訊息］」佔位。通知格式取自其他用戶端的實測紀錄，尚未以真實帳號確認。
 - **收回**：對方（或你在其他裝置上）收回訊息時，該訊息改為「XX 已收回訊息」（自己的顯示「你已收回訊息」），引用它的回覆顯示「［已收回的訊息］」，圖片／影片／語音／檔案也不再提供下載；收回通知比訊息本身先到時同樣只顯示佔位。只處理本服務已收過的訊息 id，不依通知內容猜測是哪一則。自己的訊息可在右鍵選單按「收回」（會先確認；LINE 只允許收回一段時間內送出的訊息，被拒時顯示一般錯誤）；社群裡要先從此頁送過訊息，服務才認得你在該社群的成員 id。
 - **回應（reaction）**：訊息下方顯示 LINE 六種預設回應（👍 讚、❤️ 愛心、😆 好笑、😲 驚訝、😢 難過、😱 天啊）的人數，你按過的會標亮；右鍵選單「回應…」或點小膠囊即可送出，點自己已選的回應則取消（對方會看到，與送出訊息共用頻率上限）。一般聊天室的回應隨訊息與歷史載入，LINE 的即時回應通知格式尚未驗證，因此他人的新回應要重新載入歷史才會出現；社群另有即時狀態事件（`NOTIFIED_UPDATE_MESSAGE_STATUS`）會即時更新。LINE 新版的自訂回應不顯示。
 - **@ 提及**：在群組、聊天室或社群的輸入框打 `@` 會列出在此聊天室發過言的人（最近發言者在前），繼續打字可篩選，↑／↓ 選擇、Enter 或 Tab 確認、Esc 關閉（輸入法選字中的 Enter 不會選取）；也可點訊息上的人名或用右鍵選單「@ 提及」。只有從清單或人名加入、且 `@名字` 仍完整留在文字中的才會成為真正的標記，自己手打的 `@名字` 只是文字。端對端加密聊天室的標記資料會一併放進加密內容，不只留在明文（尚未以真實帳號確認 LINE App 的顯示）。收到的訊息裡被 @ 的人名以強調色顯示，@ 你或 @All 另加黃色底色；範圍以 LINE 附帶的提及資料為準，資料不合（超出文字、重疊）的部分不標示。社群裡你的成員 id 與帳號不同，因此社群中 @ 你的訊息只有一般強調色。
@@ -168,12 +169,13 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 | 機器人 → 服務 | `chat:admin-token:get` | `{ requestId, chatId }`：取得 `api.chats` 內已知聊天室的明文權杖，回 `chat:admin-token { requestId, chatId, token, createdAt }` |
 | 機器人 → 服務 | `chat:admin-token:consume` | `{ requestId, chatId, token }`：成功即銷毀並替換權杖，回 `chat:admin-token:consumed { requestId, chatId }`（不含新值）；新權杖隨即以推送影格告知所有已連入外掛 |
 | 機器人 → 服務 | `ping` → `pong` | 保活；服務另以 WebSocket 協定層 Ping 每 30 秒檢查，連續兩輪未回應即斷線（一般 WebSocket 函式庫會自動回應） |
-| 服務 → 機器人 | `hello`、`auth:state`、`status` | 連線即送；`hello` 保留數字 `protocol: 2` 與 `serverVersion`，以 `capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined"]` 宣告擴充。`auth:state` 不是 `ready`（LINE 尚未登入）時還不能收發 |
+| 服務 → 機器人 | `hello`、`auth:state`、`status` | 連線即送；`hello` 保留數字 `protocol: 2` 與 `serverVersion`，以 `capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined", "chat:note-posted"]` 宣告擴充。`auth:state` 不是 `ready`（LINE 尚未登入）時還不能收發 |
 | 服務 → 機器人 | `auth:ready` | 含自己的 `profile.userId`，可排除一般聊天室中自己發的訊息；OpenChat 須改用 `chat:admins` 回應的 `ownMemberId` |
 | 服務 → 機器人 | `channels` | 只含 `api.chats` 內的聊天室；有變動時重送 |
 | 服務 → 機器人 | `chat:admin-token` | **主動推送**（無 `requestId`）`{ chatId, token, createdAt }`：連線時、登入完成、頻道清單更新與每次成功兌換後，推送 `api.chats` 內已知聊天室的目前權杖給所有已連入外掛 |
 | 服務 → 機器人 | `chat:admin-token:changed` | `{ chatId }`：`api.chats` 內聊天室從伺服器清單移除、權杖作廢時通知；不含明文。登出時以 `auth:state` 非 `ready` 表示全部作廢 |
 | 服務 → 機器人 | `chat:member-joined` | `{ chatId, member: { userId, displayName, pictureId?, pictureUrl? } }`：有人加入 `api.chats` 內的社群聊天室時，推送給所有已連入的機器人（LINE 只在各社群聊天室自己的事件串回報加入，因此服務會讀取 `api.chats` 內社群的事件：每次收到 LINE 的社群推播（任何類型）時立即讀取每個社群，沒有定時輪詢；會多出對 LINE 的請求，社群越多越多。登入後第一次會先讀到最新位置，之前的加入不推送；`userId` 為社群成員 ID，符合 `/^p[A-Za-z0-9]{10,64}$/`；`pictureUrl` 為 LINE 公開 CDN 上的大頭貼連結（`https://obs.line-scdn.net/…`，沒有大頭貼時省略），`pictureId` 則是本服務 `/media/` 路徑用的 ID；包含本帳號自己加入）。不重播、網頁不收；只限社群，一般群組不送。服務日誌記錄 `LINE 社群成員加入：chat=… member=… name="…" picture=https://obs.line-scdn.net/…`（含暱稱與大頭貼網址；沒有大頭貼時 `picture=-`） |
+| 服務 → 機器人 | `chat:note-posted` | `{ chatId, messageId, postId, senderId, senderName, createdAt, preview?, text }`，取不到全文時以 `error: "NOTE_FETCH_FAILED"` 取代 `text`：`api.chats` 內的群組或社群聊天室收到新的記事本發文通知時，推送給所有已連入的機器人（網頁不收、不重播；沒有機器人連線時不抓取）。服務經 LINE 記事本 API（linejs `base.timeline.getPost`）取得全文放進 `text`（只有圖片的貼文為空字串）；只讀得到該群組本身或該聊天室所屬社群的貼文，通知指向別處、LINE 拒絕、逾時（15 秒）或超過所有聊天室合計每分鐘 20 篇時一律回 `NOTE_FETCH_FAILED`。`preview` 是通知裡 LINE 附帶的摘要（可能不完整）；`senderId`／`senderName` 是送出通知的人（依其他用戶端的紀錄即發文者）。第一次抓取時 linejs 會替帳號核發 LINE Timeline 頻道權杖。同一則記事本若被分享到聊天室，可能再收到一次（未確認），可用 `postId` 去重；同一則訊息也會以 `message` 影格送出，帶 `card: { kind: "note", postId, preview? }`。通知格式與記事本 API 的回應格式都尚未以真實帳號確認 |
 | 服務 → 機器人 | `message`、`message:edit`、`message:unsend` | 只有 `api.chats` 內聊天室的**即時**訊息、編輯與收回；包含你自己發的 |
 | 服務 → 機器人 | `sent`、`history`、`profile`、`chat:admins`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`CHAT_ADMINS_UNSUPPORTED`、`CHAT_ADMINS_FAILED`…） |
 

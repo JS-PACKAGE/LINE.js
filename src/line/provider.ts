@@ -12,6 +12,7 @@ import { parseCheckedOperation, parseReadOperation, parseReadRanges, parseUnsend
 import { parseOwnedProducts, parsePackageMeta, type PackageMeta } from "./stickers.js";
 import { chatEventMids, chatEventText, isChatEvent } from "./chatEvent.js";
 import { contentTypeName, messageCard } from "./cards.js";
+import { noteTarget, noteText, type NoteTarget } from "./notes.js";
 import { isEmptySquareStatus, squareReactions, talkReactions } from "./reactions.js";
 import { SessionStorage } from "./session.js";
 
@@ -83,6 +84,11 @@ export interface LineProvider {
   /** Sets (or, with undefined, removes) this account's reaction to a message. */
   react(channel: ChannelRef, messageId: string, kind: ReactionKind | undefined): Promise<void>;
   /**
+   * Full text of the note a live note notification (card kind "note") points to, from LINE's note API.
+   * Only notes of the chat itself (a group) or of its OpenChat community can be read.
+   */
+  fetchNoteText(channel: ChannelRef, messageId: string): Promise<string>;
+  /**
    * OpenChat chats whose member joins are reported (onMemberJoined). Replaces the previous set;
    * joins that happened before a chat is watched are never reported.
    */
@@ -144,6 +150,8 @@ const MAX_FILE_NAME = 255;
 const MAX_MEDIA_ORIGINS = 500;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 const DEFAULT_DOWNLOAD_BYTES = 50 * 1024 * 1024;
+const MAX_NOTE_ORIGINS = 100;
+const NOTE_TIMEOUT_MS = 15_000;
 
 interface SquareHistory {
   at: number;
@@ -205,6 +213,8 @@ export class EvexLineProvider implements LineProvider {
   // Messages whose media the browser may ask for, newest last. Requests are only honoured for
   // messages seen here, so the browser cannot use this session to probe arbitrary LINE objects.
   private mediaOrigins = new Map<string, { raw: LineMessage; square: boolean }>();
+  // Note notifications seen here, so only notes LINE itself announced can be fetched.
+  private noteOrigins = new Map<string, NoteTarget & { chatId: string }>();
   private previewDecrypts = new Map<string, { raw: LineMessage; undecryptable: boolean }>();
   // E2EE messages linejs could not decrypt; they stay ciphertext and become placeholders.
   private undecryptable = new WeakSet<LineMessage>();
@@ -446,6 +456,7 @@ export class EvexLineProvider implements LineProvider {
   /** The message's media is no longer fetchable through us, and the hub replaces what it shows. */
   private unsent(chatHint: string, messageId: string): void {
     this.mediaOrigins.delete(messageId);
+    this.noteOrigins.delete(messageId);
     this.updateSquareMessage(chatHint, messageId, { unsent: true });
     this.events.onUnsend(chatHint, messageId);
   }
@@ -470,7 +481,7 @@ export class EvexLineProvider implements LineProvider {
       id: raw.id, channelId, channelKind, senderId: raw.from, text: raw.text, contentType,
       createdTime: raw.createdTime, encrypted: undecryptable || (raw.chunks?.length ?? 0) > 0, metadata: raw.contentMetadata,
       mediaId: preview ? undefined : this.rememberMedia(raw, false), replyTo: replyTarget(raw.messageRelationType, raw.relatedMessageId), eventText, location: raw.location,
-      reactions: talkReactions(raw.reactions, myMid),
+      reactions: talkReactions(raw.reactions, myMid), rememberNote: !preview,
     });
   }
 
@@ -483,7 +494,7 @@ export class EvexLineProvider implements LineProvider {
       id: message.id, channelId: message.to, channelKind: "square", senderId: message.from, text: message.text, contentType: String(message.contentType),
       createdTime: message.createdTime, encrypted: (message.chunks?.length ?? 0) > 0, metadata: message.contentMetadata,
       mediaId: preview ? undefined : this.rememberMedia(message, true), replyTo: replyTarget(message.messageRelationType, message.relatedMessageId), location: message.location,
-      reactions: squareReactions(reactionStatus),
+      reactions: squareReactions(reactionStatus), rememberNote: !preview,
     });
   }
 
@@ -532,6 +543,8 @@ export class EvexLineProvider implements LineProvider {
     text: string | undefined; contentType: string; createdTime: unknown; encrypted: boolean;
     metadata: Record<string, string> | undefined; mediaId?: string | undefined; replyTo?: string | undefined; eventText?: string | undefined; location?: unknown;
     reactions?: Reactions | undefined;
+    /** Shown messages only: a list preview must not make its note fetchable. */
+    rememberNote?: boolean;
   }): Message {
     const { text } = fields;
     // Numeric content types are normalised so the browser only ever sees one spelling.
@@ -546,6 +559,7 @@ export class EvexLineProvider implements LineProvider {
     const emojis = isText && text && fields.metadata?.REPLACE ? parseEmojis(fields.metadata, text) : undefined;
     const parsed = isText ? undefined : messageCard(contentType, fields.metadata, fields.location);
     const card = parsed?.kind === "file" && fileId ? { ...parsed, fileId } : parsed;
+    if (card?.kind === "note" && fields.rememberNote) this.rememberNote(String(fields.id), fields.channelId, fields.metadata);
     const profile = this.profiles.get(fields.senderId);
     return {
       messageId: String(fields.id),
@@ -567,6 +581,14 @@ export class EvexLineProvider implements LineProvider {
       // Fail closed: an E2EE payload without readable text is a placeholder, never a guess.
       ...(isText && !text && fields.encrypted ? { decryptFailed: true } : {}),
     };
+  }
+
+  private rememberNote(messageId: string, chatId: string, metadata: Record<string, string> | undefined): void {
+    const target = noteTarget(metadata);
+    if (!target || !/^\d{1,24}$/.test(messageId)) return;
+    this.noteOrigins.delete(messageId);
+    this.noteOrigins.set(messageId, { ...target, chatId });
+    if (this.noteOrigins.size > MAX_NOTE_ORIGINS) this.noteOrigins.delete(this.noteOrigins.keys().next().value!);
   }
 
   /**
@@ -966,6 +988,41 @@ export class EvexLineProvider implements LineProvider {
       tokens.add(continuationToken);
     }
     throw new Error("CHAT_ADMINS_PAGE_LIMIT");
+  }
+
+  async fetchNoteText(channel: ChannelRef, messageId: string): Promise<string> {
+    const client = this.requireClient();
+    const origin = this.noteOrigins.get(messageId);
+    if (!origin || origin.chatId !== channel.channelId) throw new Error("NOTE_UNKNOWN");
+    // linejs gives no way to abort the request; past the deadline its answer is simply ignored.
+    const timeout = Promise.withResolvers<never>();
+    const timer = setTimeout(() => timeout.reject(new Error("NOTE_TIMEOUT")), NOTE_TIMEOUT_MS);
+    try {
+      return await Promise.race([this.loadNoteText(client, channel, origin), timeout.promise]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async loadNoteText(client: Client, channel: ChannelRef, { homeId, postId }: NoteTarget): Promise<string> {
+    if (channel.kind === "square") {
+      // An SN link names a community: only the community this chat belongs to may be read.
+      const response = await client.base.square.getSquareChat({ squareChatMid: channel.channelId });
+      if (this.client !== client || this.stopped) throw new Error("SESSION_CHANGED");
+      if (response?.squareChat?.squareMid !== homeId) throw new Error("NOTE_HOME_MISMATCH");
+    } else if (channel.kind !== "group" || homeId !== channel.channelId) {
+      throw new Error("NOTE_HOME_MISMATCH");
+    }
+    const timeline = client.base.timeline;
+    try {
+      const response = await timeline.getPost({ homeId, postId });
+      if (this.client !== client || this.stopped) throw new Error("SESSION_CHANGED");
+      return noteText(response, postId);
+    } catch (error) {
+      // linejs keeps its channel token forever (a protected field); an expired one would fail every later note.
+      Reflect.set(timeline, "timelineToken", undefined);
+      throw error;
+    }
   }
 
   async fetchHistory(channel: ChannelRef, limit: number, before?: string): Promise<HistoryPage> {
@@ -1532,6 +1589,7 @@ export class EvexLineProvider implements LineProvider {
     this.adminFlights.clear();
     this.deliveries.clear();
     this.mediaOrigins.clear();
+    this.noteOrigins.clear();
     this.previewDecrypts.clear();
     this.stickerPackages = undefined;
     this.squareCache.clear();

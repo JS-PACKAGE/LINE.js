@@ -22,6 +22,8 @@ const NEW_CHANNEL_REFRESH_MS = 1000;
 const MAX_BOT_CONNECTIONS = 4;
 const READ_RANGE_FRESH_MS = 10_000;
 const CHAT_ADMIN_TOKEN = /^chatadm_[A-Za-z0-9_-]{43}$/;
+// Every note anyone posts in an allowed chat costs LINE requests; a flood of them must not turn into a flood upstream.
+const NOTE_FETCHES_PER_MINUTE = 20;
 // A connection that has not answered a ping by the next round is gone (a sleeping laptop, a dropped
 // network): it is closed so broadcasts stop piling up behind it and the page can reconnect.
 const HEARTBEAT_MS = 30_000;
@@ -97,6 +99,7 @@ export function createHub(options: HubOptions): Hub {
   const botWss = new WebSocketServer({ noServer: true, maxPayload: config.limits.frameMaxBytes });
   const botScope: ReadonlySet<string> = new Set(config.api.chats);
   const botSendLimiter = new SlidingWindowLimiter(config.api.sendsPerMinute, 60_000);
+  const noteFetchLimiter = new SlidingWindowLimiter(NOTE_FETCHES_PER_MINUTE, 60_000);
   let status: ListenState = "starting";
   let refreshing: Promise<void> | undefined;
   // State can become ready again before an old LINE request settles; "ready" alone is not an account boundary.
@@ -618,6 +621,29 @@ export function createHub(options: HubOptions): Hub {
     else broadcast(frame);
     // The list entry follows: activity order and preview move with the newest message.
     if (before) broadcastChannel(message.channelId, before);
+    if (kind === "new") void announceNote(stored);
+  }
+
+  /** Bots learn of a new note with its full text; fetched only while a bot of an allowed chat is connected (no replay). */
+  async function announceNote(message: Message): Promise<void> {
+    const { card, channelId: chatId, messageId } = message;
+    const channel = store.channelOf(chatId);
+    if (card?.kind !== "note" || !channel || !botScope.has(chatId) || !config.api.enabled || botWss.clients.size === 0 || login.state !== "ready") return;
+    const frame = {
+      type: "chat:note-posted", chatId, messageId, postId: card.postId, senderId: message.senderId, senderName: message.senderName,
+      createdAt: message.createdAt, ...(card.preview ? { preview: card.preview } : {}),
+    } as const;
+    const account = generation;
+    try {
+      if (!noteFetchLimiter.allow()) throw new Error("NOTE_FETCH_LIMITED");
+      const text = await provider.fetchNoteText({ channelId: chatId, kind: channel.kind }, messageId);
+      if (account === generation && login.state === "ready") broadcastBots({ ...frame, text });
+    } catch {
+      if (account !== generation || login.state !== "ready") return;
+      // LINE errors can contain credentials or private content; log only our own code.
+      console.error("NOTE_FETCH_FAILED");
+      broadcastBots({ ...frame, error: "NOTE_FETCH_FAILED" });
+    }
   }
 
   // The browser reports "I read this chat up to here" and gets no answer: a bad or refused frame is dropped.
@@ -776,7 +802,7 @@ export function createHub(options: HubOptions): Hub {
     socket.once("close", () => grants.clear());
     const sendLimiter = new SlidingWindowLimiter(config.limits.sendsPerSecond, 1000);
     const historyLimiter = new SlidingWindowLimiter(HISTORY_PER_SECOND, 1000);
-    send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion, capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined"] });
+    send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion, capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined", "chat:note-posted"] });
     send(socket, { type: "auth:state", state: login.state });
     send(socket, { type: "status", state: status });
     if (login.state === "ready") {

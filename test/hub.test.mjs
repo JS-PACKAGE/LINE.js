@@ -88,6 +88,12 @@ class FakeProvider {
     if (this.adminsError) throw this.adminsError;
     return { ownMemberId: this.ownMemberId, admins: this.admins };
   }
+  noteError = undefined;
+  async fetchNoteText(channel, messageId) {
+    this.calls.push(["note", channel, messageId]);
+    if (this.noteError) throw this.noteError;
+    return `全文-${messageId}`;
+  }
   outgoing(channel, fields) {
     return { messageId: `sent-${this.calls.length}`, channelId: channel.channelId, channelKind: channel.kind, senderId: "u-me", senderName: "測試帳號", contentType: "NONE", createdAt: Date.now(), ...fields };
   }
@@ -1631,6 +1637,66 @@ test("an OpenChat join reaches every bot allowed that chat, never pages, other c
   for (const client of [first, second, env.page]) {
     assert.deepEqual(client.frames.filter((frame) => frame.type === "chat:member-joined").map((frame) => frame.chatId), client === env.page ? [] : [SQUARE]);
   }
+});
+
+test("a new note in an allowed chat reaches connected bots with its full text, or a generic failure with LINE's excerpt", async (t) => {
+  const env = await botEnv(t);
+  const note = (messageId, extra = {}) => ({
+    messageId, channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", contentType: "POSTNOTIFICATION", createdAt: 5,
+    card: { kind: "note", postId: `post-${messageId}`, preview: "摘要" }, ...extra,
+  });
+  env.hub.handleMessage(note("800"), "new");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(env.provider.calls.some(([kind]) => kind === "note"), false, "nobody is listening: LINE is not asked");
+  const bot = await env.open();
+  assert.ok(bot.frames.find((frame) => frame.type === "hello").capabilities.includes("chat:note-posted"));
+  env.hub.handleMessage({ ...note("801"), channelId: "c1" }, "new");
+  env.hub.handleMessage(note("802"), "new");
+  env.hub.handleMessage(note("802"), "new");
+  env.hub.handleMessage({ ...note("802"), editedAt: 9 }, "edit");
+  const base = { type: "chat:note-posted", chatId: CHAT, messageId: "802", postId: "post-802", senderId: "u1", senderName: "小明", createdAt: 5, preview: "摘要" };
+  assert.deepEqual(await bot.until((frame) => frame.type === "chat:note-posted"), { ...base, text: "全文-802" });
+  assert.equal((await bot.until((frame) => frame.type === "message" && frame.message.messageId === "802")).message.card.kind, "note", "the message itself still arrives");
+  env.provider.noteError = new Error("upstream said: secret-token");
+  env.hub.handleMessage(note("803"), "new");
+  const failed = await bot.until((frame) => frame.type === "chat:note-posted" && frame.messageId === "803");
+  assert.deepEqual(failed, { ...base, messageId: "803", postId: "post-803", error: "NOTE_FETCH_FAILED" });
+  assert.deepEqual(env.provider.calls.filter(([kind]) => kind === "note").map(([, channel, messageId]) => [channel, messageId]), [
+    [{ channelId: CHAT, kind: "group" }, "802"], [{ channelId: CHAT, kind: "group" }, "803"],
+  ], "one fetch per new note in an allowed chat; repeats, edits and other chats cost nothing");
+  bot.socket.send(JSON.stringify({ type: "ping" }));
+  await bot.until((frame) => frame.type === "pong");
+  assert.equal(env.page.frames.some((frame) => frame.type === "chat:note-posted"), false, "pages only see the message");
+  assert.equal(bot.frames.filter((frame) => frame.type === "chat:note-posted").length, 2);
+});
+
+const noteMessage = (messageId) => ({
+  messageId, channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", contentType: "POSTNOTIFICATION", createdAt: 5,
+  card: { kind: "note", postId: `post-${messageId}` },
+});
+
+test("past the per-minute cap a note is announced as failed without asking LINE", async (t) => {
+  const env = await botEnv(t);
+  const bot = await env.open();
+  for (let index = 0; index < 21; index += 1) env.hub.handleMessage(noteMessage(String(900 + index)), "new");
+  const limited = await bot.until((frame) => frame.type === "chat:note-posted" && frame.messageId === "920");
+  assert.equal(limited.error, "NOTE_FETCH_FAILED");
+  assert.equal(env.provider.calls.filter(([kind]) => kind === "note").length, 20);
+});
+
+test("a note fetched for the previous account is never announced", async (t) => {
+  const env = await botEnv(t);
+  const bot = await env.open();
+  const pending = Promise.withResolvers();
+  const started = Promise.withResolvers();
+  env.provider.fetchNoteText = () => { started.resolve(); return pending.promise; };
+  env.hub.handleMessage(noteMessage("950"), "new");
+  await started.promise;
+  await env.login.logout();
+  pending.resolve("舊帳號的全文");
+  bot.socket.send(JSON.stringify({ type: "ping" }));
+  await bot.until((frame) => frame.type === "pong");
+  assert.equal(bot.frames.some((frame) => frame.type === "chat:note-posted"), false);
 });
 
 test("only the bots' allowed OpenChat chats are watched for joins", async (t) => {

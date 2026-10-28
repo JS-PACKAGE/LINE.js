@@ -697,12 +697,12 @@ function messageBody(message: Message): HTMLElement {
   return body;
 }
 
-/** A location, contact, file or rich card shown by what it says; nothing is fetched until the reader clicks. */
+/** A location, contact, file, rich or note card shown by what it says; nothing is fetched until the reader clicks. */
 function cardNode(card: MessageCard): HTMLElement {
   const box = document.createElement("div");
   box.className = "card";
   const label = document.createElement("small");
-  label.textContent = { location: "位置", contact: "聯絡人", file: card.kind === "file" && card.fileId ? "檔案" : "檔案（無法在此下載）", flex: "卡片訊息" }[card.kind];
+  label.textContent = { location: "位置", contact: "聯絡人", file: card.kind === "file" && card.fileId ? "檔案" : "檔案（無法在此下載）", flex: "卡片訊息", note: "記事本" }[card.kind];
   const title = document.createElement("strong");
   title.textContent = cardTitle(card);
   box.append(label, title);

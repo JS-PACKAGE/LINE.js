@@ -57,6 +57,7 @@ export function cardTitle(card: MessageCard): string {
     case "contact": return card.name;
     case "file": return card.name;
     case "flex": return card.altText;
+    case "note": return card.preview ?? "新貼文";
   }
 }
 
@@ -64,6 +65,6 @@ export function cardTitle(card: MessageCard): string {
 export function previewOf(message: Message): string {
   if (message.unsent) return "［已收回的訊息］";
   const text = message.text?.replace(/\s+/g, " ").trim();
-  if (!text && message.card) return `［${CONTENT_LABEL[message.contentType] ?? "訊息"}］${cardTitle(message.card).slice(0, 60)}`;
+  if (!text && message.card) return `［${message.card.kind === "note" ? "記事本" : CONTENT_LABEL[message.contentType] ?? "訊息"}］${cardTitle(message.card).slice(0, 60)}`;
   return text ? (text.length > 60 ? `${text.slice(0, 60)}…` : text) : `［${CONTENT_LABEL[message.contentType] ?? "訊息"}］`;
 }

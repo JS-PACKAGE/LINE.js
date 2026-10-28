@@ -1663,3 +1663,62 @@ test("media uploads exclude surrounding storage and retain their snapshot while 
     assert.deepEqual(received, expected);
   });
 });
+
+test("a note notification lets only its own group's or community's post be read, as LINE's note API returns it", async () => {
+  const COMMUNITY = `s${"q".repeat(32)}`;
+  const posts = [];
+  const answers = { ok: (postId) => ({ code: 0, message: "success", result: { post: { postInfo: { postId }, contents: { text: `全文-${postId}` } } } }) };
+  const base = fakeBase({ square: { async getSquareChat({ squareChatMid }) { return { squareChat: { squareChatMid, squareMid: COMMUNITY } }; } } });
+  base.timeline = {
+    timelineToken: "issued-earlier",
+    async getPost(options) {
+      posts.push(options);
+      return options.postId === "broken" ? { code: 500, message: "error", result: null } : answers.ok(options.postId);
+    },
+  };
+  const { provider, received, emit } = await activeProvider(base);
+  const groupNote = (id, to, homeId, postId) => talk(id, to, mid(2), undefined, {
+    contentType: 16, contentMetadata: { serviceType: "GB", text: "摘要", postEndUrl: `https://line.me/R/group/home/posts/post?homeId=${homeId}&postId=${postId}` },
+  });
+  const squareNote = (id, squareMid, postId) => ({ raw: { message: {
+    id, to: SQUARE, from: "p-member", contentType: 16, createdTime: String(1_700_000_000_000 + Number(id)),
+    contentMetadata: { serviceType: "SN", postEndUrl: `line://square/post?squareMid=${squareMid}&postId=${postId}` },
+  } } });
+  emit("message", groupNote("1001", GROUP_A, GROUP_A, "p1"));
+  emit("message", groupNote("1002", GROUP_B, GROUP_A, "p2"));
+  emit("message", groupNote("1003", GROUP_A, GROUP_A, "broken"));
+  emit("square:message", squareNote("1004", COMMUNITY, "p4"));
+  emit("square:message", squareNote("1005", `s${"z".repeat(32)}`, "p5"));
+  await settle();
+  assert.deepEqual(received.find(({ message }) => message.messageId === "1001").message.card, { kind: "note", postId: "p1", preview: "摘要" });
+
+  const group = (channelId) => ({ channelId, kind: "group" });
+  assert.equal(await provider.fetchNoteText(group(GROUP_A), "1001"), "全文-p1");
+  assert.equal(await provider.fetchNoteText({ channelId: SQUARE, kind: "square" }, "1004"), "全文-p4");
+  assert.deepEqual(posts, [{ homeId: GROUP_A, postId: "p1" }, { homeId: COMMUNITY, postId: "p4" }]);
+  await assert.rejects(provider.fetchNoteText(group(GROUP_B), "1002"), /NOTE_HOME_MISMATCH/, "another group's note is not readable from here");
+  await assert.rejects(provider.fetchNoteText({ channelId: SQUARE, kind: "square" }, "1005"), /NOTE_HOME_MISMATCH/, "another community's note is not readable from here");
+  await assert.rejects(provider.fetchNoteText(group(GROUP_B), "1001"), /NOTE_UNKNOWN/, "a notification belongs to its own chat");
+  await assert.rejects(provider.fetchNoteText(group(GROUP_A), "999"), /NOTE_UNKNOWN/, "only announced notes can be read");
+  assert.equal(posts.length, 2);
+  assert.equal(base.timeline.timelineToken, "issued-earlier");
+  await assert.rejects(provider.fetchNoteText(group(GROUP_A), "1003"), /NOTE_REFUSED/);
+  assert.equal(base.timeline.timelineToken, undefined, "a refused request makes linejs issue a fresh channel token next time");
+  await provider.close();
+  await assert.rejects(provider.fetchNoteText(group(GROUP_A), "1001"), /NOT_AUTHENTICATED/);
+});
+
+test("a note that LINE does not answer in time fails instead of hanging", async (t) => {
+  const base = fakeBase();
+  base.timeline = { getPost: () => Promise.withResolvers().promise };
+  const { provider, emit } = await activeProvider(base);
+  emit("message", talk("1101", GROUP_A, mid(2), undefined, {
+    contentType: "POSTNOTIFICATION", contentMetadata: { serviceType: "GB", postEndUrl: `line://group/home/posts/post?homeId=${GROUP_A}&postId=p1` },
+  }));
+  await settle();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending = assert.rejects(provider.fetchNoteText({ channelId: GROUP_A, kind: "group" }, "1101"), /NOTE_TIMEOUT/);
+  await new Promise(setImmediate);
+  t.mock.timers.tick(15_000);
+  await pending;
+});

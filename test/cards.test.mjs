@@ -33,3 +33,10 @@ test("contacts, files and rich cards show what LINE itself puts in the metadata"
   assert.deepEqual(messageCard("FILE", { FILE_NAME: "a.zip", FILE_SIZE: "-1" }, undefined), { kind: "file", name: "a.zip" });
   assert.deepEqual(messageCard("FLEX", { ALT_TEXT: "x".repeat(500) }, undefined), { kind: "flex", altText: "x".repeat(400) });
 });
+
+test("a note notification becomes a note card with LINE's excerpt; other post notifications stay placeholders", () => {
+  const postEndUrl = `https://line.me/R/group/home/posts/post?homeId=c${"a".repeat(32)}&postId=p1`;
+  assert.deepEqual(messageCard("POSTNOTIFICATION", { serviceType: "GB", text: "今晚聚餐", postEndUrl }, undefined), { kind: "note", postId: "p1", preview: "今晚聚餐" });
+  assert.deepEqual(messageCard("POSTNOTIFICATION", { serviceType: "GB", postEndUrl }, undefined), { kind: "note", postId: "p1" });
+  assert.equal(messageCard("POSTNOTIFICATION", { serviceType: "AB", text: "相簿", postEndUrl: "line://group/home/albums/album?albumId=1" }, undefined), undefined);
+});

@@ -1,4 +1,5 @@
 import type { MessageCard } from "../model/dto.js";
+import { noteTarget } from "./notes.js";
 
 /** LINE's ContentType numbers (linejs-types `ContentType`), so the browser only ever sees one spelling. */
 const CONTENT_TYPE_NAMES = [
@@ -24,8 +25,8 @@ function coordinate(value: unknown, limit: number): number | undefined {
 }
 
 /**
- * The shown-as-text part of a location, contact, file or flex message, from the fields linejs types and
- * reads (`Message.location`; `displayName`, `FILE_NAME`/`FILE_SIZE`, `ALT_TEXT` metadata). Anything
+ * The shown-as-text part of a location, contact, file, flex or note message, from the fields linejs types and
+ * reads (`Message.location`; `displayName`, `FILE_NAME`/`FILE_SIZE`, `ALT_TEXT`, note metadata). Anything
  * missing or malformed yields no card, and the message stays a type placeholder.
  */
 export function messageCard(contentType: string, metadata: Record<string, string> | undefined, location: unknown): MessageCard | undefined {
@@ -52,6 +53,10 @@ export function messageCard(contentType: string, metadata: Record<string, string
     case "FLEX": {
       const altText = field(metadata?.ALT_TEXT, MAX_ALT_TEXT);
       return altText ? { kind: "flex", altText } : undefined;
+    }
+    case "POSTNOTIFICATION": {
+      const note = noteTarget(metadata);
+      return note ? { kind: "note", postId: note.postId, ...(note.preview ? { preview: note.preview } : {}) } : undefined;
     }
     default:
       return undefined;

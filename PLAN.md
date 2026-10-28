@@ -168,6 +168,8 @@
 
 > v1.21（小語裁示：詐騙機率分析移交 NekoGuard，協定版本仍為 2）：移除 `jev` 設定區段、`src/jev/`、`scam:check`／`scam:state`／`scam:result` 與相關錯誤碼、網頁右鍵選單「詐騙機率分析」；舊設定檔的 `jev` 區段會被忽略。v1.15、v1.16 與詐騙分析加速的紀錄僅保留為歷史。驗證：typecheck、build 與 346 項測試通過；以含舊 `jev` 區段的設定啟動實際 `dist/main.js`，服務正常啟動、網頁連線不再收到 `scam:state`，`scam:check` 回 `UNKNOWN_TYPE`（機器人連線同樣由測試確認）。
 
+> v1.22（小語裁示：群組與社群記事本發文推送給機器人，並抓完整文章，協定版本仍為 2）：LINE 以 `POSTNOTIFICATION` 訊息通知記事本發文；依其他用戶端的實測紀錄，群組為 `serviceType: GB`、`postEndUrl` 為 `…/group/home/posts/post?homeId=c…&postId=…`，社群為 `serviceType: SN`、`line://square/post?squareMid=s…&postId=…`（相簿 `AB`、分享 VOOM `MH` 同類型，不處理）。`src/line/notes.ts` 只接受完全符合的格式，訊息帶 `card: { kind: "note", postId, preview? }`（網頁以「記事本」小卡顯示摘要）。`api.chats` 內的即時新訊息，在已登入且有機器人連線時，由 adapter `fetchNoteText` 以 linejs `base.timeline.getPost` 取全文（首次使用核發 LINE Timeline 頻道權杖），只讀自己看過通知的貼文，群組 `homeId` 須等於該群組、社群 `squareMid` 須等於 `getSquareChat` 的所屬社群，回應須含所要求的 `postId`；逾時 15 秒、全體每分鐘 20 次。hub 以 `chat:note-posted { chatId, messageId, postId, senderId, senderName, createdAt, preview?, text | error: "NOTE_FETCH_FAILED" }` 只推給機器人，`hello.capabilities` 加入 `chat:note-posted`。驗證：typecheck、build 與 355 項測試通過；以正式 adapter、hub、HTTP 與 `/api/ws` 的隔離環境確認群組與社群通知各推送全文給兩個機器人連線、指向其他群組的偽造通知不呼叫 LINE 並回 `NOTE_FETCH_FAILED`、網頁不收；瀏覽器確認「記事本」小卡與聊天列表預覽。尚未以真實 LINE 帳號確認通知格式、記事本 API 的端點與回應格式，也未確認分享記事本是否產生相同通知。
+
 > 本次驗證：typecheck、build 與 262 項測試通過；已以隔離 LINE 回應、實際 HTTP／WS Token 認證及正式 adapter 驗證 capability 握手、完整分頁、`ownMemberId`、未發言管理員的 MENTION metadata、跨連線拒絕與重新查詢撤銷。回歸測試另涵蓋聊天室／網頁隔離、空名單、失敗、限流、回應順序顛倒、斷線、登出／換帳號。尚未以真實 LINE 帳號或 NekoGuard 程序完成聯測，不宣稱通過 Gate。
 
 > 詐騙分析加速（協定版本仍為 2）：同一登入期間，網頁與 API 在完成既有資格／聊天室權限／限流驗證後，以 UTF-16 完整文字的 SHA-256 合併同內容的進行中請求，並重用成功結果（完成起有效 5 分鐘，命中不延長）；記憶體 LRU 最多 256 筆含進行中請求，不另存原文、不落盤。失敗不快取，登出／換帳號／關閉服務清除；等待期間文字變更、收回或移出訊息快取回 `INVALID_REQUEST`，舊帳號請求不得回填新快取。模型、完整文字、Noul／Choice 題目、回應格式及每分鐘限額不變，不新增自動分析或付費預熱；分析錯誤只記固定代碼。首次分析仍受真實上游及網路延遲限制。
@@ -364,7 +366,7 @@
 
 | type | 負載 |
 |---|---|
-| `hello` | `{ protocol: 2, serverVersion, capabilities? }`（僅 `/api/ws` 宣告 `capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined"]`） |
+| `hello` | `{ protocol: 2, serverVersion, capabilities? }`（僅 `/api/ws` 宣告 `capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined", "chat:note-posted"]`） |
 | `update:available` | `{ version, current, url }`（url 僅限本專案 GitHub Release 頁） |
 | `auth:state` | `{ state: "restoring"｜"idle"｜"authenticating"｜"ready"｜"error" }`（連線即送、變動廣播；不含祕密） |
 | `auth:qr` | `{ url }`（一次性；只送給發起 `auth:start` 的連線） |
@@ -376,6 +378,7 @@
 | `chat:admin-token:consumed` | `{ requestId, chatId }`（只回成功兌換的機器人，不含新權杖；新權杖另行推送） |
 | `chat:admin-token:changed` | `{ chatId }`（失效通知，不含祕密；網頁重新取得，外掛於 `api.chats` 聊天室移除時收到） |
 | `chat:member-joined` | `{ chatId, member: { userId, displayName, pictureId?, pictureUrl? } }`（社群 `NOTIFIED_JOIN_SQUARE_CHAT`；只推給機器人，限 `api.chats`，不重播；日誌含 ID、暱稱與大頭貼網址） |
+| `chat:note-posted` | `{ chatId, messageId, postId, senderId, senderName, createdAt, preview?, text }` 或以 `error: "NOTE_FETCH_FAILED"` 取代 `text`（群組／社群記事本發文；只推給機器人，限 `api.chats`、有機器人連線時才抓全文，不重播；內容不入日誌） |
 | `channels` | `{ channels: Channel[] }`（snapshot，連線即送、變動重送） |
 | `messages` | `{ chatId, messages: Message[] }`（連線時快照，同聊天室可分多個影格、依 ID 合併；舊訊息，不計未讀） |
 | `message` | `{ message: Message }`（即時新訊息） |
