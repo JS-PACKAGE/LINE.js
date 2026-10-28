@@ -172,6 +172,8 @@
 
 > v1.22.1（小語回報實際部署沒有抓到記事本，要求輸出日誌排查）：加入排查日誌，不含內文：可能是記事本的即時訊息（`POSTNOTIFICATION`／`GROUPBOARD` 或帶 `postEndUrl`）記 `LINE 記事本通知：…`（類型、`serviceType`、`locKey`、`postEndUrl`、metadata 欄位名稱、摘要長度、是否辨識）；hub 記 `記事本通知略過：… reason=…`、`記事本全文已推送：…` 與 `NOTE_FETCH_FAILED … reason=…`（含 LINE 狀態碼與簡短訊息）；未處理的 LINE operation 與社群事件記 `LINE 未處理事件：op=…`／`LINE 未處理社群事件：type=…`（只有類型）。目的在確認記事本通知實際走哪個事件、格式為何；原因尚未查明。
 
+> v1.22.2（小語實測日誌：社群張貼記事本時只出現 `LINE 未處理社群事件：type=NOTIFIED_UPDATE_SQUARE_NOTE_STATUS`，沒有聊天訊息）：該事件只含 `squareMid`、`noteCount`、`latestCreatedAt`。adapter 改為在最新建立時間晚於登入或上次處理時間、且 `api.chats` 有屬於該社群的聊天室時，以 linejs `base.timeline.listPost` 讀社群記事本列表找出新貼文，再以 `getPost` 取全文，hub 對該社群在 `api.chats` 內的聊天室推 `chat:note-posted`（`messageId` 改為選填，作者取自列表；列表讀不到時送不含 `postId` 的 `NOTE_FETCH_FAILED`）。日誌新增 `LINE 社群記事本狀態`、`社群記事本略過`、`社群記事本列表`、`社群記事本全文已推送`。驗證：typecheck、build 與 359 項測試通過（正式 adapter 搭配模擬的 LINE 回應）；尚未確認 `/sn/` 記事本列表與內文 API 在真實帳號可用及其回應格式。
+
 > 本次驗證：typecheck、build 與 262 項測試通過；已以隔離 LINE 回應、實際 HTTP／WS Token 認證及正式 adapter 驗證 capability 握手、完整分頁、`ownMemberId`、未發言管理員的 MENTION metadata、跨連線拒絕與重新查詢撤銷。回歸測試另涵蓋聊天室／網頁隔離、空名單、失敗、限流、回應順序顛倒、斷線、登出／換帳號。尚未以真實 LINE 帳號或 NekoGuard 程序完成聯測，不宣稱通過 Gate。
 
 > 詐騙分析加速（協定版本仍為 2）：同一登入期間，網頁與 API 在完成既有資格／聊天室權限／限流驗證後，以 UTF-16 完整文字的 SHA-256 合併同內容的進行中請求，並重用成功結果（完成起有效 5 分鐘，命中不延長）；記憶體 LRU 最多 256 筆含進行中請求，不另存原文、不落盤。失敗不快取，登出／換帳號／關閉服務清除；等待期間文字變更、收回或移出訊息快取回 `INVALID_REQUEST`，舊帳號請求不得回填新快取。模型、完整文字、Noul／Choice 題目、回應格式及每分鐘限額不變，不新增自動分析或付費預熱；分析錯誤只記固定代碼。首次分析仍受真實上游及網路延遲限制。
@@ -380,7 +382,7 @@
 | `chat:admin-token:consumed` | `{ requestId, chatId }`（只回成功兌換的機器人，不含新權杖；新權杖另行推送） |
 | `chat:admin-token:changed` | `{ chatId }`（失效通知，不含祕密；網頁重新取得，外掛於 `api.chats` 聊天室移除時收到） |
 | `chat:member-joined` | `{ chatId, member: { userId, displayName, pictureId?, pictureUrl? } }`（社群 `NOTIFIED_JOIN_SQUARE_CHAT`；只推給機器人，限 `api.chats`，不重播；日誌含 ID、暱稱與大頭貼網址） |
-| `chat:note-posted` | `{ chatId, messageId, postId, senderId, senderName, createdAt, preview?, text }` 或以 `error: "NOTE_FETCH_FAILED"` 取代 `text`（群組／社群記事本發文；只推給機器人，限 `api.chats`、有機器人連線時才抓全文，不重播；內容不入日誌） |
+| `chat:note-posted` | `{ chatId, createdAt, postId?, messageId?, senderId?, senderName?, preview?, text }` 或以 `error: "NOTE_FETCH_FAILED"` 取代 `text`（群組／社群記事本發文：聊天訊息通知帶 `messageId`；社群 `NOTIFIED_UPDATE_SQUARE_NOTE_STATUS` 經列表找出，沒有 `messageId`，列表讀不到時也沒有 `postId`；只推給機器人，限 `api.chats`，不重播；內容不入日誌） |
 | `channels` | `{ channels: Channel[] }`（snapshot，連線即送、變動重送） |
 | `messages` | `{ chatId, messages: Message[] }`（連線時快照，同聊天室可分多個影格、依 ID 合併；舊訊息，不計未讀） |
 | `message` | `{ message: Message }`（即時新訊息） |

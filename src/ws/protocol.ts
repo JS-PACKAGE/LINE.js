@@ -41,11 +41,13 @@ export type ServerFrame =
   /** Someone joined an OpenChat chat. Bots only, and only for chats in `api.chats`. */
   | { type: "chat:member-joined"; chatId: string; member: JoinedMember }
   /**
-   * A note (記事本) post was announced in a group or OpenChat chat. Bots only, only for chats in `api.chats`.
+   * A note (記事本) post appeared in a group or OpenChat chat. Bots only, only for chats in `api.chats`.
    * `text` is the post as LINE's note API returns it; when that fails `error` is set and only `preview`
-   * (LINE's excerpt in the chat notification) may be there.
+   * (LINE's excerpt in the chat notification) may be there. Notes announced by a chat message carry
+   * `messageId` and the sender; OpenChat notes found through the note status event carry the writer
+   * when LINE names one, and no `postId` when even the list of notes could not be read.
    */
-  | ({ type: "chat:note-posted"; chatId: string; messageId: string; postId: string; senderId: string; senderName: string; createdAt: number; preview?: string }
+  | ({ type: "chat:note-posted"; chatId: string; createdAt: number; postId?: string; messageId?: string; senderId?: string; senderName?: string; preview?: string }
     & ({ text: string } | { error: "NOTE_FETCH_FAILED" }))
   | { type: "sent"; requestId: string; messageId: string }
   | { type: "read"; chatId: string; positions: ReadPosition[] }

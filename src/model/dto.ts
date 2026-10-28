@@ -55,6 +55,13 @@ export interface JoinedMember {
   pictureUrl?: string;
 }
 
+/**
+ * A new OpenChat note, found through LINE's note status event (no chat message carries it). `reason` is
+ * for the local log only and never leaves the server.
+ */
+export type SquareNote = { createdAt: number; senderId?: string; senderName?: string }
+  & ({ postId: string; text: string } | { postId?: string; error: "NOTE_FETCH_FAILED"; reason: string });
+
 /** A tagged person inside a text message: `text.slice(start, end)` is "@name". */
 export interface Mention {
   userId: string;

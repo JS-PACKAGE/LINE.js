@@ -8,7 +8,8 @@ import type { LineProvider } from "../line/provider.js";
 import type { ApiTokenStore } from "../http/apiToken.js";
 import { SlidingWindowLimiter } from "../limit.js";
 import type { MediaService } from "../media/service.js";
-import type { Channel, ChannelKind, JoinedMember, Message, Reactions, ReadPosition } from "../model/dto.js";
+import type { Channel, ChannelKind, JoinedMember, Message, Reactions, ReadPosition, SquareNote } from "../model/dto.js";
+import { noteFailureReason } from "../line/notes.js";
 import type { UpdateInfo } from "../update/checker.js";
 import { withMyReaction, type ChatStore } from "../model/store.js";
 import { PROTOCOL_VERSION, type ClientFrame, type ListenState, type ServerFrame } from "./protocol.js";
@@ -58,6 +59,8 @@ export interface Hub {
   handleReactions(chatId: string, messageId: string, reactions: Reactions | undefined): void;
   /** Someone joined an OpenChat chat: every bot allowed that chat is told. */
   handleMemberJoined(chatId: string, member: JoinedMember): void;
+  /** A new OpenChat note found through the note status event: every bot allowed that chat is told. */
+  handleNotePosted(chatId: string, note: SquareNote): void;
   /** Names, pictures or members changed somewhere: the list is fetched again (settled and rate limited). */
   handleChatsChanged(): void;
   /** Announces (or clears) the newest known release to everyone connected and to later connections. */
@@ -649,9 +652,7 @@ export function createHub(options: HubOptions): Hub {
     } catch (error) {
       if (account !== generation || login.state !== "ready") return;
       // LINE errors can contain credentials or private content: only our own codes (with LINE's status) are logged.
-      const reason = error instanceof Error && /^(NOTE_|SESSION_CHANGED|NOT_AUTHENTICATED)/.test(error.message)
-        ? error.message.replace(/[\r\n]/g, " ").slice(0, 200) : `LINE_ERROR name=${error instanceof Error ? error.name.slice(0, 40) : typeof error}`;
-      console.error(`NOTE_FETCH_FAILED chat=${chatId} message=${messageId} post=${card.postId} reason=${reason}`);
+      console.error(`NOTE_FETCH_FAILED chat=${chatId} message=${messageId} post=${card.postId} reason=${noteFailureReason(error)}`);
       broadcastBots({ ...frame, error: "NOTE_FETCH_FAILED" });
     }
   }
@@ -957,6 +958,22 @@ export function createHub(options: HubOptions): Hub {
     },
     handleMemberJoined(chatId, member) {
       if (login.state === "ready" && botScope.has(chatId)) broadcastBots({ type: "chat:member-joined", chatId, member });
+    },
+    handleNotePosted(chatId, note) {
+      if (login.state !== "ready" || !botScope.has(chatId)) return;
+      const { createdAt, postId, senderId, senderName } = note;
+      const base = {
+        type: "chat:note-posted", chatId, createdAt,
+        ...(postId ? { postId } : {}), ...(senderId ? { senderId } : {}), ...(senderName ? { senderName } : {}),
+      } as const;
+      if ("text" in note) {
+        console.info(`社群記事本全文已推送：chat=${chatId} post=${note.postId} length=${note.text.length} bots=${botWss.clients.size}`);
+        broadcastBots({ ...base, text: note.text });
+      } else {
+        // The reason is this service's own code (with LINE's status); it stays in the local log.
+        console.error(`NOTE_FETCH_FAILED chat=${chatId} post=${postId ?? "-"} reason=${note.reason}`);
+        broadcastBots({ ...base, error: "NOTE_FETCH_FAILED" });
+      }
     },
     handleChecked(chatId) {
       const before = store.channelOf(chatId);

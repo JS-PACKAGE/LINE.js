@@ -3,7 +3,7 @@ import { BaseClient, type Device, type FetchLike } from "@evex/linejs/base";
 import { LINEStruct } from "@evex/linejs/thrift";
 import type { Message as LineMessage, SquareMessage as LineSquareMessage } from "@evex/linejs-types";
 import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
-import type { Channel, ChannelRef, ChatAdmin, ChatAdmins, HistoryPage, JoinedMember, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
+import type { Channel, ChannelRef, ChatAdmin, ChatAdmins, HistoryPage, JoinedMember, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, SquareNote, StickerPackage } from "../model/dto.js";
 import { withMyReaction } from "../model/store.js";
 import { discardResponse, readResponseText } from "../response.js";
 import { memberRole, mentionMetadata, parseMentions, replyTarget } from "./members.js";
@@ -12,7 +12,7 @@ import { parseCheckedOperation, parseReadOperation, parseReadRanges, parseUnsend
 import { parseOwnedProducts, parsePackageMeta, type PackageMeta } from "./stickers.js";
 import { chatEventMids, chatEventText, isChatEvent } from "./chatEvent.js";
 import { contentTypeName, messageCard } from "./cards.js";
-import { noteTarget, noteText, type NoteTarget } from "./notes.js";
+import { listedNotes, noteFailureReason, noteTarget, noteText, SQUARE_HOME, type ListedNote, type NoteTarget } from "./notes.js";
 import { isEmptySquareStatus, squareReactions, talkReactions } from "./reactions.js";
 import { SessionStorage } from "./session.js";
 
@@ -37,6 +37,8 @@ export interface ProviderEvents {
   onReactions: (chatId: string, messageId: string, reactions: Reactions | undefined) => void;
   /** Someone joined an OpenChat chat (NOTIFIED_JOIN_SQUARE_CHAT). */
   onMemberJoined: (chatId: string, member: JoinedMember) => void;
+  /** A new note in the OpenChat community of a watched chat (NOTIFIED_UPDATE_SQUARE_NOTE_STATUS), once per watched chat. */
+  onNotePosted: (chatId: string, note: SquareNote) => void;
   onStatus: (state: "listening" | "reconnecting") => void;
   onError: (code: "SESSION_WRITE_FAILED" | "LINE_LISTEN_FAILED" | "MESSAGE_PARSE_FAILED") => void;
   /** One log line for diagnosing unparsed LINE input (types, ids and shapes only; never message text or secrets). */
@@ -163,6 +165,9 @@ const DOWNLOAD_TIMEOUT_MS = 120_000;
 const DEFAULT_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 const MAX_NOTE_ORIGINS = 100;
 const NOTE_TIMEOUT_MS = 15_000;
+// A burst of notes behind one status change: only the newest few are fetched.
+const MAX_NOTES_PER_STATUS = 5;
+const MAX_REPORTED_NOTES = 500;
 
 interface SquareHistory {
   at: number;
@@ -183,6 +188,8 @@ interface JoinWatch {
   caughtUp: boolean;
   running?: Promise<void>;
   again: boolean;
+  /** The OpenChat community this chat belongs to, once LINE said so (note status events name the community). */
+  squareMid?: string;
 }
 
 // Let the lookup cap stop candidate preparation before traversing the remaining messages.
@@ -232,6 +239,12 @@ export class EvexLineProvider implements LineProvider {
   // OpenChat chats watched for joins: LINE reports a join only in the chat's own event stream
   // (fetchSquareChatEvents), never in the account-wide push stream that `listen` follows.
   private joinWatches = new Map<string, JoinWatch>();
+  // OpenChat notes: LINE only says a community's newest note time changed. Notes are new when created after
+  // the newest one already handled (or, at first, after sign-in); each is reported once.
+  private activatedAt = 0;
+  private noteBaselines = new Map<string, number>();
+  private reportedNotes = new Set<string>();
+  private noteChecks = new Map<string, Promise<void>>();
 
   constructor(
     private readonly storage: SessionStorage,
@@ -316,6 +329,7 @@ export class EvexLineProvider implements LineProvider {
     const client = new Client(base);
     this.client = client;
     this.adminFlights.clear();
+    this.activatedAt = Date.now();
     const profile = this.getProfile();
     this.rememberProfile(profile.userId, profile.displayName, profile.pictureId, true);
     // Sender lookups are asynchronous; chaining per chat keeps each chat's messages in arrival order.
@@ -387,6 +401,8 @@ export class EvexLineProvider implements LineProvider {
           this.updateSquareMessage(update.squareChatMid, update.messageId, { reactions });
           this.events.onReactions(update.squareChatMid, update.messageId, reactions);
         }
+      } else if (type === "NOTIFIED_UPDATE_SQUARE_NOTE_STATUS" || type === "36") {
+        this.squareNoteStatus(client, event.payload?.notifiedUpdateSquareNoteStatus);
       } else if (!QUIET_SQUARE_EVENTS.has(type)) {
         this.events.onDiagnostic?.(`LINE 未處理社群事件：type=${type.slice(0, 60)}`);
       }
@@ -403,6 +419,113 @@ export class EvexLineProvider implements LineProvider {
       if (this.joinWatches.get(chatId)?.client === client) continue;
       this.joinWatches.set(chatId, { client, caughtUp: false, again: false });
       this.checkJoins(chatId);
+    }
+  }
+
+  /** LINE names the community and its newest note's creation time; posts and text are read from the note API. */
+  private squareNoteStatus(client: Client, status: { squareMid?: unknown; noteStatus?: { noteCount?: unknown; latestCreatedAt?: unknown } } | undefined): void {
+    const squareMid = status?.squareMid;
+    const latest = Number(status?.noteStatus?.latestCreatedAt);
+    if (typeof squareMid !== "string" || !SQUARE_HOME.test(squareMid) || !Number.isSafeInteger(latest)) {
+      this.events.onDiagnostic?.("LINE 社群記事本狀態：格式不符，略過");
+      return;
+    }
+    this.events.onDiagnostic?.(`LINE 社群記事本狀態：square=${squareMid} noteCount=${Number(status?.noteStatus?.noteCount)} latestCreatedAt=${latest}`);
+    // One check per community at a time, in arrival order, so the same post is never fetched twice.
+    const next = (this.noteChecks.get(squareMid) ?? Promise.resolve())
+      .then(() => this.checkSquareNotes(client, squareMid, latest))
+      .catch(() => {});
+    this.noteChecks.set(squareMid, next);
+    void next.then(() => { if (this.noteChecks.get(squareMid) === next) this.noteChecks.delete(squareMid); });
+  }
+
+  private async checkSquareNotes(client: Client, squareMid: string, latest: number): Promise<void> {
+    if (this.client !== client || this.stopped) return;
+    const baseline = this.noteBaselines.get(squareMid) ?? this.activatedAt;
+    // Deleting a note also changes the status; only a newer creation time can mean a new post.
+    if (latest <= baseline) {
+      this.events.onDiagnostic?.(`社群記事本略過：square=${squareMid} reason=not-newer latestCreatedAt=${latest} baseline=${baseline}`);
+      return;
+    }
+    this.noteBaselines.set(squareMid, latest);
+    const chats = await this.watchedChatsOf(client, squareMid);
+    if (this.client !== client || this.stopped) return;
+    if (chats.length === 0) {
+      this.events.onDiagnostic?.(`社群記事本略過：square=${squareMid} reason=no-api-chat-in-community`);
+      return;
+    }
+    const report = (note: SquareNote) => { for (const chatId of chats) this.events.onNotePosted(chatId, note); };
+    let fresh: ListedNote[];
+    try {
+      const listed = await this.noteRequest(client, () => client.base.timeline.listPost({ homeId: squareMid }), listedNotes);
+      fresh = listed
+        .filter((note) => note.createdAt > baseline && note.createdAt <= latest && !this.reportedNotes.has(`${squareMid}:${note.postId}`))
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .slice(-MAX_NOTES_PER_STATUS);
+      this.events.onDiagnostic?.(`社群記事本列表：square=${squareMid} listed=${listed.length} new=${fresh.length}`);
+    } catch (error) {
+      if (this.client === client && !this.stopped) report({ createdAt: latest, error: "NOTE_FETCH_FAILED", reason: noteFailureReason(error) });
+      return;
+    }
+    if (fresh.length === 0) {
+      report({ createdAt: latest, error: "NOTE_FETCH_FAILED", reason: "NOTE_NOT_IN_LIST" });
+      return;
+    }
+    for (const note of fresh) {
+      this.rememberReportedNote(`${squareMid}:${note.postId}`);
+      const writer = { ...(note.writerId ? { senderId: note.writerId } : {}), ...(note.writerName ? { senderName: note.writerName } : {}) };
+      try {
+        const text = await this.noteRequest(client, () => client.base.timeline.getPost({ homeId: squareMid, postId: note.postId }), (response) => noteText(response, note.postId));
+        if (this.client !== client || this.stopped) return;
+        report({ createdAt: note.createdAt, postId: note.postId, text, ...writer });
+      } catch (error) {
+        if (this.client !== client || this.stopped) return;
+        report({ createdAt: note.createdAt, postId: note.postId, error: "NOTE_FETCH_FAILED", reason: noteFailureReason(error), ...writer });
+      }
+    }
+  }
+
+  private rememberReportedNote(key: string): void {
+    this.reportedNotes.add(key);
+    if (this.reportedNotes.size > MAX_REPORTED_NOTES) this.reportedNotes.delete(this.reportedNotes.values().next().value!);
+  }
+
+  /** Watched chats (the bots' allowed OpenChat chats) in this community; their community is asked once per chat. */
+  private async watchedChatsOf(client: Client, squareMid: string): Promise<string[]> {
+    const chats: string[] = [];
+    for (const [chatId, watch] of this.joinWatches) {
+      if (watch.client !== client) continue;
+      if (!watch.squareMid) {
+        try {
+          const community = await this.noteRequest(client, () => client.base.square.getSquareChat({ squareChatMid: chatId }), (response) => response?.squareChat?.squareMid, false);
+          if (typeof community === "string" && SQUARE_HOME.test(community)) watch.squareMid = community;
+        } catch (error) {
+          this.events.onDiagnostic?.(`社群記事本：無法取得聊天室所屬社群 chat=${chatId} reason=${noteFailureReason(error)}`);
+          continue;
+        }
+      }
+      if (watch.squareMid === squareMid) chats.push(chatId);
+    }
+    return chats;
+  }
+
+  /**
+   * A note API request with a deadline (linejs gives no way to abort it; a late answer is ignored), read by
+   * `parse`. A failed timeline request, including a refusal, drops linejs' cached channel token, which it
+   * would otherwise keep forever.
+   */
+  private async noteRequest<T, R>(client: Client, request: () => Promise<T>, parse: (response: T) => R, timeline = true): Promise<R> {
+    const timeout = Promise.withResolvers<never>();
+    const timer = setTimeout(() => timeout.reject(new Error("NOTE_TIMEOUT")), NOTE_TIMEOUT_MS);
+    try {
+      const response = await Promise.race([request(), timeout.promise]);
+      if (this.client !== client || this.stopped) throw new Error("SESSION_CHANGED");
+      return parse(response);
+    } catch (error) {
+      if (timeline) Reflect.set(client.base.timeline, "timelineToken", undefined);
+      throw error;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -1027,35 +1150,18 @@ export class EvexLineProvider implements LineProvider {
     const client = this.requireClient();
     const origin = this.noteOrigins.get(messageId);
     if (!origin || origin.chatId !== channel.channelId) throw new Error("NOTE_UNKNOWN");
-    // linejs gives no way to abort the request; past the deadline its answer is simply ignored.
-    const timeout = Promise.withResolvers<never>();
-    const timer = setTimeout(() => timeout.reject(new Error("NOTE_TIMEOUT")), NOTE_TIMEOUT_MS);
-    try {
-      return await Promise.race([this.loadNoteText(client, channel, origin), timeout.promise]);
-    } finally {
-      clearTimeout(timer);
-    }
+    return this.loadNoteText(client, channel, origin);
   }
 
   private async loadNoteText(client: Client, channel: ChannelRef, { homeId, postId }: NoteTarget): Promise<string> {
     if (channel.kind === "square") {
       // An SN link names a community: only the community this chat belongs to may be read.
-      const response = await client.base.square.getSquareChat({ squareChatMid: channel.channelId });
-      if (this.client !== client || this.stopped) throw new Error("SESSION_CHANGED");
-      if (response?.squareChat?.squareMid !== homeId) throw new Error("NOTE_HOME_MISMATCH");
+      const community = await this.noteRequest(client, () => client.base.square.getSquareChat({ squareChatMid: channel.channelId }), (response) => response?.squareChat?.squareMid, false);
+      if (community !== homeId) throw new Error("NOTE_HOME_MISMATCH");
     } else if (channel.kind !== "group" || homeId !== channel.channelId) {
       throw new Error("NOTE_HOME_MISMATCH");
     }
-    const timeline = client.base.timeline;
-    try {
-      const response = await timeline.getPost({ homeId, postId });
-      if (this.client !== client || this.stopped) throw new Error("SESSION_CHANGED");
-      return noteText(response, postId);
-    } catch (error) {
-      // linejs keeps its channel token forever (a protected field); an expired one would fail every later note.
-      Reflect.set(timeline, "timelineToken", undefined);
-      throw error;
-    }
+    return this.noteRequest(client, () => client.base.timeline.getPost({ homeId, postId }), (response) => noteText(response, postId));
   }
 
   async fetchHistory(channel: ChannelRef, limit: number, before?: string): Promise<HistoryPage> {
@@ -1627,6 +1733,9 @@ export class EvexLineProvider implements LineProvider {
     this.stickerPackages = undefined;
     this.squareCache.clear();
     this.joinWatches.clear();
+    this.noteBaselines.clear();
+    this.reportedNotes.clear();
+    this.noteChecks.clear();
     this.retryDelay = 1000;
     if (!base) return;
     base.authToken = undefined;

@@ -39,19 +39,21 @@ async function activeProvider(base, client = {}) {
   const errors = [];
   const reactions = [];
   const joined = [];
+  const notes = [];
   const storage = { async flush() {}, async get() {}, async set() {} };
   const provider = new EvexLineProvider(storage, "DESKTOPWIN", {
     onMessage: (message, kind) => received.push({ message, kind }),
     onRead() {}, onStatus() {}, onError: (code) => errors.push(code),
     onReactions: (...args) => reactions.push(args),
     onMemberJoined: (...args) => joined.push(args),
+    onNotePosted: (...args) => notes.push(args),
   });
   // Listening would start real polling; the tests emit events themselves.
   provider.listen = () => {};
   provider.base = base;
   await provider.activate(base);
   Object.assign(provider.client, client);
-  return { provider, received, errors, reactions, joined, emit: (...args) => provider.client.emit(...args) };
+  return { provider, received, errors, reactions, joined, notes, emit: (...args) => provider.client.emit(...args) };
 }
 
 test("every account-wide OpenChat push reads the watched chats' own events: history is skipped, new joins are reported once, malformed ones dropped", async () => {
@@ -1721,4 +1723,58 @@ test("a note that LINE does not answer in time fails instead of hanging", async 
   await new Promise(setImmediate);
   t.mock.timers.tick(15_000);
   await pending;
+});
+
+test("an OpenChat note status reports each new note of the watched chats' community once, with the note API's text", async () => {
+  const COMMUNITY = `s${"q".repeat(32)}`;
+  const OTHER_CHAT = `m${"z".repeat(32)}`;
+  const WRITER = `p${"w".repeat(32)}`;
+  const requests = [];
+  const base = fakeBase({ square: {
+    async getSquareChat({ squareChatMid }) {
+      requests.push(["chat", squareChatMid]);
+      return { squareChat: { squareChatMid, squareMid: squareChatMid === SQUARE ? COMMUNITY : `s${"o".repeat(32)}` } };
+    },
+    async fetchSquareChatEvents() { return { events: [] }; },
+  } });
+  let list;
+  base.timeline = {
+    async listPost(options) { requests.push(["list", options.homeId]); return list; },
+    async getPost(options) {
+      requests.push(["get", options.homeId, options.postId]);
+      return options.postId === "refused" ? { code: 403, message: "no" } : { code: 0, result: { post: { postInfo: { postId: options.postId }, contents: { text: `全文-${options.postId}` } } } };
+    },
+  };
+  const { provider, notes, emit } = await activeProvider(base);
+  provider.watchSquareJoins([SQUARE, OTHER_CHAT]);
+  const start = provider.activatedAt;
+  const post = (postId, createdTime, userInfo) => ({ postInfo: { postId, createdTime }, ...(userInfo ? { userInfo } : {}), contents: {} });
+  list = { code: 0, result: { posts: [post("before-sign-in", start - 1000), post("p1", start + 10, { writerMid: WRITER, nickname: " 作者 " }), post("refused", start + 20), { postInfo: { postId: "../x", createdTime: start + 15 } }] } };
+  const status = (squareMid, latestCreatedAt) => ({ type: "NOTIFIED_UPDATE_SQUARE_NOTE_STATUS", payload: { notifiedUpdateSquareNoteStatus: { squareMid, noteStatus: { noteCount: 3, latestCreatedAt } } } });
+  emit("square:event", status(COMMUNITY, start + 20));
+  await settle();
+  assert.deepEqual(notes, [
+    [SQUARE, { createdAt: start + 10, postId: "p1", text: "全文-p1", senderId: WRITER, senderName: "作者" }],
+    [SQUARE, { createdAt: start + 20, postId: "refused", error: "NOTE_FETCH_FAILED", reason: 'NOTE_REFUSED code=403 message="no"' }],
+  ], "only notes created after sign-in, only for the watched chat of that community");
+  assert.deepEqual(requests.filter(([kind]) => kind === "get").map(([, homeId, postId]) => [homeId, postId]), [[COMMUNITY, "p1"], [COMMUNITY, "refused"]]);
+
+  emit("square:event", status(COMMUNITY, start + 20));
+  emit("square:event", { type: 36, payload: { notifiedUpdateSquareNoteStatus: { squareMid: COMMUNITY, noteStatus: { noteCount: 2, latestCreatedAt: start + 5 } } } });
+  emit("square:event", status(`s${"x".repeat(32)}`, start + 100));
+  emit("square:event", status("not-a-community", start + 100));
+  await settle();
+  assert.equal(notes.length, 2, "the same status, a deletion, a community without allowed chats and a malformed status report nothing");
+  assert.equal(requests.filter(([kind]) => kind === "list").length, 1);
+  assert.equal(requests.filter(([kind]) => kind === "chat").length, 2, "each chat's community is asked once");
+
+  base.timeline.listPost = async () => { throw new Error("socket hang up token=secret"); };
+  emit("square:event", status(COMMUNITY, start + 30));
+  await settle();
+  assert.deepEqual(notes.at(-1), [SQUARE, { createdAt: start + 30, error: "NOTE_FETCH_FAILED", reason: "LINE_ERROR name=Error" }], "a list LINE does not give still says a note appeared, never with its error text");
+  list = { code: 0, result: { posts: [post("p1", start + 10)] } };
+  base.timeline.listPost = async () => list;
+  emit("square:event", status(COMMUNITY, start + 40));
+  await settle();
+  assert.deepEqual(notes.at(-1), [SQUARE, { createdAt: start + 40, error: "NOTE_FETCH_FAILED", reason: "NOTE_NOT_IN_LIST" }], "an already reported note is not reported again");
 });

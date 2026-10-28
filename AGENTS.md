@@ -74,6 +74,8 @@ Gate 依 [PLAN.md](PLAN.md) 逐關驗收，不跳關；Gate 0 遠端需存在四
 
 記事本排查日誌（小語要求）：可能是記事本的即時訊息記 `LINE 記事本通知：…`（`contentType`、`serviceType`、`locKey`、`postEndUrl`、metadata 欄位名稱、摘要長度、是否辨識），hub 記略過原因、推送長度與 `NOTE_FETCH_FAILED` 原因（只限本服務代碼加 LINE 狀態碼與 80 字內 JSON 引號訊息，其他錯誤只記類別名稱）；未處理的 LINE operation 與社群事件只記類型，不記參數。記事本內文與摘要文字一律不入日誌。
 
+社群記事本（小語實測）：社群張貼記事本不會產生聊天訊息，LINE 只在全帳號社群推播送 `NOTIFIED_UPDATE_SQUARE_NOTE_STATUS`（社群 ID、篇數、最新建立時間，沒有貼文 ID）。adapter 只在最新建立時間晚於登入或上次處理時間、且 `api.chats` 內有屬於該社群的聊天室（`getSquareChat` 查一次後記住）時，以 `base.timeline.listPost` 讀列表找新貼文（每次最多 5 篇、每篇只報一次、每社群同時一個檢查），再以 `getPost` 取全文，經 `onNotePosted` 由 hub 對該社群在 `api.chats` 內的每個聊天室推 `chat:note-posted`（沒有 `messageId`；列表讀不到時送不含 `postId` 的 `NOTE_FETCH_FAILED`）。刪除不推送，不得依篇數猜測內容。
+
 內部日誌也不得包含憑證、token、QR URL、PIN 或 key material；不得直接 dump 套件錯誤物件、session 或登入 payload。圖片／貼圖／影片／語音位元組一律走 HTTP，WS 不傳位元組；收到的檔案只以 `file-<id>` 附件下載（`Content-Disposition: attachment`、`application/octet-stream`，不嗅探、不內嵌），規則同收到的媒體。訊息不落盤；每頻道最多 500 則，同 messageId 去重，編輯覆寫快取。LINE listen 失效採退避重啟；QR 失敗不自動循環，須由使用者動作重新產生。
 
 版本更新（`src/update/`、`scripts/update.mjs`）：只通知、不自動下載或執行；檢查器僅匿名 GET 本專案 Release、只採 `X.Y.Z` tag、連結限本專案 `/releases/`、不轉送 Release 內文、不跟隨重新導向，失敗只記 `UPDATE_CHECK_FAILED`。不得新增網頁／WS 觸發更新的入口。`npm run update` 只 fast-forward 至 tag，工作樹不乾淨即中止。完整安全政策與回報流程見 [SECURITY.md](SECURITY.md)（英文）；變動其中任一硬規則須同步更新該檔。

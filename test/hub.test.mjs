@@ -1684,6 +1684,24 @@ test("past the per-minute cap a note is announced as failed without asking LINE"
   assert.equal(env.provider.calls.filter(([kind]) => kind === "note").length, 20);
 });
 
+test("an OpenChat note found by its status event reaches bots of that chat, without the internal reason", async (t) => {
+  const env = await botEnv(t, { chats: [SQUARE] });
+  const bot = await env.open();
+  env.hub.handleNotePosted(`m${"z".repeat(32)}`, { createdAt: 1, postId: "elsewhere", text: "x" });
+  env.hub.handleNotePosted(SQUARE, { createdAt: 5, postId: "p1", text: "全文", senderId: `p${"w".repeat(32)}`, senderName: "作者" });
+  env.hub.handleNotePosted(SQUARE, { createdAt: 6, error: "NOTE_FETCH_FAILED", reason: "NOTE_REFUSED code=403" });
+  assert.deepEqual(await bot.until((frame) => frame.type === "chat:note-posted" && frame.createdAt === 5),
+    { type: "chat:note-posted", chatId: SQUARE, createdAt: 5, postId: "p1", senderId: `p${"w".repeat(32)}`, senderName: "作者", text: "全文" });
+  assert.deepEqual(await bot.until((frame) => frame.type === "chat:note-posted" && frame.createdAt === 6),
+    { type: "chat:note-posted", chatId: SQUARE, createdAt: 6, error: "NOTE_FETCH_FAILED" });
+  await env.login.logout();
+  env.hub.handleNotePosted(SQUARE, { createdAt: 7, postId: "p2", text: "登出後" });
+  bot.socket.send(JSON.stringify({ type: "ping" }));
+  await bot.until((frame) => frame.type === "pong");
+  assert.deepEqual(bot.frames.filter((frame) => frame.type === "chat:note-posted").map((frame) => frame.createdAt), [5, 6]);
+  assert.equal(env.page.frames.some((frame) => frame.type === "chat:note-posted"), false);
+});
+
 test("a note fetched for the previous account is never announced", async (t) => {
   const env = await botEnv(t);
   const bot = await env.open();

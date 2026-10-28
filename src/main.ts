@@ -39,6 +39,7 @@ async function main(): Promise<void> {
       console.info(`LINE 狀態：${state}`);
       hub.setStatus(state);
     },
+    onNotePosted: (chatId, note) => hub.handleNotePosted(chatId, note),
     onDiagnostic: (line) => console.info(line),
     onError: (code) => {
       console.error(code);
