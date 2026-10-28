@@ -49,7 +49,11 @@ function record(value: unknown): Record<string, unknown> | undefined {
  */
 export function noteText(response: unknown, postId: string): string {
   const root = record(response);
-  if (root?.code !== 0) throw new Error("NOTE_REFUSED");
+  if (root?.code !== 0) {
+    // LINE's own status code and short message only, for the log; the caller reports a generic failure.
+    const detail = root ? ` code=${JSON.stringify(root.code)?.slice(0, 20)} message=${JSON.stringify(String(root.message ?? "").slice(0, 80))}` : "";
+    throw new Error(`NOTE_REFUSED${detail}`);
+  }
   const result = record(root.result);
   const post = record(result?.post) ?? record(record(result?.feed)?.post) ?? result;
   const contents = record(post?.contents);

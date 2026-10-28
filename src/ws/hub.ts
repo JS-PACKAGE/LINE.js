@@ -627,8 +627,14 @@ export function createHub(options: HubOptions): Hub {
   /** Bots learn of a new note with its full text; fetched only while a bot of an allowed chat is connected (no replay). */
   async function announceNote(message: Message): Promise<void> {
     const { card, channelId: chatId, messageId } = message;
+    if (card?.kind !== "note") return;
     const channel = store.channelOf(chatId);
-    if (card?.kind !== "note" || !channel || !botScope.has(chatId) || !config.api.enabled || botWss.clients.size === 0 || login.state !== "ready") return;
+    const skipped = !channel ? "unknown-chat" : !botScope.has(chatId) ? "not-in-api-chats" : !config.api.enabled ? "api-disabled"
+      : botWss.clients.size === 0 ? "no-bot-connected" : login.state !== "ready" ? "not-signed-in" : undefined;
+    if (skipped || !channel) {
+      console.info(`記事本通知略過：chat=${chatId} message=${messageId} post=${card.postId} reason=${skipped}`);
+      return;
+    }
     const frame = {
       type: "chat:note-posted", chatId, messageId, postId: card.postId, senderId: message.senderId, senderName: message.senderName,
       createdAt: message.createdAt, ...(card.preview ? { preview: card.preview } : {}),
@@ -637,11 +643,15 @@ export function createHub(options: HubOptions): Hub {
     try {
       if (!noteFetchLimiter.allow()) throw new Error("NOTE_FETCH_LIMITED");
       const text = await provider.fetchNoteText({ channelId: chatId, kind: channel.kind }, messageId);
-      if (account === generation && login.state === "ready") broadcastBots({ ...frame, text });
-    } catch {
       if (account !== generation || login.state !== "ready") return;
-      // LINE errors can contain credentials or private content; log only our own code.
-      console.error("NOTE_FETCH_FAILED");
+      console.info(`記事本全文已推送：chat=${chatId} message=${messageId} post=${card.postId} length=${text.length} bots=${botWss.clients.size}`);
+      broadcastBots({ ...frame, text });
+    } catch (error) {
+      if (account !== generation || login.state !== "ready") return;
+      // LINE errors can contain credentials or private content: only our own codes (with LINE's status) are logged.
+      const reason = error instanceof Error && /^(NOTE_|SESSION_CHANGED|NOT_AUTHENTICATED)/.test(error.message)
+        ? error.message.replace(/[\r\n]/g, " ").slice(0, 200) : `LINE_ERROR name=${error instanceof Error ? error.name.slice(0, 40) : typeof error}`;
+      console.error(`NOTE_FETCH_FAILED chat=${chatId} message=${messageId} post=${card.postId} reason=${reason}`);
       broadcastBots({ ...frame, error: "NOTE_FETCH_FAILED" });
     }
   }

@@ -39,6 +39,8 @@ export interface ProviderEvents {
   onMemberJoined: (chatId: string, member: JoinedMember) => void;
   onStatus: (state: "listening" | "reconnecting") => void;
   onError: (code: "SESSION_WRITE_FAILED" | "LINE_LISTEN_FAILED" | "MESSAGE_PARSE_FAILED") => void;
+  /** One log line for diagnosing unparsed LINE input (types, ids and shapes only; never message text or secrets). */
+  onDiagnostic?: (line: string) => void;
 }
 
 export interface LogoutResult {
@@ -134,6 +136,15 @@ const LIST_CHANGES: ReadonlySet<string> = new Set([
   "DELETE_SELF_FROM_CHAT", "127", "NOTIFIED_DELETE_SELF_FROM_CHAT", "128", "ACCEPT_CHAT_INVITATION", "129",
   "NOTIFIED_ACCEPT_CHAT_INVITATION", "130", "NOTIFIED_DELETE_OTHER_FROM_CHAT", "133",
 ]);
+
+/** Routine operations and OpenChat events not worth a diagnostic line (messages arrive through their own events). */
+const QUIET_OPERATIONS: ReadonlySet<string> = new Set(["END_OF_OPERATION", "0", "SEND_MESSAGE", "25", "RECEIVE_MESSAGE", "26"]);
+const QUIET_SQUARE_EVENTS: ReadonlySet<string> = new Set([
+  "RECEIVE_MESSAGE", "0", "SEND_MESSAGE", "1", "NOTIFIED_JOIN_SQUARE_CHAT", "2", "NOTIFIED_MARK_AS_READ", "6", "NOTIFICATION_MESSAGE", "29",
+]);
+
+/** Content types that may carry a note (記事本): post notifications and the older group board type. */
+const NOTE_CONTENT_TYPES: ReadonlySet<string> = new Set(["POSTNOTIFICATION", "16", "GROUPBOARD", "10"]);
 
 /** What the UI shows for a person. `settled` means LINE answered a profile lookup (or the friend list did). */
 interface MemberProfile {
@@ -328,9 +339,15 @@ export class EvexLineProvider implements LineProvider {
       void next.then(() => { if (this.deliveries.get(chatId) === next) this.deliveries.delete(chatId); });
     };
     const talkChat = (raw: LineMessage): string => (raw.to === profile.userId ? raw.from : raw.to);
-    client.on("message", (message) => deliver(talkChat(message.raw), "talk", message.raw.from, () => this.talkToMessage(message.raw, profile.userId), "new", chatEventMids(message.raw.contentMetadata)));
+    client.on("message", (message) => {
+      this.diagnoseNote("talk", talkChat(message.raw), message.raw);
+      deliver(talkChat(message.raw), "talk", message.raw.from, () => this.talkToMessage(message.raw, profile.userId), "new", chatEventMids(message.raw.contentMetadata));
+    });
     client.on("message:edit", (message) => deliver(talkChat(message.raw), "talk", message.raw.from, () => this.talkToMessage(message.raw, profile.userId), "edit"));
-    client.on("square:message", (message) => deliver(message.raw.message.to, "square", message.raw.message.from, () => this.squareToMessage(message.raw), "new"));
+    client.on("square:message", (message) => {
+      this.diagnoseNote("square", message.raw.message.to, message.raw.message);
+      deliver(message.raw.message.to, "square", message.raw.message.from, () => this.squareToMessage(message.raw), "new");
+    });
     client.on("event", (operation) => {
       if (this.client !== client) return;
       const type = String(operation.type);
@@ -346,6 +363,8 @@ export class EvexLineProvider implements LineProvider {
       } else if (LIST_CHANGES.has(type)) {
         // Names, pictures and members are read back from LINE by a list refresh; no parameter is parsed here.
         this.events.onChatsChanged();
+      } else if (!QUIET_OPERATIONS.has(type)) {
+        this.events.onDiagnostic?.(`LINE 未處理事件：op=${type.slice(0, 60)}`);
       }
     });
     client.on("square:event", (event) => {
@@ -368,6 +387,8 @@ export class EvexLineProvider implements LineProvider {
           this.updateSquareMessage(update.squareChatMid, update.messageId, { reactions });
           this.events.onReactions(update.squareChatMid, update.messageId, reactions);
         }
+      } else if (!QUIET_SQUARE_EVENTS.has(type)) {
+        this.events.onDiagnostic?.(`LINE 未處理社群事件：type=${type.slice(0, 60)}`);
       }
     });
     this.listen();
@@ -581,6 +602,18 @@ export class EvexLineProvider implements LineProvider {
       // Fail closed: an E2EE payload without readable text is a placeholder, never a guess.
       ...(isText && !text && fields.encrypted ? { decryptFailed: true } : {}),
     };
+  }
+
+  /** Logs the shape of anything that might be a note notification, so an unrecognised layout can be seen (never its text). */
+  private diagnoseNote(source: "talk" | "square", chatId: string, raw: LineMessage): void {
+    const metadata = raw.contentMetadata ?? {};
+    const contentType = String(raw.contentType);
+    if (!NOTE_CONTENT_TYPES.has(contentType) && typeof metadata.postEndUrl !== "string") return;
+    const short = (value: unknown) => (typeof value === "string" ? JSON.stringify(value.slice(0, 300)) : "-");
+    this.events.onDiagnostic?.(`LINE 記事本通知：source=${source} chat=${chatId} message=${raw.id} contentType=${contentType}`
+      + ` service=${short(metadata.serviceType)} locKey=${short(metadata.locKey)} url=${short(metadata.postEndUrl)}`
+      + ` keys=${JSON.stringify(Object.keys(metadata).slice(0, 40).join(","))} textLength=${typeof metadata.text === "string" ? metadata.text.length : "-"}`
+      + ` parsed=${noteTarget(metadata) ? "yes" : "no"}`);
   }
 
   private rememberNote(messageId: string, chatId: string, metadata: Record<string, string> | undefined): void {
