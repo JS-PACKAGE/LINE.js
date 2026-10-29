@@ -179,6 +179,8 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 | 服務 → 機器人 | `message`、`message:edit`、`message:unsend` | 只有 `api.chats` 內聊天室的**即時**訊息、編輯與收回；包含你自己發的 |
 | 服務 → 機器人 | `sent`、`history`、`profile`、`chat:admins`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`CHAT_ADMINS_UNSUPPORTED`、`CHAT_ADMINS_FAILED`…） |
 
+加入通知的大頭照請使用 `member.pictureUrl`：有有效照片 hash 時維持 hash 網址，否則使用 `https://obs.line-scdn.net/r/g2/member/<userId>`（已以回報的成員 ID 實際取得圖片）。`pictureId` 仍可能缺省，不能以它判定沒有照片；不為加入通知額外補查成員，也不傳圖片位元組。尚未完成新版與 NekoGuard 的實際聯測。
+
 其餘一律回 `UNKNOWN_TYPE`：沒有登入／登出、`chat:read`（已讀回報）、`message:unsend`（收回）、`message:react`（回應）、`channels:refresh`、貼圖清單、API 連線 Bearer Token 管理。**不重播舊訊息**（機器人從「現在」開始，不會重複回應歷史；要歷史請用 `history:fetch`）；不給 `read`、`update:available`、`api:state`；圖片／影片等媒體位元組也無法取得（機器人只看到訊息的 `contentType`）。
 
 **管理員 mention 授權**：成功查詢後，同一連線可在同一聊天室以 `message:send.mentions` 標記剛查得、尚未發言的管理員；格式仍為 `{ userId, start, end }`（UTF-16 字串索引，指向以 `@` 開頭的文字範圍），每則最多 20 人。此額外授權不共享給其他連線、聊天室或網頁；重新查詢一開始即撤銷舊授權（包含限流或後續失敗），只有最新查詢成功才授予新名單；過期的並行查詢回 `CHAT_ADMINS_FAILED`。斷線、登出或換帳號清除授權及舊查詢結果；已顯示訊息的寄件者仍依原有規則可被標記。舊的 `chat:admins` **請求**不再接受（`UNKNOWN_TYPE`），只保留為回應名稱。

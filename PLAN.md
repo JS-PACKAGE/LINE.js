@@ -170,6 +170,10 @@
 
 > 社群加入照片排查（2026-10）：小語實測補查後仍為 `picture=-`，根因尚未確認。僅在加入事件缺少有效照片時新增 `LINE 社群加入照片` 診斷：事件／補查回應的照片欄位型別、長度、字元與格式驗證結果，以及請求、共用查詢、退避、逾時／取消、請求或解析失敗階段；不輸出原始 hash、回應或錯誤內容，不恢復普通訊息日誌。typecheck、build 與編譯後 adapter 隔離 smoke 已驗證空照片、格式不符、查詢失敗及有效照片四種情況。此為排查補強，不宣稱真實 LINE 照片問題已修復。
 
+> 社群加入照片最終路徑修正（2026-10）：小語確認為自行上傳且服務帳號在官方 App 可見；加入事件及 `getSquareMember` 都回空 hash。參考 [CHRLINE 的 OBS 成員圖片路徑](https://github.com/DeachSword/CHRLINE/blob/master/CHRLINE/object.py)，實際讀取回報成員的 `https://obs.line-scdn.net/r/g2/member/<memberId>`，成功取得 WebP 圖片。修正「無 hash 就不給網址」的假設：有有效 hash 沿用原網址，否則使用已驗證格式的成員 ID 路徑；`pictureId` 可缺省。移除前述加入照片補查與臨時診斷；它們的紀錄保留為排查歷史。未宣稱 NekoGuard 聯測或真實 LINE Gate 通過。
+
+> 驗證：typecheck、build、360 項測試通過；編譯後正式 adapter 接收空 hash 的加入資料，輸出的 `pictureUrl` 實際 GET 回 HTTP 200，內容以位元組確認為 JPEG（115353 bytes）。讀取工具曾取得 WebP，故不假設此端點只有單一圖片格式。未使用真實帳號觸發新的加入事件或完成外掛顯示聯測。
+
 > v1.21（小語裁示：詐騙機率分析移交 NekoGuard，協定版本仍為 2）：移除 `jev` 設定區段、`src/jev/`、`scam:check`／`scam:state`／`scam:result` 與相關錯誤碼、網頁右鍵選單「詐騙機率分析」；舊設定檔的 `jev` 區段會被忽略。v1.15、v1.16 與詐騙分析加速的紀錄僅保留為歷史。驗證：typecheck、build 與 346 項測試通過；以含舊 `jev` 區段的設定啟動實際 `dist/main.js`，服務正常啟動、網頁連線不再收到 `scam:state`，`scam:check` 回 `UNKNOWN_TYPE`（機器人連線同樣由測試確認）。
 
 > v1.22（小語裁示：群組與社群記事本發文推送給機器人，並抓完整文章，協定版本仍為 2）：LINE 以 `POSTNOTIFICATION` 訊息通知記事本發文；依其他用戶端的實測紀錄，群組為 `serviceType: GB`、`postEndUrl` 為 `…/group/home/posts/post?homeId=c…&postId=…`，社群為 `serviceType: SN`、`line://square/post?squareMid=s…&postId=…`（相簿 `AB`、分享 VOOM `MH` 同類型，不處理）。`src/line/notes.ts` 只接受完全符合的格式，訊息帶 `card: { kind: "note", postId, preview? }`（網頁以「記事本」小卡顯示摘要）。`api.chats` 內的即時新訊息，在已登入且有機器人連線時，由 adapter `fetchNoteText` 以 linejs `base.timeline.getPost` 取全文（首次使用核發 LINE Timeline 頻道權杖），只讀自己看過通知的貼文，群組 `homeId` 須等於該群組、社群 `squareMid` 須等於 `getSquareChat` 的所屬社群，回應須含所要求的 `postId`；逾時 15 秒、全體每分鐘 20 次。hub 以 `chat:note-posted { chatId, messageId, postId, senderId, senderName, createdAt, preview?, text | error: "NOTE_FETCH_FAILED" }` 只推給機器人，`hello.capabilities` 加入 `chat:note-posted`。驗證：typecheck、build 與 355 項測試通過；以正式 adapter、hub、HTTP 與 `/api/ws` 的隔離環境確認群組與社群通知各推送全文給兩個機器人連線、指向其他群組的偽造通知不呼叫 LINE 並回 `NOTE_FETCH_FAILED`、網頁不收；瀏覽器確認「記事本」小卡與聊天列表預覽。尚未以真實 LINE 帳號確認通知格式、記事本 API 的端點與回應格式，也未確認分享記事本是否產生相同通知。

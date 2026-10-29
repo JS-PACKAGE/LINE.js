@@ -92,7 +92,7 @@ test("every account-wide OpenChat push reads the watched chats' own events: hist
   await settle();
   assert.deepEqual(joined, [
     [SQUARE, { userId: member, displayName: "新朋友", pictureId: "avatar-o-0hAbCdEfGh", pictureUrl: "https://obs.line-scdn.net/0hAbCdEfGh" }],
-    [SQUARE, { userId: OWN_MEMBER, displayName: "" }],
+    [SQUARE, { userId: OWN_MEMBER, displayName: "", pictureUrl: `https://obs.line-scdn.net/r/g2/member/${OWN_MEMBER}` }],
   ]);
   // linejs emits every push as "square:event" first; a message is one more push.
   const message = { message: { id: "77", to: SQUARE, from: member, contentType: "NONE", text: "嗨", createdTime: String(1_700_000_000_077), contentMetadata: {} } };
@@ -114,19 +114,15 @@ test("every account-wide OpenChat push reads the watched chats' own events: hist
   assert.equal(requests.length, 4, "a closed session stops watching");
 });
 
-test("a join without a picture resolves the member before reporting, and failed lookups still report the join", async () => {
-  for (const fails of [false, true]) {
+test("a join with an empty or invalid photo hash still provides the member OBS URL without accepting URL injection", async () => {
+  for (const hash of ["", "../untrusted?x=1"]) {
     let fresh = false;
     const base = fakeBase({ square: {
       async fetchSquareChatEvents() {
         return { syncToken: "latest", events: fresh ? [{
           type: "NOTIFIED_JOIN_SQUARE_CHAT",
-          payload: { notifiedJoinSquareChat: { squareChatMid: SQUARE, joinedMember: { squareMemberMid: OWN_MEMBER, displayName: "新朋友" } } },
+          payload: { notifiedJoinSquareChat: { squareChatMid: SQUARE, joinedMember: { squareMemberMid: OWN_MEMBER, displayName: "新朋友", profileImageObsHash: hash } } },
         }] : [] };
-      },
-      async getSquareMember() {
-        if (fails) throw new Error("unavailable");
-        return { squareMember: { squareMemberMid: OWN_MEMBER, displayName: "新朋友", profileImageObsHash: "0hAbCdEfGh" } };
       },
     } });
     const { provider, joined, emit } = await activeProvider(base);
@@ -137,7 +133,7 @@ test("a join without a picture resolves the member before reporting, and failed 
     await settle();
     assert.deepEqual(joined, [[SQUARE, {
       userId: OWN_MEMBER, displayName: "新朋友",
-      ...(!fails ? { pictureId: "avatar-o-0hAbCdEfGh", pictureUrl: "https://obs.line-scdn.net/0hAbCdEfGh" } : {}),
+      pictureUrl: `https://obs.line-scdn.net/r/g2/member/${OWN_MEMBER}`,
     }]]);
     await provider.close();
   }

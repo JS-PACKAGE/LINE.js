@@ -179,6 +179,8 @@ HTTP：`GET /media/:mediaId`（スタンプ、スタンプパックのアイコ�
 | サービス → ボット | `message`、`message:edit`、`message:unsend` | `api.chats` のチャットルームの**リアルタイム**メッセージ、編集、送信取消のみ。自分が送ったものも含みます |
 | サービス → ボット | `sent`、`history`、`profile`、`chat:admins`、`error` | 対応するリクエストへの応答。エラーは汎用コードのみ（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`CHAT_ADMINS_UNSUPPORTED`、`CHAT_ADMINS_FAILED`…） |
 
+参加通知の画像には `member.pictureUrl` を使用してください。有効な画像 hash があれば従来の hash URL、なければ `https://obs.line-scdn.net/r/g2/member/<userId>` を返します（報告されたメンバー ID で実際の画像取得を確認済み）。`pictureId` がなくても画像がないとは限りません。参加通知のための追加メンバー照会や画像バイト列の送信は行いません。本変更と NekoGuard の実機結合検証は未実施です。
+
 それ以外はすべて `UNKNOWN_TYPE` を返します。ログイン／ログアウト、`chat:read`（既読通知）、`message:unsend`（送信取消）、`message:react`（リアクション）、`channels:refresh`、スタンプ一覧、API 接続用 Bearer Token の管理は利用できません。**過去のメッセージは再送しません**（ボットは「今」から開始し、履歴に重複して応答しません。履歴は `history:fetch` を使ってください）。`read`、`update:available`、`api:state` は送信しません。画像／動画などのメディアのバイト列も取得できません（ボットにはメッセージの `contentType` のみ見えます）。
 
 **管理者のメンション権限**：取得成功後、同じ接続・同じチャットで `message:send.mentions` を使い、取得した未発言の管理者をメンションできます。形式は従来どおり `{ userId, start, end }`（`@` で始まる文字範囲の UTF-16 インデックス）で、1 メッセージにつき最大 20 人です。この追加権限は他の接続・チャット・Web ページに共有しません。再取得を開始した時点で旧権限を取り消し（レート制限や後続の失敗も含む）、最新の取得が成功した場合だけ新しい一覧を許可します。古い並行リクエストは `CHAT_ADMINS_FAILED` となります。切断・ログアウト・アカウント変更でも権限を消去し、処理中の古い結果を無効化します。表示済みメッセージの送信者は従来の規則で引き続きメンション可能です。旧 `chat:admins` **リクエスト**は受け付けず（`UNKNOWN_TYPE`）、応答名としてのみ残します。

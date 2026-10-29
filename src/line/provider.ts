@@ -565,7 +565,7 @@ export class EvexLineProvider implements LineProvider {
       if (watch.caughtUp) {
         for (const event of events) {
           const type = String(event?.type);
-          if (type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2") await this.memberJoined(chatId, watch, event.payload?.notifiedJoinSquareChat);
+          if (type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2") this.memberJoined(chatId, event.payload?.notifiedJoinSquareChat);
         }
       }
       if (typeof response?.syncToken === "string" && response.syncToken) watch.syncToken = response.syncToken;
@@ -580,34 +580,23 @@ export class EvexLineProvider implements LineProvider {
   }
 
   /** Typed payload, but still LINE input: anything off-shape is dropped, never guessed at. */
-  private async memberJoined(chatId: string, watch: JoinWatch, joined: { squareChatMid?: unknown; joinedMember?: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role", unknown>> } | undefined): Promise<void> {
+  private memberJoined(chatId: string, joined: { squareChatMid?: unknown; joinedMember?: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role", unknown>> } | undefined): void {
     const member = joined?.joinedMember;
     if (joined?.squareChatMid !== chatId
       || typeof member?.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(member.squareMemberMid)
       || typeof member.displayName !== "string"
       || (member.profileImageObsHash !== undefined && typeof member.profileImageObsHash !== "string")) return;
-    if (this.client !== watch.client || this.joinWatches.get(chatId) !== watch) return;
-    let pictureId = avatarMediaId("obs", member.profileImageObsHash);
+    const pictureId = avatarMediaId("obs", member.profileImageObsHash);
     // An incomplete join payload must not mark the profile as fully resolved.
     this.rememberProfile(member.squareMemberMid, member.displayName, pictureId, !!pictureId, memberRole(member.role));
-    if (!pictureId) {
-      const diagnose = (stage: string, hash?: unknown) => {
-        if (this.client !== watch.client || this.joinWatches.get(chatId) !== watch) return;
-        const shape = typeof hash === "string"
-          ? `hashType=string hashLength=${hash.length} hashCharsValid=${/^[A-Za-z0-9_-]+$/.test(hash.replace(/^\//, ""))} hashValid=${!!avatarMediaId("obs", hash)}`
-          : `hashType=${hash === null ? "null" : typeof hash}`;
-        this.events.onDiagnostic?.(`LINE 社群加入照片：chat=${chatId} member=${member.squareMemberMid} stage=${stage} ${shape}`);
-      };
-      diagnose("event", member.profileImageObsHash);
-      await this.resolveMembers(watch.client, "square", [member.squareMemberMid], diagnose);
-      if (this.client !== watch.client || this.joinWatches.get(chatId) !== watch) return;
-      pictureId = this.profiles.get(member.squareMemberMid)?.pictureId;
-    }
     this.events.onMemberJoined(chatId, {
       userId: member.squareMemberMid,
       displayName: member.displayName,
-      // pictureId only exists for a validated hash, so the URL never carries anything else.
-      ...(pictureId ? { pictureId, pictureUrl: `https://obs.line-scdn.net/${pictureId.slice("avatar-o-".length)}` } : {}),
+      ...(pictureId ? { pictureId } : {}),
+      // LINE may omit the hash even for uploaded photos; OBS also resolves a validated member ID.
+      pictureUrl: pictureId
+        ? `https://obs.line-scdn.net/${pictureId.slice("avatar-o-".length)}`
+        : `https://obs.line-scdn.net/r/g2/member/${member.squareMemberMid}`,
     });
   }
 
@@ -995,7 +984,7 @@ export class EvexLineProvider implements LineProvider {
    * OpenChat members). Never throws and is time-boxed: a failed lookup only means the UI shows
    * the generic member name until the retry delay passes.
    */
-  private async resolveMembers(client: Client, source: "talk" | "square", mids: Iterable<string>, diagnose?: (stage: string, hash?: unknown) => void): Promise<void> {
+  private async resolveMembers(client: Client, source: "talk" | "square", mids: Iterable<string>): Promise<void> {
     if (this.client !== client) return;
     const now = Date.now();
     const pending: string[] = [];
@@ -1007,18 +996,13 @@ export class EvexLineProvider implements LineProvider {
       if (!this.profiles.get(mid)?.settled && (this.lookupMisses.get(`${source}:${mid}`) ?? 0) <= now) {
         pending.push(mid);
         if (pending.length === MAX_LOOKUPS_PER_CALL) break;
-      } else {
-        diagnose?.(this.profiles.get(mid)?.settled ? "cached" : "backoff");
       }
     }
     const waiting: Promise<void>[] = [];
     const fresh: string[] = [];
     for (const mid of pending) {
       const flight = this.lookupFlights.get(`${source}:${mid}`);
-      if (flight) {
-        diagnose?.("shared-lookup");
-        waiting.push(flight);
-      }
+      if (flight) waiting.push(flight);
       else fresh.push(mid);
     }
     const batchSize = source === "talk" ? CONTACT_BATCH : 1;
@@ -1042,7 +1026,6 @@ export class EvexLineProvider implements LineProvider {
       };
       const job: { run: () => void; cancel: () => void } = {
         cancel: () => {
-          diagnose?.("timeout-or-cancelled");
           expired = true;
           clearTimeout(timer);
           this.lookupJobs.delete(job);
@@ -1050,7 +1033,6 @@ export class EvexLineProvider implements LineProvider {
           finish();
         },
         run: () => {
-          diagnose?.("request");
           this.activeLookups += 1;
           void (async () => {
             try {
@@ -1063,11 +1045,9 @@ export class EvexLineProvider implements LineProvider {
               } else {
                 const mid = batch[0]!;
                 const { squareMember } = await client.base.square.getSquareMember({ squareMemberMid: mid });
-                if (!expired && this.client === client) diagnose?.("response", squareMember?.profileImageObsHash);
                 if (!expired && this.client === client) this.rememberProfile(mid, squareMember.displayName, avatarMediaId("obs", squareMember.profileImageObsHash), true, memberRole(squareMember.role));
               }
             } catch {
-              if (!expired && this.client === client) diagnose?.("request-or-response-failed");
               // Failed and timed-out lookups retain the existing retry delay.
             } finally {
               clearTimeout(timer);
