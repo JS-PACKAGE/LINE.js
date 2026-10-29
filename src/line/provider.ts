@@ -1441,24 +1441,35 @@ export class EvexLineProvider implements LineProvider {
   /**
    * LINE creates the message server-side while the media is uploaded, and the sending client gets
    * no live event for its own message, so the message is built here for the caller to show.
+   * M4A becomes a voice message; PDF, text and MP3 become file attachments under the upload's name.
    */
   async sendMedia(channel: ChannelRef, media: MediaBytes): Promise<Message> {
     const client = this.requireClient();
     const me = this.getProfile();
     const isVideo = media.mime.startsWith("video/");
+    const isAudio = media.mime === "audio/mp4";
+    const isFile = !isVideo && !isAudio && !media.mime.startsWith("image/");
     const bytes = media.bytes;
     // Blob snapshots ArrayBuffer views itself; shared backing stores still need an ordinary copy.
     const part = bytes.buffer instanceof ArrayBuffer
       ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
       : new Uint8Array(bytes);
     const blob = new Blob([part], { type: media.mime });
-    const filename = isVideo ? `video.${media.mime === "video/quicktime" ? "mov" : "mp4"}` : `image.${media.mime === "image/png" ? "png" : media.mime === "image/gif" ? "gif" : "jpg"}`;
+    const filename = isFile ? media.filename ?? "file"
+      : isAudio ? "audio.m4a"
+      : isVideo ? `video.${media.mime === "video/quicktime" ? "mov" : "mp4"}`
+      : `image.${media.mime === "image/png" ? "png" : media.mime === "image/gif" ? "gif" : "jpg"}`;
     // LINE shows this number as the clip length and never works it out itself.
-    const durationMs = isVideo ? mp4DurationMs(media.bytes) : undefined;
+    const durationMs = isVideo || isAudio ? mp4DurationMs(media.bytes) : undefined;
+    const type = isFile ? "file" : isAudio ? "audio" : isVideo ? "video" : "image";
     try {
-      const uploaded = await client.base.obs.uploadObjTalk(channel.channelId, isVideo ? "video" : "image", blob, undefined, filename, durationMs);
+      const uploaded = await client.base.obs.uploadObjTalk(channel.channelId, type, blob, undefined, filename, durationMs);
       if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
-      if (uploaded.objId) return this.outgoingMedia(channel, me, uploaded.objId, isVideo ? "VIDEO" : "IMAGE");
+      if (uploaded.objId) {
+        return isFile
+          ? this.outgoingMedia(channel, me, uploaded.objId, "FILE", { FILE_NAME: filename, FILE_SIZE: String(bytes.length) })
+          : this.outgoingMedia(channel, me, uploaded.objId, isAudio ? "AUDIO" : isVideo ? "VIDEO" : "IMAGE");
+      }
     } catch {
       // Fall through: end-to-end encrypted chats reject plain uploads.
     }
@@ -1466,7 +1477,7 @@ export class EvexLineProvider implements LineProvider {
     if (channel.kind === "square" || !(channel.channelId.startsWith("u") || channel.channelId.startsWith("c"))) {
       throw new Error("MEDIA_SEND_FAILED");
     }
-    const oType = isVideo ? "video" : media.mime === "image/gif" ? "gif" : "image";
+    const oType = type === "image" && media.mime === "image/gif" ? "gif" : type;
     const message = await client.base.obs.uploadMediaByE2EE({ data: blob, oType, to: channel.channelId, filename, ...(durationMs ? { durationMs } : {}) });
     if (this.client !== client) throw new Error("NOT_AUTHENTICATED");
     return this.talkToMessage({ ...message, to: channel.channelId, from: me.userId }, me.userId);
@@ -1504,9 +1515,9 @@ export class EvexLineProvider implements LineProvider {
   }
 
   /** A plain upload's object id is the id of the message LINE created for it. */
-  private outgoingMedia(channel: ChannelRef, me: Profile, id: string, contentType: "IMAGE" | "VIDEO"): Message {
+  private outgoingMedia(channel: ChannelRef, me: Profile, id: string, contentType: "IMAGE" | "VIDEO" | "AUDIO" | "FILE", contentMetadata: Record<string, string> = {}): Message {
     const toType = { user: "USER", room: "ROOM", group: "GROUP", square: "SQUARE_CHAT" }[channel.kind];
-    const raw = { id, to: channel.channelId, from: me.userId, toType, contentType, contentMetadata: {}, createdTime: String(Date.now()) } as unknown as LineMessage;
+    const raw = { id, to: channel.channelId, from: me.userId, toType, contentType, contentMetadata, createdTime: String(Date.now()) } as unknown as LineMessage;
     if (channel.kind !== "square") return this.talkToMessage(raw, me.userId);
     const message = this.squareToMessage({ message: raw } as LineSquareMessage, me.displayName);
     this.rememberSquareMessage(message);

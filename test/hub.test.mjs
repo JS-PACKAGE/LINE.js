@@ -109,8 +109,10 @@ class FakeProvider {
     if (this.sendError) throw this.sendError;
     return this.outgoing(channel, { contentType: "STICKER", mediaId: `sticker-${stickerId}` });
   }
+  mediaSent = [];
   async sendMedia(channel, media) {
     this.calls.push(["media", channel, media.mime, media.bytes.length]);
+    this.mediaSent.push({ mime: media.mime, length: media.bytes.length, ...(media.filename !== undefined ? { filename: media.filename } : {}) });
     if (this.sendError) throw this.sendError;
     // LINE sends no live event for our own media, so the adapter returns the message to show.
     const video = media.mime.startsWith("video/");
@@ -145,7 +147,7 @@ async function start(t, { restore = true, readReceipts = true, api = {} } = {}) 
     history: { defaultLimit: 50 },
     chat: { sendReadReceipts: readReceipts },
     api: { enabled: false, chats: [], sendsPerMinute: 20, ...api },
-    limits: { frameMaxBytes: 1024, textMaxLength: 20, sendsPerSecond: 5, uploadMaxBytes: 2048, uploadVideoMaxBytes: 8192, uploadsPerMinute: 3 },
+    limits: { frameMaxBytes: 1024, textMaxLength: 20, sendsPerSecond: 5, uploadMaxBytes: 2048, uploadVideoMaxBytes: 8192, uploadFileMaxBytes: 4096, uploadsPerMinute: 3 },
   };
   const provider = new FakeProvider();
   provider.restoreResult = restore;
@@ -1546,9 +1548,7 @@ test("a bot can send text and read history in an allowed chat only", async (t) =
   env.hub.handleMessage({ messageId: "40", channelId: OTHER, channelKind: "group", senderId: "u1", senderName: "小明", text: "別群", contentType: "NONE", createdAt: 4 }, "new");
   assert.ok(env.store.channelOf(OTHER));
   assert.equal((await ask({ type: "message:send", requestId: "a2", chatId: OTHER, text: "x" }, (f) => f.type === "error")).code, "UNKNOWN_CHAT");
-  for (const [id, extra] of [["a4", { sticker: { packageId: 1, stickerId: 2 } }], ["a5", { mediaId: "upload-aaaaaaaaaaaaaaaaaaaaaaaa" }]]) {
-    assert.equal((await ask({ type: "message:send", requestId: id, chatId: CHAT, ...extra }, (f) => f.type === "error")).code, "INVALID_REQUEST");
-  }
+  assert.equal((await ask({ type: "message:send", requestId: "a4", chatId: CHAT, sticker: { packageId: 1, stickerId: 2 } }, (f) => f.type === "error")).code, "INVALID_REQUEST");
   assert.equal(env.provider.calls.filter((call) => call[0] !== "history" && call[0] !== "text").length, 0, "nothing but the one text reached LINE");
   env.provider.history = { messages: [{ messageId: "5", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "小明", text: "歷史", contentType: "NONE", createdAt: 5 }], hasMore: false };
   const page = await ask({ type: "history:fetch", requestId: "h1", chatId: CHAT }, (f) => f.type === "history");
@@ -1557,6 +1557,77 @@ test("a bot can send text and read history in an allowed chat only", async (t) =
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(bot.frames.some((frame) => frame.type === "read"), false, "bots get no read receipts");
   assert.equal(env.provider.calls.some((call) => call[0] === "read-range"), false);
+});
+
+const PDF = Buffer.from("%PDF-1.7\n1 0 obj\n<<>>\nendobj\n");
+
+function botUpload(env, body, headers = {}) {
+  return fetch(`http://127.0.0.1:${env.port}/api/media/upload`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.token}`, "Content-Type": "application/pdf", ...headers },
+    body,
+  });
+}
+
+test("bot uploads require the bot token without Origin and are typed, sized and named by their bytes", async (t) => {
+  const env = await botEnv(t);
+  const wrong = `linejs_${"A".repeat(43)}`;
+  for (const headers of [{ Authorization: "" }, { Authorization: `Bearer ${wrong}` }, { Origin: `http://127.0.0.1:${env.port}` }, { Authorization: "", Cookie: env.cookie, Origin: `http://127.0.0.1:${env.port}` }]) {
+    assert.equal((await botUpload(env, PDF, headers)).status, 403, JSON.stringify(Object.keys(headers)));
+  }
+  assert.equal((await botUpload(env, PDF, { "Content-Type": "application/zip" })).status, 415);
+  assert.equal((await botUpload(env, PDF, { "X-File-Name": "%E0%A4%A" })).status, 400, "a malformed name is refused before the body is read");
+  const html = await botUpload(env, Buffer.from("<html>\0</html>"), { "Content-Type": "text/plain" });
+  assert.deepEqual([html.status, await html.json()], [400, { code: "INVALID_MEDIA" }]);
+  const accepted = await botUpload(env, PDF, { "X-File-Name": encodeURIComponent("../報告\u0007.exe") });
+  assert.equal(accepted.status, 200);
+  assert.match((await accepted.json()).mediaId, /^upload-[a-f0-9]{32}$/);
+  // Three counted attempts (the invalid text, the PDF and this text) use up the bots' budget of 3 per minute.
+  assert.equal((await botUpload(env, Buffer.from("純文字\n"), { "Content-Type": "text/plain" })).status, 200);
+  assert.equal((await botUpload(env, PDF)).status, 429, "bots share one upload budget");
+  assert.equal((await upload(env, PNG)).status, 200, "the page keeps its own budget");
+});
+
+test("a bot sends its own text, PDF and audio uploads; uploads cannot cross between pages and bots", async (t) => {
+  const env = await botEnv(t);
+  const bot = await env.open();
+  const ask = async (frame) => {
+    bot.socket.send(JSON.stringify(frame));
+    return bot.until((reply) => reply.requestId === frame.requestId && (reply.type === "sent" || reply.type === "error"));
+  };
+  assert.ok(bot.frames.find((frame) => frame.type === "hello").capabilities.includes("media:upload"));
+  const pdf = (await (await botUpload(env, PDF, { "X-File-Name": encodeURIComponent("../報告\u0007.exe") })).json()).mediaId;
+  assert.equal((await ask({ type: "message:send", requestId: "f1", chatId: CHAT, mediaId: pdf })).type, "sent");
+  assert.deepEqual(env.provider.mediaSent.at(-1), { mime: "application/pdf", length: PDF.length, filename: ".._報告_.exe.pdf" });
+  const text = (await (await botUpload(env, Buffer.from("第一行\r\n"), { "Content-Type": "text/plain", "X-File-Name": "notes.CSV" })).json()).mediaId;
+  assert.equal((await ask({ type: "message:send", requestId: "f2", chatId: CHAT, mediaId: text })).type, "sent");
+  assert.equal(env.provider.mediaSent.at(-1).filename, "notes.CSV");
+  assert.equal((await ask({ type: "message:send", requestId: "f3", chatId: CHAT, mediaId: text })).code, "UPLOAD_EXPIRED", "an upload is sent once");
+
+  const pageUpload = (await (await upload(env, PNG)).json()).mediaId;
+  assert.equal((await ask({ type: "message:send", requestId: "f4", chatId: CHAT, mediaId: pageUpload })).code, "UPLOAD_EXPIRED", "a bot cannot send the page's upload");
+  const botImage = (await (await botUpload(env, PNG, { "Content-Type": "image/png" })).json()).mediaId;
+  env.page.socket.send(JSON.stringify({ type: "message:send", requestId: "f5", chatId: CHAT, mediaId: botImage }));
+  assert.equal((await env.page.until((frame) => frame.requestId === "f5")).code, "UPLOAD_EXPIRED", "the page cannot send a bot's upload");
+  assert.equal((await ask({ type: "message:send", requestId: "f6", chatId: CHAT, mediaId: botImage })).type, "sent", "the refused page request did not consume it");
+});
+
+test("bot audio must state its length, files have their own size limit, and a declared type only picks the budget", async (t) => {
+  const env = await botEnv(t);
+  const box = (type, body) => Buffer.concat([Buffer.from([0, 0, (8 + body.length) >> 8, (8 + body.length) & 0xff]), Buffer.from(type, "latin1"), body]);
+  const header = Buffer.alloc(100);
+  header.writeUInt32BE(1000, 12);
+  header.writeUInt32BE(2500, 16);
+  const m4a = Buffer.concat([box("ftyp", Buffer.from("M4A \0\0\0\0")), box("moov", box("mvhd", header))]);
+  const ok = await botUpload(env, m4a, { "Content-Type": "audio/mp4" });
+  assert.equal(ok.status, 200);
+  const bot = await env.open();
+  bot.socket.send(JSON.stringify({ type: "message:send", requestId: "m1", chatId: CHAT, mediaId: (await ok.json()).mediaId }));
+  await bot.until((frame) => frame.type === "sent" && frame.requestId === "m1");
+  assert.deepEqual(env.provider.mediaSent.at(-1), { mime: "audio/mp4", length: m4a.length });
+  const silent = await botUpload(env, box("ftyp", Buffer.from("M4A \0\0\0\0")), { "Content-Type": "audio/mp4" });
+  assert.deepEqual([silent.status, await silent.json()], [400, { code: "INVALID_MEDIA" }], "no readable length, no voice message");
+  assert.equal((await botUpload(env, Buffer.concat([PDF, Buffer.alloc(4100, 0x20)]), { "Content-Type": "video/mp4" })).status, 413, "a PDF over the file limit is refused even under the video budget");
 });
 
 test("a bot can ask for this account's own id at any time, only while signed in", async (t) => {

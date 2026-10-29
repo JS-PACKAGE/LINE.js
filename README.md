@@ -87,7 +87,7 @@ npm start
 
 ## 設定
 
-`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`chat`、`update`、`api`、`limits`（`chat`、`update`、`api` 區段與 `limits.downloadMaxBytes`、`limits.uploadVideoMaxBytes` 可省略，舊設定檔照常運作；`api` 預設關閉）。已移除的 `jev` 區段若仍留在舊 `config.yaml` 中會被忽略，不會報錯。
+`config.example.yaml` 已附逐項繁體中文說明。首次啟動若缺少 `config.yaml`，會以不覆寫既有檔案的方式自動建立；有個人設定時優先使用個人設定。欄位分為 `server`、`line`、`history`、`cache`、`chat`、`update`、`api`、`limits`（`chat`、`update`、`api` 區段與 `limits.downloadMaxBytes`、`limits.uploadVideoMaxBytes`、`limits.uploadFileMaxBytes` 可省略，舊設定檔照常運作；`api` 預設關閉）。已移除的 `jev` 區段若仍留在舊 `config.yaml` 中會被忽略，不會報錯。
 
 - 監聽 host：預設且建議 `127.0.0.1`。以 `config.yaml` 為準，可改為其他主機名稱、IPv4 或 IPv6；程式不再強制本機迴路。網頁沒有帳號密碼，能連到該位址的人就能操作已登入的 LINE 帳號，啟動時非本機位址會印出警告。**不限制 `Host` 標頭**：不論監聽哪個位址，用任何 IP 或網域名稱連入都可以（例如反向代理、區網名稱、通道服務）；`Origin`、cookie 與 Token 檢查不變，`Sec-Fetch-Site: cross-site` 的請求仍拒絕。代價是不再防 DNS rebinding（攻擊者網域解析到本機位址時，該網頁與自己同源）。
 - port：預設 `3789`，可調整；host 與 port 從 `config.yaml` 讀取，程式不得寫死。
@@ -95,7 +95,7 @@ npm start
 - 歷史筆數：預設 50，單次最多 100。
 - 每頻道訊息快取：最多 500 則；媒體 LRU：預設 200MB。
 - 用戶端送入的 WS frame：最多 256KB；文字：最多 8000 字。
-- 發送：每 WS 連線最多每秒 5 次；媒體上傳：圖片每檔最多 10MB（PNG／JPEG／GIF）、影片每檔最多 50MB（MP4／MOV，`limits.uploadVideoMaxBytes` 可調，上限 200MB；影片整份暫存於記憶體）、每連線每分鐘最多 5 次。
+- 發送：每 WS 連線最多每秒 5 次；媒體上傳：圖片每檔最多 10MB（PNG／JPEG／GIF）、影片每檔最多 50MB（MP4／MOV，`limits.uploadVideoMaxBytes` 可調，上限 200MB；影片整份暫存於記憶體）；機器人另可上傳 M4A／MP3 聲音檔、PDF、文字檔，每檔最多 50MB（`limits.uploadFileMaxBytes`，上限 200MB）。每分鐘最多 5 次，網頁與所有機器人各自一份額度。
 - 收到的媒體與檔案：每個最多 50MB（`limits.downloadMaxBytes`），超過者只顯示類型標籤（檔案的下載會失敗）。
 - 媒體下載排程：全域實際並行最多 4 個、FIFO 等待最多 64 個，相同 ID 共用請求；佇列滿時回既有 HTTP 404，可稍後重試。收回／登出取消等待並拒絕舊結果；已啟動工作保留槽位至上游結束，不冒充已取消下載。
 - 機器人 API：預設關閉；`api.enabled`、`api.chats`（必填、至少一個聊天室 id）、`api.sendsPerMinute`（預設 20、≤120）。細節見[機器人 API](#機器人-apiapiws)。
@@ -136,7 +136,7 @@ npm start
 | Server → Client | `api:state` / `api:token` | 機器人 API 狀態（只給網頁）／剛產生的 Token（只送給要求的那個連線，僅此一次） |
 | Client → Server | `api:token:create` / `api:token:revoke` | 產生或撤銷機器人 Token（僅網頁連線可用，機器人不行） |
 
-HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、收到的圖片／影片／語音；支援 Range）與 `POST /media/upload`（圖片／影片上傳）皆需瀏覽器 cookie 與同源。WS 不傳媒體位元組。
+HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、收到的圖片／影片／語音；支援 Range）與 `POST /media/upload`（圖片／影片上傳）皆需瀏覽器 cookie 與同源；機器人另以 Bearer Token 使用 `POST /api/media/upload`（見下）。WS 不傳媒體位元組。
 
 ### 機器人 API（`/api/ws`）
 
@@ -162,14 +162,14 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 
 | 方向 | type | 說明 |
 |---|---|---|
-| 機器人 → 服務 | `message:send` | `{ requestId, chatId, text, mentions?, replyTo? }`：**只能文字**；`mediaId`／`sticker` 回 `INVALID_REQUEST`。成功回 `sent { requestId, messageId }` |
+| 機器人 → 服務 | `message:send` | `{ requestId, chatId, text, mentions?, replyTo? }` 或 `{ requestId, chatId, mediaId }`（`mediaId` 須來自機器人自己的 `POST /api/media/upload`，送出一次即失效）；`sticker` 回 `INVALID_REQUEST`，網頁的上傳 ID 回 `UPLOAD_EXPIRED`。成功回 `sent { requestId, messageId }` |
 | 機器人 → 服務 | `history:fetch` | `{ requestId, chatId, limit?, before? }`：與網頁相同的分頁，但不附已讀快照 |
 | 機器人 → 服務 | `profile:get` | `{ requestId }`：隨時取得自己的 ID 與名稱，回 `profile { requestId, profile: { userId, displayName, pictureId? } }`（同 `auth:ready`；不呼叫 LINE，與 `history:fetch` 共用每連線每秒 10 次；未登入回 `INVALID_REQUEST`） |
 | 機器人 → 服務 | `chat:admins:get` | `{ requestId, chatId }`：取得指定社群聊天室的全部現任管理員與共同管理員（含未發言者）；只限 `api.chats`，與 `history:fetch`／`profile:get` 共用每連線每秒 10 次。只回要求者 `chat:admins { requestId, chatId, ownMemberId, admins: [{ userId, displayName, role, pictureId? }] }`；`role` 為 `admin`／`coAdmin`，`displayName` 是字串，`ownMemberId`（自己在該聊天室的成員 ID）與 `userId` 均符合 `/^p[A-Za-z0-9]{10,64}$/`。普通群組／私聊不支援（`CHAT_ADMINS_UNSUPPORTED`）；未登入或未知／未授權聊天室回 `UNKNOWN_CHAT`；LINE 查詢失敗、ID 不合法或分頁不完整回 `CHAT_ADMINS_FAILED`，不回部分名單。網頁 `/ws` 不提供此操作 |
 | 機器人 → 服務 | `chat:admin-token:get` | `{ requestId, chatId }`：取得 `api.chats` 內已知聊天室的明文權杖，回 `chat:admin-token { requestId, chatId, token, createdAt }` |
 | 機器人 → 服務 | `chat:admin-token:consume` | `{ requestId, chatId, token }`：成功即銷毀並替換權杖，回 `chat:admin-token:consumed { requestId, chatId }`（不含新值）；新權杖隨即以推送影格告知所有已連入外掛 |
 | 機器人 → 服務 | `ping` → `pong` | 保活；服務另以 WebSocket 協定層 Ping 每 30 秒檢查，連續兩輪未回應即斷線（一般 WebSocket 函式庫會自動回應） |
-| 服務 → 機器人 | `hello`、`auth:state`、`status` | 連線即送；`hello` 保留數字 `protocol: 2` 與 `serverVersion`，以 `capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined", "chat:note-posted"]` 宣告擴充。`auth:state` 不是 `ready`（LINE 尚未登入）時還不能收發 |
+| 服務 → 機器人 | `hello`、`auth:state`、`status` | 連線即送；`hello` 保留數字 `protocol: 2` 與 `serverVersion`，以 `capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined", "chat:note-posted", "media:upload"]` 宣告擴充。`auth:state` 不是 `ready`（LINE 尚未登入）時還不能收發 |
 | 服務 → 機器人 | `auth:ready` | 含自己的 `profile.userId`，可排除一般聊天室中自己發的訊息；OpenChat 須改用 `chat:admins` 回應的 `ownMemberId` |
 | 服務 → 機器人 | `channels` | 只含 `api.chats` 內的聊天室；有變動時重送 |
 | 服務 → 機器人 | `chat:admin-token` | **主動推送**（無 `requestId`）`{ chatId, token, createdAt }`：連線時、登入完成、頻道清單更新與每次成功兌換後，推送 `api.chats` 內已知聊天室的目前權杖給所有已連入外掛 |
@@ -178,6 +178,17 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
 | 服務 → 機器人 | `chat:note-posted` | `{ chatId, createdAt, postId?, messageId?, senderId?, senderName?, preview?, text }`，取不到全文時以 `error: "NOTE_FETCH_FAILED"` 取代 `text`：`api.chats` 內的群組或社群聊天室出現新的記事本貼文時，推送給所有已連入的機器人（網頁不收、不重播）。兩種來源：**(1) 聊天訊息通知**（LINE 的 `POSTNOTIFICATION`，帶 `messageId`、`postId` 與送出通知的 `senderId`／`senderName`；沒有機器人連線時不抓取）：只讀得到該群組本身或該聊天室所屬社群的貼文，通知指向別處、LINE 拒絕、逾時（15 秒）或超過所有聊天室合計每分鐘 20 篇時回 `NOTE_FETCH_FAILED`；`preview` 是通知裡 LINE 附帶的摘要（可能不完整）。**(2) 社群記事本狀態事件**（小語實測：社群張貼記事本時 LINE 不送聊天訊息，只在全帳號社群推播送出 `NOTIFIED_UPDATE_SQUARE_NOTE_STATUS`，只含社群 ID、篇數與最新建立時間）：最新建立時間晚於登入時間或上次處理的時間、且 `api.chats` 內有屬於該社群的聊天室時，服務以 linejs `base.timeline.listPost` 讀該社群的記事本列表找出新貼文（每次最多 5 篇，同一篇只報一次），再逐篇取全文，推送給該社群每個在 `api.chats` 內的聊天室；沒有 `messageId`，`senderId`／`senderName` 取自列表的作者資訊（有才給），連列表都讀不到時也送 `NOTE_FETCH_FAILED` 但不含 `postId`；刪除記事本不推送。全文皆經 LINE 記事本 API（linejs `base.timeline.getPost`）取得放進 `text`（只有圖片的貼文為空字串）；第一次抓取時 linejs 會替帳號核發 LINE Timeline 頻道權杖。可用 `postId` 去重。來源 (1) 的訊息也會以 `message` 影格送出，帶 `card: { kind: "note", postId, preview? }`。記事本列表與內文 API 的回應格式尚未以真實帳號確認。排查用服務日誌（不含內文）：`LINE 記事本通知：…`（每則可能是記事本的即時訊息：`contentType`、`serviceType`、`locKey`、`postEndUrl`、metadata 欄位名稱、摘要長度與是否辨識成功）、`記事本通知略過：… reason=…`、`記事本全文已推送：…`、`LINE 社群記事本狀態：…`、`社群記事本略過：… reason=…`、`社群記事本列表：… listed=… new=…`、`社群記事本全文已推送：…`、`NOTE_FETCH_FAILED … reason=…`（含 LINE 回傳的狀態碼與簡短訊息），另有 `LINE 未處理事件：op=…`／`LINE 未處理社群事件：type=…` 只記類型 |
 | 服務 → 機器人 | `message`、`message:edit`、`message:unsend` | 只有 `api.chats` 內聊天室的**即時**訊息、編輯與收回；包含你自己發的 |
 | 服務 → 機器人 | `sent`、`history`、`profile`、`chat:admins`、`error` | 對應請求的回應；錯誤只有 generic 代碼（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`CHAT_ADMINS_UNSUPPORTED`、`CHAT_ADMINS_FAILED`…） |
+
+**上傳檔案**（`hello.capabilities` 含 `media:upload`）：先以 HTTP `POST /api/media/upload` 上傳，標頭與 `/api/ws` 相同（`Authorization: Bearer <Token>`、**不可帶 `Origin`**），本文是檔案原始位元組，回 `{ mediaId }`，10 分鐘內以 `message:send { mediaId }` 送到 `api.chats` 內的聊天室。檔案類型一律以位元組判斷，`Content-Type` 只用來選大小上限（`image/*`、`video/*`、`audio/*`、`application/pdf`、`text/plain`，其餘 415）：
+
+| 內容 | 送到 LINE 的形式 | 上限 |
+|---|---|---|
+| PNG／JPEG／GIF | 圖片 | `limits.uploadMaxBytes` |
+| MP4／MOV | 影片（長度取自 `moov/mvhd`） | `limits.uploadVideoMaxBytes` |
+| M4A | 語音訊息；讀不到 `moov/mvhd` 長度即回 `INVALID_MEDIA` | `limits.uploadFileMaxBytes` |
+| MP3、PDF、UTF-8 文字（不含 NUL 等控制字元） | 檔案附件 | `limits.uploadFileMaxBytes` |
+
+檔案附件的名稱取自選填標頭 `X-File-Name`（percent-encoding 的 UTF-8，例如 `encodeURIComponent("報告.pdf")`）：控制字元與 `/`、`\` 換成 `_`，最多 255 字；副檔名不符內容時補上（PDF `.pdf`、MP3 `.mp3`、文字 `.txt`，文字另接受 `.csv`、`.md`、`.log`、`.json`），未提供時用 `document.pdf`、`audio.mp3`、`text.txt`。錯誤：403（認證）、415、400 `INVALID_REQUEST`（名稱編碼）或 `INVALID_MEDIA`、413 `TOO_LARGE`、429 `RATE_LIMITED`。上傳 ID 只限機器人使用，網頁無法送出，機器人也無法送網頁的上傳。尚未以真實 LINE 帳號驗證檔案與語音實際送達（社群聊天室與 E2EE 聊天室亦同）。
 
 加入通知的大頭照請使用 `member.pictureUrl`：有有效照片 hash 時維持 hash 網址，否則使用 `https://obs.line-scdn.net/r/g2/member/<userId>`（已以回報的成員 ID 實際取得圖片）。`pictureId` 仍可能缺省，不能以它判定沒有照片；不為加入通知額外補查成員，也不傳圖片位元組。尚未完成新版與 NekoGuard 的實際聯測。
 

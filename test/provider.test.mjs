@@ -1691,6 +1691,27 @@ test("media uploads exclude surrounding storage and retain their snapshot while 
   });
 });
 
+test("bot files go to LINE as named file attachments and M4A as a voice message with its real length", async () => {
+  const uploads = [];
+  const base = fakeBase();
+  base.obs = { async uploadObjTalk(chat, type, blob, oid, filename, durationMs) { uploads.push({ chat, type, mime: blob.type, oid, filename, durationMs }); return { objId: String(9000 + uploads.length) }; } };
+  const { provider } = await activeProvider(base);
+  const group = { channelId: GROUP_A, kind: "group" };
+  const pdf = await provider.sendMedia(group, { mime: "application/pdf", bytes: Buffer.from("%PDF-1.7\n"), filename: "報告.pdf" });
+  const box = (type, body) => Buffer.concat([Buffer.from([0, 0, 0, 8 + body.length]), Buffer.from(type, "latin1"), body]);
+  const header = Buffer.alloc(100);
+  header.writeUInt32BE(1000, 12);
+  header.writeUInt32BE(2500, 16);
+  const voice = await provider.sendMedia(group, { mime: "audio/mp4", bytes: Buffer.concat([box("ftyp", Buffer.from("M4A \0\0\0\0")), box("moov", box("mvhd", header))]) });
+  assert.deepEqual(uploads, [
+    { chat: GROUP_A, type: "file", mime: "application/pdf", oid: undefined, filename: "報告.pdf", durationMs: undefined },
+    { chat: GROUP_A, type: "audio", mime: "audio/mp4", oid: undefined, filename: "audio.m4a", durationMs: 2500 },
+  ]);
+  assert.deepEqual([pdf.messageId, pdf.contentType, pdf.card], ["9001", "FILE", { kind: "file", name: "報告.pdf", size: 9, fileId: "file-9001" }]);
+  assert.deepEqual([voice.messageId, voice.contentType, voice.mediaId], ["9002", "AUDIO", "msg-9002"]);
+  await provider.close();
+});
+
 test("a note notification lets only its own group's or community's post be read, as LINE's note API returns it", async () => {
   const COMMUNITY = `s${"q".repeat(32)}`;
   const posts = [];

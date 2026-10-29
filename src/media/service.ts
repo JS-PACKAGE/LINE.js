@@ -3,11 +3,13 @@ import { randomBytes } from "node:crypto";
 export interface MediaBytes {
   mime: string;
   bytes: Buffer;
-  /** Set for files: the response is a download under this name, never shown inline. */
+  /** Set for files: received ones download under this name (never inline); uploaded ones are sent to LINE under it. */
   filename?: string;
 }
 
 export type AvatarHost = "profile" | "obs";
+/** Which kind of connection may send an upload: the browser page or an authenticated bot. */
+export type UploadOwner = "page" | "bot";
 
 /** The slice of the LINE adapter that media needs; keeps this module free of linejs types. */
 export interface MediaSource {
@@ -64,7 +66,7 @@ export class MediaService {
   private inflight = new Map<string, Download>();
   private queue: Download[] = [];
   private active = 0;
-  private uploads = new Map<string, { media: MediaBytes; expires: number }>();
+  private uploads = new Map<string, { media: MediaBytes; expires: number; owner: UploadOwner }>();
   private size = 0;
 
   constructor(private readonly maxBytes: number, private readonly source: MediaSource) {}
@@ -141,8 +143,8 @@ export class MediaService {
     }
   }
 
-  /** Holds an uploaded image or video until the browser references it from `message:send`. */
-  putUpload(media: MediaBytes, now = Date.now()): string {
+  /** Holds an upload until `message:send` from the same kind of connection (page or bot) references it. */
+  putUpload(media: MediaBytes, now = Date.now(), owner: UploadOwner = "page"): string {
     this.pruneUploads(now);
     // Make room for one more: oldest first (Map iterates in insertion order). Videos are held whole,
     // so the count alone would not bound memory.
@@ -154,13 +156,15 @@ export class MediaService {
       held -= entry.media.bytes.length;
     }
     const id = `upload-${randomBytes(16).toString("hex")}`;
-    this.uploads.set(id, { media, expires: now + UPLOAD_TTL_MS });
+    this.uploads.set(id, { media, expires: now + UPLOAD_TTL_MS, owner });
     return id;
   }
 
-  getUpload(id: string, now = Date.now()): MediaBytes | undefined {
+  /** A page cannot send a bot's upload and a bot cannot send a page's, even with a leaked id. */
+  getUpload(id: string, now = Date.now(), owner: UploadOwner = "page"): MediaBytes | undefined {
     this.pruneUploads(now);
-    return this.uploads.get(id)?.media;
+    const entry = this.uploads.get(id);
+    return entry?.owner === owner ? entry.media : undefined;
   }
 
   dropUpload(id: string): void {
@@ -226,8 +230,67 @@ export function sniffVideo(bytes: Buffer): "video/mp4" | "video/quicktime" | und
 }
 
 /** What an upload may contain: the images and videos above. */
-export function sniffUpload(bytes: Buffer): "image/png" | "image/jpeg" | "image/gif" | "video/mp4" | "video/quicktime" | undefined {
+export type UploadMime = "image/png" | "image/jpeg" | "image/gif" | "video/mp4" | "video/quicktime";
+
+export function sniffUpload(bytes: Buffer): UploadMime | undefined {
   return sniffImage(bytes) ?? sniffVideo(bytes);
+}
+
+export type BotUploadMime = UploadMime | "audio/mp4" | "audio/mpeg" | "application/pdf" | "text/plain";
+
+/**
+ * What a bot upload may contain: the page's images and videos, plus M4A audio, MP3, PDF and UTF-8
+ * text. Binary signatures are checked before text so a file is never classified by its name.
+ */
+export function sniffBotUpload(bytes: Buffer): BotUploadMime | undefined {
+  const media = sniffUpload(bytes);
+  if (media) return media;
+  if (bytes.length >= 12 && bytes.readUInt32BE(4) === 0x66747970 /* ftyp */ && bytes.readUInt32BE(8) === 0x4d344120 /* M4A */) return "audio/mp4";
+  if (isMp3(bytes)) return "audio/mpeg";
+  // "%PDF-" followed by a version digit.
+  if (bytes.length >= 6 && bytes.readUInt32BE(0) === 0x25504446 && bytes[4] === 0x2d && bytes[5]! >= 0x30 && bytes[5]! <= 0x39) return "application/pdf";
+  return isPlainText(bytes) ? "text/plain" : undefined;
+}
+
+/** An ID3v2 tag, or an MPEG-1/2/2.5 Layer III frame header without reserved fields. */
+function isMp3(bytes: Buffer): boolean {
+  if (bytes.length >= 10 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33 && bytes[3]! >= 2 && bytes[3]! <= 4 && bytes[4] !== 0xff) {
+    return (bytes[6]! | bytes[7]! | bytes[8]! | bytes[9]!) < 0x80;
+  }
+  if (bytes.length < 4 || bytes[0] !== 0xff || (bytes[1]! & 0xe0) !== 0xe0) return false;
+  const version = (bytes[1]! >> 3) & 0x03;
+  const layer = (bytes[1]! >> 1) & 0x03;
+  const bitrate = bytes[2]! >> 4;
+  const sampleRate = (bytes[2]! >> 2) & 0x03;
+  return version !== 0x01 && layer === 0x01 && bitrate !== 0 && bitrate !== 0x0f && sampleRate !== 0x03;
+}
+
+/** Non-empty, well-formed UTF-8 with no control characters other than tab, line feed, form feed and carriage return. */
+function isPlainText(bytes: Buffer): boolean {
+  if (bytes.length === 0) return false;
+  for (let at = 0; at < bytes.length;) {
+    const first = bytes[at]!;
+    if (first < 0x80) {
+      if ((first < 0x20 && first !== 0x09 && first !== 0x0a && first !== 0x0c && first !== 0x0d) || first === 0x7f) return false;
+      at += 1;
+      continue;
+    }
+    const length = first >= 0xc2 && first <= 0xdf ? 2 : first >= 0xe0 && first <= 0xef ? 3 : first >= 0xf0 && first <= 0xf4 ? 4 : 0;
+    if (length === 0 || at + length > bytes.length) return false;
+    const second = bytes[at + 1]!;
+    // Exclude overlong forms, UTF-16 surrogates and code points above U+10FFFF.
+    const low = first === 0xe0 ? 0xa0 : first === 0xf0 ? 0x90 : 0x80;
+    const high = first === 0xed ? 0x9f : first === 0xf4 ? 0x8f : 0xbf;
+    if (second < low || second > high) return false;
+    for (let index = 2; index < length; index += 1) {
+      const next = bytes[at + index]!;
+      if (next < 0x80 || next > 0xbf) return false;
+    }
+    // C1 controls (U+0080–U+009F) are control characters too.
+    if (first === 0xc2 && second <= 0x9f) return false;
+    at += length;
+  }
+  return true;
 }
 
 /**

@@ -485,8 +485,8 @@ export function createHub(options: HubOptions): Hub {
     const channel = store.channelOf(request.chatId);
     if (login.state !== "ready" || !channel || (scope && !scope.has(request.chatId))) return fail(socket, "UNKNOWN_CHAT", request.requestId);
     const account = generation;
-    // Bots send text only: media goes through the browser upload, and stickers are outside their scope.
-    if (scope && request.kind !== "text") return fail(socket, "INVALID_REQUEST", request.requestId);
+    // Bots may send text and their own uploads (POST /api/media/upload); stickers are outside their scope.
+    if (scope && request.kind === "sticker") return fail(socket, "INVALID_REQUEST", request.requestId);
     const target = { channelId: request.chatId, kind: channel.kind };
     if (request.kind === "text") {
       // Cached speakers remain taggable; a bot may also tag admins it just queried in this chat.
@@ -511,7 +511,7 @@ export function createHub(options: HubOptions): Hub {
     try {
       let message: Message;
       if (request.kind === "media") {
-        const upload = media.getUpload(request.uploadId);
+        const upload = media.getUpload(request.uploadId, Date.now(), scope ? "bot" : "page");
         if (!upload) return fail(socket, "UPLOAD_EXPIRED", request.requestId);
         message = await provider.sendMedia(target, upload);
         media.dropUpload(request.uploadId);
@@ -813,7 +813,7 @@ export function createHub(options: HubOptions): Hub {
     socket.once("close", () => grants.clear());
     const sendLimiter = new SlidingWindowLimiter(config.limits.sendsPerSecond, 1000);
     const historyLimiter = new SlidingWindowLimiter(HISTORY_PER_SECOND, 1000);
-    send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion, capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined", "chat:note-posted"] });
+    send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion, capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined", "chat:note-posted", "media:upload"] });
     send(socket, { type: "auth:state", state: login.state });
     send(socket, { type: "status", state: status });
     if (login.state === "ready") {

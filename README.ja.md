@@ -87,7 +87,7 @@ PWA としてインストールできます（ブラウザーの「安裝」（�
 
 ## 設定
 
-`config.example.yaml` には各項目の繁体字中国語の説明があります。初回起動時に `config.yaml` がなければ、既存ファイルを上書きしない方法で自動作成します。個人設定がある場合はそちらを優先します。項目は `server`、`line`、`history`、`cache`、`chat`、`update`、`api`、`limits` に分かれています（`chat`、`update`、`api` セクションと `limits.downloadMaxBytes`、`limits.uploadVideoMaxBytes` は省略でき、古い設定ファイルもそのまま動作します。`api` は既定で無効です）。削除された `jev` セクションが古い `config.yaml` に残っていても、エラーにはならず無視されます。
+`config.example.yaml` には各項目の繁体字中国語の説明があります。初回起動時に `config.yaml` がなければ、既存ファイルを上書きしない方法で自動作成します。個人設定がある場合はそちらを優先します。項目は `server`、`line`、`history`、`cache`、`chat`、`update`、`api`、`limits` に分かれています（`chat`、`update`、`api` セクションと `limits.downloadMaxBytes`、`limits.uploadVideoMaxBytes`、`limits.uploadFileMaxBytes` は省略でき、古い設定ファイルもそのまま動作します。`api` は既定で無効です）。削除された `jev` セクションが古い `config.yaml` に残っていても、エラーにはならず無視されます。
 
 - 待ち受け host：既定値かつ推奨値は `127.0.0.1` です。`config.yaml` に従い、ほかのホスト名、IPv4、IPv6 に変更できます。プログラムはローカルループバックを強制しません。Web ページにはユーザー名・パスワードがないため、そのアドレスに接続できる人はログイン中の LINE アカウントを操作できます。ローカル以外のアドレスでは起動時に警告を出力します。**`Host` ヘッダーを制限しません**。どのアドレスで待ち受けても、任意の IP やドメイン名で接続できます（リバースプロキシ、LAN 内の名前、トンネルサービスなど）。`Origin`、cookie、Token の検査は変わらず、`Sec-Fetch-Site: cross-site` のリクエストも拒否します。その代わり、DNS rebinding は防ぎません（攻撃者のドメインがローカルアドレスに解決されると、その Web ページと同一オリジンになります）。
 - port：既定は `3789` で、変更できます。host と port は `config.yaml` から読み取り、プログラムにハードコードしてはいけません。
@@ -95,7 +95,7 @@ PWA としてインストールできます（ブラウザーの「安裝」（�
 - 履歴件数：既定は 50、1 回あたり最大 100 です。
 - チャンネルごとのメッセージキャッシュ：最大 500 件。メディア LRU：既定 200MB。
 - クライアントから送る WS frame：最大 256KB。テキスト：最大 8000 文字。
-- 送信：WS 接続ごとに毎秒最大 5 回。メディアアップロード：画像は 1 ファイル最大 10MB（PNG／JPEG／GIF）、動画は 1 ファイル最大 50MB（MP4／MOV、`limits.uploadVideoMaxBytes` で変更可能、上限 200MB。動画全体をメモリに一時保存）、接続ごとに毎分最大 5 回。
+- 送信：WS 接続ごとに毎秒最大 5 回。メディアアップロード：画像は 1 ファイル最大 10MB（PNG／JPEG／GIF）、動画は 1 ファイル最大 50MB（MP4／MOV、`limits.uploadVideoMaxBytes` で変更可能、上限 200MB。動画全体をメモリに一時保存）。ボットは M4A／MP3 音声、PDF、テキストファイルもアップロードでき、1 ファイル最大 50MB（`limits.uploadFileMaxBytes`、上限 200MB）。毎分最大 5 回で、Web ページと全ボット合計でそれぞれ別の枠です。
 - 受信メディアとファイル：1 件あたり最大 50MB（`limits.downloadMaxBytes`）。超過したものは種類のラベルのみ表示します（ファイルのダウンロードは失敗します）。
 - メディア取得の制御：実際の上流リクエストは全体で最大 4 件、FIFO 待機は最大 64 件。同じ ID は処理を共有します。待機枠が満杯なら従来の HTTP 404 を返し、後で再試行できます。送信取消／ログアウトで待機を取り消し、古い結果を拒否します。開始済みの取得は上流が完了するまで枠を保持し、ダウンロードを中断できたとは扱いません。
 - ボット API：既定で無効です。`api.enabled`、`api.chats`（必須、チャットルーム id が 1 個以上）、`api.sendsPerMinute`（既定 20、≤120）。詳細は[ボット API](#ボット-apiapiws)を参照してください。
@@ -136,7 +136,7 @@ PWA としてインストールできます（ブラウザーの「安裝」（�
 | Server → Client | `api:state` / `api:token` | ボット API の状態（Web ページのみ）／新しく生成した Token（要求元の接続のみに 1 回限り送信） |
 | Client → Server | `api:token:create` / `api:token:revoke` | ボット Token の生成・取り消し（Web 接続のみ。ボットは利用不可） |
 
-HTTP：`GET /media/:mediaId`（スタンプ、スタンプパックのアイコン、プロフィール画像と元画像、受信した画像／動画／音声。Range 対応）と `POST /media/upload`（画像／動画のアップロード）は、どちらもブラウザー cookie と同一オリジンが必要です。WS ではメディアのバイト列を送信しません。
+HTTP：`GET /media/:mediaId`（スタンプ、スタンプパックのアイコン、プロフィール画像と元画像、受信した画像／動画／音声。Range 対応）と `POST /media/upload`（画像／動画のアップロード）は、どちらもブラウザー cookie と同一オリジンが必要です。ボットは代わりに Bearer Token で `POST /api/media/upload` を使います（後述）。WS ではメディアのバイト列を送信しません。
 
 ### ボット API（`/api/ws`）
 
@@ -162,14 +162,14 @@ HTTP：`GET /media/:mediaId`（スタンプ、スタンプパックのアイコ�
 
 | 方向 | type | 説明 |
 |---|---|---|
-| ボット → サービス | `message:send` | `{ requestId, chatId, text, mentions?, replyTo? }`：**テキストのみ**。`mediaId`／`sticker` は `INVALID_REQUEST` を返します。成功時は `sent { requestId, messageId }` |
+| ボット → サービス | `message:send` | `{ requestId, chatId, text, mentions?, replyTo? }` または `{ requestId, chatId, mediaId }`（`mediaId` はボット自身の `POST /api/media/upload` で得たもので、1 回送ると無効）。`sticker` は `INVALID_REQUEST`、Web ページのアップロード ID は `UPLOAD_EXPIRED`。成功時は `sent { requestId, messageId }` |
 | ボット → サービス | `history:fetch` | `{ requestId, chatId, limit?, before? }`：Web ページと同じページ取得ですが、既読 snapshot は含みません |
 | ボット → サービス | `profile:get` | `{ requestId }`：自分の ID と名前をいつでも取得できます。`profile { requestId, profile: { userId, displayName, pictureId? } }` を返します（`auth:ready` と同じ内容。LINE には問い合わせず、`history:fetch` と接続ごとに毎秒 10 回の枠を共有。未ログイン時は `INVALID_REQUEST`） |
 | ボット → サービス | `chat:admins:get` | `{ requestId, chatId }`：指定した OpenChat ルームの現任管理者・共同管理者全員を取得します（未発言者も含む）。`api.chats` 内のみで、`history:fetch`／`profile:get` と接続ごとに毎秒 10 回の枠を共有します。要求した接続にのみ `chat:admins { requestId, chatId, ownMemberId, admins: [{ userId, displayName, role, pictureId? }] }` を返します。`role` は `admin`／`coAdmin`、`displayName` は文字列で、`ownMemberId`（そのチャットでの自分のメンバー ID）と `userId` はともに `/^p[A-Za-z0-9]{10,64}$/` に一致します。通常のグループ／個人チャットは `CHAT_ADMINS_UNSUPPORTED`、未ログイン・不明・許可外のチャットは `UNKNOWN_CHAT`。LINE 問い合わせ失敗、不正な ID、ページ取得が不完全な場合は `CHAT_ADMINS_FAILED` とし、一部だけの一覧は返しません。ブラウザーの `/ws` では利用不可 |
 | ボット → サービス | `chat:admin-token:get` | `{ requestId, chatId }`：`api.chats` 内の既知のチャットの平文トークンを取得。`chat:admin-token { requestId, chatId, token, createdAt }` を返します |
 | ボット → サービス | `chat:admin-token:consume` | `{ requestId, chatId, token }`：成功時に即座に無効化して交換し、`chat:admin-token:consumed { requestId, chatId }`（新しい値は含まない）を返します。続けて新しいトークンを接続中の全プラグインにプッシュします |
 | ボット → サービス | `ping` → `pong` | 接続維持。サービスは WebSocket プロトコルレベルの Ping でも 30 秒ごとに確認し、2 回続けて応答がなければ切断します（一般的な WebSocket ライブラリは自動で応答します） |
-| サービス → ボット | `hello`、`auth:state`、`status` | 接続時に送信。`hello` は数値の `protocol: 2` と `serverVersion` を維持し、`capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined", "chat:note-posted"]` で拡張を宣言します。`auth:state` が `ready` でない場合（LINE 未ログイン）、まだ送受信できません |
+| サービス → ボット | `hello`、`auth:state`、`status` | 接続時に送信。`hello` は数値の `protocol: 2` と `serverVersion` を維持し、`capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined", "chat:note-posted", "media:upload"]` で拡張を宣言します。`auth:state` が `ready` でない場合（LINE 未ログイン）、まだ送受信できません |
 | サービス → ボット | `auth:ready` | 自分の `profile.userId` を含み、通常のチャットで自分が送ったメッセージを除外できます。OpenChat では代わりに `chat:admins` 応答の `ownMemberId` を使います |
 | サービス → ボット | `channels` | `api.chats` のチャットルームのみ。変更時に再送します |
 | サービス → ボット | `chat:admin-token` | **プッシュ**（`requestId` なし）`{ chatId, token, createdAt }`：接続時、ログイン完了時、チャンネル一覧の更新時、消費成功のたびに、`api.chats` 内の既知チャットの現在のトークンを接続中の全プラグインに送ります |
@@ -178,6 +178,17 @@ HTTP：`GET /media/:mediaId`（スタンプ、スタンプパックのアイコ�
 | サービス → ボット | `chat:note-posted` | `{ chatId, createdAt, postId?, messageId?, senderId?, senderName?, preview?, text }`。全文を取得できない場合は `text` の代わりに `error: "NOTE_FETCH_FAILED"`：`api.chats` 内のグループまたは OpenChat に新しいノート投稿が現れると、接続中のすべてのボットに通知します（ページには送らず、再送もしません）。取得元は 2 つ：**(1) チャットメッセージの通知**（LINE の `POSTNOTIFICATION`。`messageId`、`postId`、通知を送った `senderId`／`senderName` を含みます。ボットが接続していない間は取得しません）：読めるのはそのグループ自身、またはそのチャットが属する OpenChat コミュニティの投稿だけで、通知が別の場所を指す場合、LINE に拒否された場合、タイムアウト（15 秒）、全チャット合計で毎分 20 件を超えた場合は `NOTE_FETCH_FAILED`。`preview` は通知に LINE が添付した抜粋（不完全な場合あり）。**(2) OpenChat のノート状態イベント**（オーナーの実測：OpenChat でノートを投稿してもチャットメッセージは届かず、アカウント全体の OpenChat プッシュで `NOTIFIED_UPDATE_SQUARE_NOTE_STATUS` だけが届きます。内容はコミュニティ ID、件数、最新の作成時刻のみ）：最新の作成時刻がログイン時刻または前回処理した時刻より後で、そのコミュニティのチャットが `api.chats` にある場合、linejs `base.timeline.listPost` でコミュニティのノート一覧を読んで新しい投稿を探し（1 回最大 5 件、同じ投稿は 1 回のみ）、1 件ずつ全文を取得して、そのコミュニティの `api.chats` 内の各チャットに送ります。`messageId` はなく、`senderId`／`senderName` は一覧の投稿者情報があるときだけ付きます。一覧すら読めない場合も `postId` なしの `NOTE_FETCH_FAILED` を送ります。ノートの削除は通知しません。全文はいずれも LINE のノート API（linejs `base.timeline.getPost`）で取得して `text` に入れます（画像のみの投稿は空文字列）。初回取得時に linejs がアカウントに LINE Timeline のチャンネルトークンを発行します。`postId` で重複を除いてください。(1) のメッセージは `card: { kind: "note", postId, preview? }` 付きの `message` フレームでも届きます。ノート一覧と投稿 API の応答形式は実アカウントではまだ確認していません。調査用のサービスログ（本文は含まない）：`LINE 記事本通知：…`（ノートの可能性があるリアルタイムメッセージごとに `contentType`、`serviceType`、`locKey`、`postEndUrl`、metadata のフィールド名、抜粋の長さ、認識できたか）、`記事本通知略過：… reason=…`、`記事本全文已推送：…`、`LINE 社群記事本狀態：…`、`社群記事本略過：… reason=…`、`社群記事本列表：… listed=… new=…`、`社群記事本全文已推送：…`、`NOTE_FETCH_FAILED … reason=…`（LINE のステータスコードと短いメッセージを含む）。未処理のオペレーションと OpenChat イベントは `LINE 未處理事件：op=…`／`LINE 未處理社群事件：type=…` で種類のみ記録します |
 | サービス → ボット | `message`、`message:edit`、`message:unsend` | `api.chats` のチャットルームの**リアルタイム**メッセージ、編集、送信取消のみ。自分が送ったものも含みます |
 | サービス → ボット | `sent`、`history`、`profile`、`chat:admins`、`error` | 対応するリクエストへの応答。エラーは汎用コードのみ（`UNKNOWN_CHAT`、`INVALID_REQUEST`、`RATE_LIMITED`、`SEND_FAILED`、`CHAT_ADMINS_UNSUPPORTED`、`CHAT_ADMINS_FAILED`…） |
+
+**ファイルのアップロード**（`hello.capabilities` に `media:upload`）：まず HTTP の `POST /api/media/upload` でアップロードします。ヘッダーは `/api/ws` と同じ（`Authorization: Bearer <Token>`、**`Origin` なし**）、本文はファイルの生のバイト列で、`{ mediaId }` を返します。10 分以内に `message:send { mediaId }` で `api.chats` 内のチャットへ送ります。種類は常にバイト列で判定し、`Content-Type` はサイズ上限の選択にだけ使います（`image/*`、`video/*`、`audio/*`、`application/pdf`、`text/plain`。それ以外は 415）：
+
+| 内容 | LINE での形式 | 上限 |
+|---|---|---|
+| PNG／JPEG／GIF | 画像 | `limits.uploadMaxBytes` |
+| MP4／MOV | 動画（長さは `moov/mvhd`） | `limits.uploadVideoMaxBytes` |
+| M4A | ボイスメッセージ。`moov/mvhd` の長さが読めなければ `INVALID_MEDIA` | `limits.uploadFileMaxBytes` |
+| MP3、PDF、UTF-8 テキスト（NUL などの制御文字なし） | ファイル添付 | `limits.uploadFileMaxBytes` |
+
+ファイル添付の名前は任意のヘッダー `X-File-Name`（percent-encoding した UTF-8。例：`encodeURIComponent("報告.pdf")`）から取ります。制御文字と `/`、`\` は `_` に置き換え、最大 255 文字。内容に合わない拡張子には正しいものを付け足します（PDF `.pdf`、MP3 `.mp3`、テキスト `.txt`。テキストは `.csv`、`.md`、`.log`、`.json` も可）。未指定時は `document.pdf`、`audio.mp3`、`text.txt`。エラー：403（認証）、415、400 `INVALID_REQUEST`（名前のエンコード）または `INVALID_MEDIA`、413 `TOO_LARGE`、429 `RATE_LIMITED`。アップロード ID はボット専用で、Web ページからは送れず、ボットも Web ページのアップロードは送れません。ファイルとボイスメッセージが実際に届くことは実際の LINE アカウントで未確認です（OpenChat と E2EE チャットも同様）。
 
 参加通知の画像には `member.pictureUrl` を使用してください。有効な画像 hash があれば従来の hash URL、なければ `https://obs.line-scdn.net/r/g2/member/<userId>` を返します（報告されたメンバー ID で実際の画像取得を確認済み）。`pictureId` がなくても画像がないとは限りません。参加通知のための追加メンバー照会や画像バイト列の送信は行いません。本変更と NekoGuard の実機結合検証は未実施です。
 

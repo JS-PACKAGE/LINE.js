@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MediaService, avatarMediaId, isMediaId, mp4DurationMs, sniffMedia, sniffUpload, sniffVideo } from "../dist/media/service.js";
+import { MediaService, avatarMediaId, isMediaId, mp4DurationMs, sniffBotUpload, sniffMedia, sniffUpload, sniffVideo } from "../dist/media/service.js";
 
 const png = (size) => ({ mime: "image/png", bytes: Buffer.alloc(size, 1) });
 
@@ -379,6 +379,34 @@ test("uploads are typed from their bytes: MP4 and QuickTime video yes; pictures,
   assert.equal(sniffUpload(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), "image/jpeg");
   assert.equal(sniffUpload(ftyp("isom")), "video/mp4");
   assert.equal(sniffUpload(Buffer.from("<svg onload=alert(1)>")), undefined);
+});
+
+test("bot uploads add M4A, MP3, PDF and plain UTF-8 text, all decided by their bytes", () => {
+  assert.equal(sniffBotUpload(ftyp("isom")), "video/mp4");
+  assert.equal(sniffBotUpload(ftyp("M4A ")), "audio/mp4");
+  assert.equal(sniffBotUpload(Buffer.from([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 10])), "audio/mpeg");
+  assert.equal(sniffBotUpload(Buffer.from([0xff, 0xfb, 0x90, 0x64])), "audio/mpeg", "an MPEG-1 Layer III frame");
+  for (const frame of [[0xff, 0xfd, 0x90, 0x64], [0xff, 0xfb, 0xf0, 0x64], [0xff, 0xfb, 0x9c, 0x64], [0xff, 0xeb, 0x90, 0x64]]) {
+    assert.equal(sniffBotUpload(Buffer.from(frame)), undefined, "layer II, bad bitrate, reserved rate or reserved version");
+  }
+  assert.equal(sniffBotUpload(Buffer.from("%PDF-1.4\n")), "application/pdf");
+  assert.equal(sniffBotUpload(Buffer.from("%PDF-x")), "text/plain", "without a version digit it is just text");
+  assert.equal(sniffBotUpload(Buffer.from("第一行\t欄位\r\n😀\f")), "text/plain");
+  for (const bytes of [
+    Buffer.alloc(0), Buffer.from("a\0b"), Buffer.from("a\x1bb"), Buffer.from("a\x7fb"), Buffer.from([0xc2, 0x85]),
+    Buffer.from([0xc0, 0xaf]), Buffer.from([0xe0, 0x80, 0xaf]), Buffer.from([0xed, 0xa0, 0x80]), Buffer.from([0xf4, 0x90, 0x80, 0x80]),
+    Buffer.from([0xe4, 0xb8]), Buffer.from([0xe4, 0x41, 0x80]),
+  ]) assert.equal(sniffBotUpload(bytes), undefined, bytes.toString("hex"));
+});
+
+test("uploads stay with the kind of connection that made them", () => {
+  const media = new MediaService(1024, {});
+  const pageUpload = media.putUpload(png(10), 0);
+  const botUpload = media.putUpload(png(10), 0, "bot");
+  assert.ok(media.getUpload(pageUpload, 0));
+  assert.equal(media.getUpload(pageUpload, 0, "bot"), undefined);
+  assert.equal(media.getUpload(botUpload, 0), undefined);
+  assert.ok(media.getUpload(botUpload, 0, "bot"));
 });
 
 test("the clip length comes from moov/mvhd and is never guessed", () => {
