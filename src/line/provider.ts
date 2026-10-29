@@ -591,7 +591,15 @@ export class EvexLineProvider implements LineProvider {
     // An incomplete join payload must not mark the profile as fully resolved.
     this.rememberProfile(member.squareMemberMid, member.displayName, pictureId, !!pictureId, memberRole(member.role));
     if (!pictureId) {
-      await this.resolveMembers(watch.client, "square", [member.squareMemberMid]);
+      const diagnose = (stage: string, hash?: unknown) => {
+        if (this.client !== watch.client || this.joinWatches.get(chatId) !== watch) return;
+        const shape = typeof hash === "string"
+          ? `hashType=string hashLength=${hash.length} hashCharsValid=${/^[A-Za-z0-9_-]+$/.test(hash.replace(/^\//, ""))} hashValid=${!!avatarMediaId("obs", hash)}`
+          : `hashType=${hash === null ? "null" : typeof hash}`;
+        this.events.onDiagnostic?.(`LINE 社群加入照片：chat=${chatId} member=${member.squareMemberMid} stage=${stage} ${shape}`);
+      };
+      diagnose("event", member.profileImageObsHash);
+      await this.resolveMembers(watch.client, "square", [member.squareMemberMid], diagnose);
       if (this.client !== watch.client || this.joinWatches.get(chatId) !== watch) return;
       pictureId = this.profiles.get(member.squareMemberMid)?.pictureId;
     }
@@ -987,7 +995,7 @@ export class EvexLineProvider implements LineProvider {
    * OpenChat members). Never throws and is time-boxed: a failed lookup only means the UI shows
    * the generic member name until the retry delay passes.
    */
-  private async resolveMembers(client: Client, source: "talk" | "square", mids: Iterable<string>): Promise<void> {
+  private async resolveMembers(client: Client, source: "talk" | "square", mids: Iterable<string>, diagnose?: (stage: string, hash?: unknown) => void): Promise<void> {
     if (this.client !== client) return;
     const now = Date.now();
     const pending: string[] = [];
@@ -999,13 +1007,18 @@ export class EvexLineProvider implements LineProvider {
       if (!this.profiles.get(mid)?.settled && (this.lookupMisses.get(`${source}:${mid}`) ?? 0) <= now) {
         pending.push(mid);
         if (pending.length === MAX_LOOKUPS_PER_CALL) break;
+      } else {
+        diagnose?.(this.profiles.get(mid)?.settled ? "cached" : "backoff");
       }
     }
     const waiting: Promise<void>[] = [];
     const fresh: string[] = [];
     for (const mid of pending) {
       const flight = this.lookupFlights.get(`${source}:${mid}`);
-      if (flight) waiting.push(flight);
+      if (flight) {
+        diagnose?.("shared-lookup");
+        waiting.push(flight);
+      }
       else fresh.push(mid);
     }
     const batchSize = source === "talk" ? CONTACT_BATCH : 1;
@@ -1029,6 +1042,7 @@ export class EvexLineProvider implements LineProvider {
       };
       const job: { run: () => void; cancel: () => void } = {
         cancel: () => {
+          diagnose?.("timeout-or-cancelled");
           expired = true;
           clearTimeout(timer);
           this.lookupJobs.delete(job);
@@ -1036,6 +1050,7 @@ export class EvexLineProvider implements LineProvider {
           finish();
         },
         run: () => {
+          diagnose?.("request");
           this.activeLookups += 1;
           void (async () => {
             try {
@@ -1048,9 +1063,11 @@ export class EvexLineProvider implements LineProvider {
               } else {
                 const mid = batch[0]!;
                 const { squareMember } = await client.base.square.getSquareMember({ squareMemberMid: mid });
+                if (!expired && this.client === client) diagnose?.("response", squareMember?.profileImageObsHash);
                 if (!expired && this.client === client) this.rememberProfile(mid, squareMember.displayName, avatarMediaId("obs", squareMember.profileImageObsHash), true, memberRole(squareMember.role));
               }
             } catch {
+              if (!expired && this.client === client) diagnose?.("request-or-response-failed");
               // Failed and timed-out lookups retain the existing retry delay.
             } finally {
               clearTimeout(timer);
