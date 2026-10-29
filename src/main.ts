@@ -19,7 +19,9 @@ async function main(): Promise<void> {
   const store = new ChatStore(config.cache.messagesPerChannel);
   const provider = new EvexLineProvider(storage, config.line.device, {
     onMessage: (message, kind) => {
-      console.info(`LINE 訊息收到：id=${message.messageId} type=${message.contentType} kind=${kind}`);
+      if (message.contentType === "IMAGE") {
+        console.info(`LINE 訊息收到：id=${message.messageId} type=${message.contentType} kind=${kind}`);
+      }
       hub.handleMessage(message, kind);
     },
     onRead: (chatId, position) => hub.handleRead(chatId, position),

@@ -174,6 +174,8 @@
 
 > v1.22.1（小語回報實際部署沒有抓到記事本，要求輸出日誌排查）：加入排查日誌，不含內文：可能是記事本的即時訊息（`POSTNOTIFICATION`／`GROUPBOARD` 或帶 `postEndUrl`）記 `LINE 記事本通知：…`（類型、`serviceType`、`locKey`、`postEndUrl`、metadata 欄位名稱、摘要長度、是否辨識）；hub 記 `記事本通知略過：… reason=…`、`記事本全文已推送：…` 與 `NOTE_FETCH_FAILED … reason=…`（含 LINE 狀態碼與簡短訊息）；未處理的 LINE operation 與社群事件記 `LINE 未處理事件：op=…`／`LINE 未處理社群事件：type=…`（只有類型）。目的在確認記事本通知實際走哪個事件、格式為何；原因尚未查明。
 
+> 日誌降噪（2026-10 小語裁示）：逐則 `LINE 訊息收到：id=… type=… kind=…` 資訊日誌只保留 `IMAGE` 圖片類型，普通文字不記錄，訊息處理及推送不變；保留收回、社群加入、記事本排查與錯誤日誌。
+
 > v1.22.2（小語實測日誌：社群張貼記事本時只出現 `LINE 未處理社群事件：type=NOTIFIED_UPDATE_SQUARE_NOTE_STATUS`，沒有聊天訊息）：該事件只含 `squareMid`、`noteCount`、`latestCreatedAt`。adapter 改為在最新建立時間晚於登入或上次處理時間、且 `api.chats` 有屬於該社群的聊天室時，以 linejs `base.timeline.listPost` 讀社群記事本列表找出新貼文，再以 `getPost` 取全文，hub 對該社群在 `api.chats` 內的聊天室推 `chat:note-posted`（`messageId` 改為選填，作者取自列表；列表讀不到時送不含 `postId` 的 `NOTE_FETCH_FAILED`）。日誌新增 `LINE 社群記事本狀態`、`社群記事本略過`、`社群記事本列表`、`社群記事本全文已推送`。驗證：typecheck、build 與 359 項測試通過（正式 adapter 搭配模擬的 LINE 回應）；尚未確認 `/sn/` 記事本列表與內文 API 在真實帳號可用及其回應格式。
 
 > 本次驗證：typecheck、build 與 262 項測試通過；已以隔離 LINE 回應、實際 HTTP／WS Token 認證及正式 adapter 驗證 capability 握手、完整分頁、`ownMemberId`、未發言管理員的 MENTION metadata、跨連線拒絕與重新查詢撤銷。回歸測試另涵蓋聊天室／網頁隔離、空名單、失敗、限流、回應順序顛倒、斷線、登出／換帳號。尚未以真實 LINE 帳號或 NekoGuard 程序完成聯測，不宣稱通過 Gate。
