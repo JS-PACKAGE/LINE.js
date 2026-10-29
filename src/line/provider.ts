@@ -565,7 +565,7 @@ export class EvexLineProvider implements LineProvider {
       if (watch.caughtUp) {
         for (const event of events) {
           const type = String(event?.type);
-          if (type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2") this.memberJoined(chatId, event.payload?.notifiedJoinSquareChat);
+          if (type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2") await this.memberJoined(chatId, watch, event.payload?.notifiedJoinSquareChat);
         }
       }
       if (typeof response?.syncToken === "string" && response.syncToken) watch.syncToken = response.syncToken;
@@ -580,15 +580,21 @@ export class EvexLineProvider implements LineProvider {
   }
 
   /** Typed payload, but still LINE input: anything off-shape is dropped, never guessed at. */
-  private memberJoined(chatId: string, joined: { squareChatMid?: unknown; joinedMember?: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role", unknown>> } | undefined): void {
+  private async memberJoined(chatId: string, watch: JoinWatch, joined: { squareChatMid?: unknown; joinedMember?: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role", unknown>> } | undefined): Promise<void> {
     const member = joined?.joinedMember;
     if (joined?.squareChatMid !== chatId
       || typeof member?.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(member.squareMemberMid)
       || typeof member.displayName !== "string"
       || (member.profileImageObsHash !== undefined && typeof member.profileImageObsHash !== "string")) return;
-    const pictureId = avatarMediaId("obs", member.profileImageObsHash);
-    // Their first messages then show the right name and picture without another lookup.
-    this.rememberProfile(member.squareMemberMid, member.displayName, pictureId, true, memberRole(member.role));
+    if (this.client !== watch.client || this.joinWatches.get(chatId) !== watch) return;
+    let pictureId = avatarMediaId("obs", member.profileImageObsHash);
+    // An incomplete join payload must not mark the profile as fully resolved.
+    this.rememberProfile(member.squareMemberMid, member.displayName, pictureId, !!pictureId, memberRole(member.role));
+    if (!pictureId) {
+      await this.resolveMembers(watch.client, "square", [member.squareMemberMid]);
+      if (this.client !== watch.client || this.joinWatches.get(chatId) !== watch) return;
+      pictureId = this.profiles.get(member.squareMemberMid)?.pictureId;
+    }
     this.events.onMemberJoined(chatId, {
       userId: member.squareMemberMid,
       displayName: member.displayName,

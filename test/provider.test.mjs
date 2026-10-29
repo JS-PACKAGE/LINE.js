@@ -114,6 +114,35 @@ test("every account-wide OpenChat push reads the watched chats' own events: hist
   assert.equal(requests.length, 4, "a closed session stops watching");
 });
 
+test("a join without a picture resolves the member before reporting, and failed lookups still report the join", async () => {
+  for (const fails of [false, true]) {
+    let fresh = false;
+    const base = fakeBase({ square: {
+      async fetchSquareChatEvents() {
+        return { syncToken: "latest", events: fresh ? [{
+          type: "NOTIFIED_JOIN_SQUARE_CHAT",
+          payload: { notifiedJoinSquareChat: { squareChatMid: SQUARE, joinedMember: { squareMemberMid: OWN_MEMBER, displayName: "新朋友" } } },
+        }] : [] };
+      },
+      async getSquareMember() {
+        if (fails) throw new Error("unavailable");
+        return { squareMember: { squareMemberMid: OWN_MEMBER, displayName: "新朋友", profileImageObsHash: "0hAbCdEfGh" } };
+      },
+    } });
+    const { provider, joined, emit } = await activeProvider(base);
+    provider.watchSquareJoins([SQUARE]);
+    await settle();
+    fresh = true;
+    emit("square:event", { type: "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", payload: {} });
+    await settle();
+    assert.deepEqual(joined, [[SQUARE, {
+      userId: OWN_MEMBER, displayName: "新朋友",
+      ...(!fails ? { pictureId: "avatar-o-0hAbCdEfGh", pictureUrl: "https://obs.line-scdn.net/0hAbCdEfGh" } : {}),
+    }]]);
+    await provider.close();
+  }
+});
+
 const talk = (id, to, from, text, extra = {}) => ({ raw: { id, to, from, toType: "GROUP", contentType: "NONE", text, createdTime: String(1_700_000_000_000 + Number(id)), contentMetadata: {}, ...extra } });
 
 test("a slow member lookup holds back only its own chat; each chat keeps arrival order", async () => {
