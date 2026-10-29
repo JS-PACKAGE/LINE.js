@@ -142,7 +142,9 @@ const LIST_CHANGES: ReadonlySet<string> = new Set([
 /** Routine operations and OpenChat events not worth a diagnostic line (messages arrive through their own events). */
 const QUIET_OPERATIONS: ReadonlySet<string> = new Set(["END_OF_OPERATION", "0", "SEND_MESSAGE", "25", "RECEIVE_MESSAGE", "26"]);
 const QUIET_SQUARE_EVENTS: ReadonlySet<string> = new Set([
-  "RECEIVE_MESSAGE", "0", "SEND_MESSAGE", "1", "NOTIFIED_JOIN_SQUARE_CHAT", "2", "NOTIFIED_MARK_AS_READ", "6", "NOTIFICATION_MESSAGE", "29",
+  "RECEIVE_MESSAGE", "0", "SEND_MESSAGE", "1", "NOTIFIED_JOIN_SQUARE_CHAT", "2", "NOTIFIED_MARK_AS_READ", "6",
+  // Counts and read positions, sent on almost every chat change; it still triggers the join reads like any push.
+  "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", "13", "NOTIFICATION_MESSAGE", "29",
 ]);
 
 /** Content types that may carry a note (記事本): post notifications and the older group board type. */

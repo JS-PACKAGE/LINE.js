@@ -178,6 +178,8 @@
 
 > v1.23 驗證：typecheck、build 與全部測試通過（含上傳認證、類型判斷、檔名、大小、額度、擁有者隔離與 adapter 上傳參數）；另以實際 HTTP＋`/api/ws`（Bearer Token）連到正式 adapter，上傳 PDF 與文字檔後 `message:send` 回 `sent`，linejs `uploadObjTalk` 收到 `file` 類型與 `月報.pdf`、`名單.txt` 檔名（LINE 網路呼叫為替身）。未呼叫真實 LINE。
 
+> 日誌降噪（2026-10 小語裁示）：`NOTIFIED_UPDATE_SQUARE_CHAT_STATUS`（社群聊天室狀態：成員數、未讀數、已讀位置等，幾乎每次聊天室變動都會送）不再記 `LINE 未處理社群事件`；其他未處理事件照舊記類型。此事件仍與其他推播一樣觸發 `api.chats` 社群事件讀取（成員加入偵測不變）。
+
 > v1.21（小語裁示：詐騙機率分析移交 NekoGuard，協定版本仍為 2）：移除 `jev` 設定區段、`src/jev/`、`scam:check`／`scam:state`／`scam:result` 與相關錯誤碼、網頁右鍵選單「詐騙機率分析」；舊設定檔的 `jev` 區段會被忽略。v1.15、v1.16 與詐騙分析加速的紀錄僅保留為歷史。驗證：typecheck、build 與 346 項測試通過；以含舊 `jev` 區段的設定啟動實際 `dist/main.js`，服務正常啟動、網頁連線不再收到 `scam:state`，`scam:check` 回 `UNKNOWN_TYPE`（機器人連線同樣由測試確認）。
 
 > v1.22（小語裁示：群組與社群記事本發文推送給機器人，並抓完整文章，協定版本仍為 2）：LINE 以 `POSTNOTIFICATION` 訊息通知記事本發文；依其他用戶端的實測紀錄，群組為 `serviceType: GB`、`postEndUrl` 為 `…/group/home/posts/post?homeId=c…&postId=…`，社群為 `serviceType: SN`、`line://square/post?squareMid=s…&postId=…`（相簿 `AB`、分享 VOOM `MH` 同類型，不處理）。`src/line/notes.ts` 只接受完全符合的格式，訊息帶 `card: { kind: "note", postId, preview? }`（網頁以「記事本」小卡顯示摘要）。`api.chats` 內的即時新訊息，在已登入且有機器人連線時，由 adapter `fetchNoteText` 以 linejs `base.timeline.getPost` 取全文（首次使用核發 LINE Timeline 頻道權杖），只讀自己看過通知的貼文，群組 `homeId` 須等於該群組、社群 `squareMid` 須等於 `getSquareChat` 的所屬社群，回應須含所要求的 `postId`；逾時 15 秒、全體每分鐘 20 次。hub 以 `chat:note-posted { chatId, messageId, postId, senderId, senderName, createdAt, preview?, text | error: "NOTE_FETCH_FAILED" }` 只推給機器人，`hello.capabilities` 加入 `chat:note-posted`。驗證：typecheck、build 與 355 項測試通過；以正式 adapter、hub、HTTP 與 `/api/ws` 的隔離環境確認群組與社群通知各推送全文給兩個機器人連線、指向其他群組的偽造通知不呼叫 LINE 並回 `NOTE_FETCH_FAILED`、網頁不收；瀏覽器確認「記事本」小卡與聊天列表預覽。尚未以真實 LINE 帳號確認通知格式、記事本 API 的端點與回應格式，也未確認分享記事本是否產生相同通知。
