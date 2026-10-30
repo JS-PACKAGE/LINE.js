@@ -141,7 +141,7 @@ test("a join with an empty or invalid photo hash still provides the member OBS U
 
 const talk = (id, to, from, text, extra = {}) => ({ raw: { id, to, from, toType: "GROUP", contentType: "NONE", text, createdTime: String(1_700_000_000_000 + Number(id)), contentMetadata: {}, ...extra } });
 
-test("a slow member lookup holds back only its own chat; each chat keeps arrival order", async () => {
+test("a slow member lookup no longer holds a chat's messages: they show at once and are completed when the lookup answers", async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const slow = mid(1);
@@ -158,11 +158,16 @@ test("a slow member lookup holds back only its own chat; each chat keeps arrival
   emit("message", talk("2", GROUP_B, mid(2), "B 第一則"));
   emit("message", talk("3", GROUP_A, mid(3), "A 第二則"));
   await settle();
-  assert.deepEqual(received.map(({ message }) => message.text), ["B 第一則"], "the other chat is not waiting on group A's lookup");
+  assert.deepEqual(received.map(({ message, kind }) => [kind, message.text]), [["new", "A 第一則"], ["new", "B 第一則"], ["new", "A 第二則"]], "arrival order, nobody waits for LINE");
+  assert.equal(received[0].message.senderName, "成員", "a placeholder until the lookup answers");
+  assert.equal(received[2].message.senderName, `名-${mid(3).slice(-3)}`, "a fast lookup is simply awaited");
   release();
   await settle();
-  assert.deepEqual(received.map(({ message }) => message.text), ["B 第一則", "A 第一則", "A 第二則"]);
-  assert.equal(received[1].message.senderName, `名-${slow.slice(-3)}`);
+  assert.deepEqual(received.slice(3).map(({ message, kind }) => [kind, message.messageId, message.senderName]), [["sender", "1", `名-${slow.slice(-3)}`]]);
+  // A sender already known delivers complete and never produces a second event.
+  emit("message", talk("4", GROUP_A, slow, "A 第三則"));
+  await settle();
+  assert.deepEqual(received.slice(4).map(({ message, kind }) => [kind, message.senderName]), [["new", `名-${slow.slice(-3)}`]]);
 });
 
 test("a message the hub fails on does not stop later deliveries in that chat", async () => {
@@ -1428,13 +1433,16 @@ test("member prefetch overlaps different senders in one chat and single-flights 
   emit("message", talk("2", GROUP_A, mid(2), "second"));
   emit("message", talk("3", GROUP_B, mid(1), "other"));
   assert.equal(calls.length, 2);
+  await settle();
+  assert.deepEqual(received.filter(({ message }) => message.channelId === GROUP_A).map(({ message, kind }) => [kind, message.text]), [["new", "first"], ["new", "second"]], "shown in order before any lookup answers");
+  assert.equal(received.length, 3);
   gates.get(mid(2))();
   await settle();
-  assert.equal(received.length, 0, "ready second sender must not overtake the first");
+  assert.deepEqual(received.slice(3).map(({ message, kind }) => [kind, message.text, message.senderName]), [["sender", "second", `resolved-${mid(2)}`]]);
   gates.get(mid(1))();
-  await Promise.all([...provider.deliveries.values()]);
-  assert.deepEqual(received.filter(({ message }) => message.channelId === GROUP_A).map(({ message }) => message.text), ["first", "second"]);
-  assert.ok(received.every(({ message }) => message.senderName.startsWith("resolved-")));
+  await settle();
+  assert.deepEqual(received.slice(4).map(({ message, kind }) => [kind, message.text, message.senderName]).sort(), [["sender", "first", `resolved-${mid(1)}`], ["sender", "other", `resolved-${mid(1)}`]].sort(), "one lookup completes the sender in both chats");
+  assert.equal(calls.length, 2, "a sender in flight is not asked for again");
   await provider.close();
 });
 
@@ -1650,7 +1658,7 @@ test("OpenChat member lookup eligibility precedes the 100-member cap and preserv
   for (let id = 11; id <= 20; id += 1) provider.lookupMisses.set(`square:${member(id)}`, Date.now() + 60_000);
   const channel = { channelId: SQUARE, kind: "square" };
   const page = await provider.fetchHistory(channel, 100);
-  assert.deepEqual(queried, Array.from({ length: 100 }, (_, index) => member(index + 21)));
+  assert.deepEqual([...queried].sort(), Array.from({ length: 100 }, (_, index) => member(index + 21)).sort());
   assert.equal(page.messages.find((message) => message.senderId === member(120)).senderName, `resolved-${member(120)}`);
   assert.notEqual(page.messages.find((message) => message.senderId === member(121)).senderName, `resolved-${member(121)}`);
   const older = await provider.fetchHistory(channel, 100, page.cursor);
@@ -1909,4 +1917,246 @@ test("removing members: groups use deleteOtherFromChat, OpenChat updates the mem
   for (const kind of ["user", "room"]) await assert.rejects(provider.removeMember({ channelId: GROUP_A, kind }, mid(5), false), /MEMBER_REMOVE_UNSUPPORTED/);
   base.square.updateSquareMember = async () => { throw new InternalError("SquareException", "no permission"); };
   await assert.rejects(provider.removeMember(square, TARGET, false), /no permission/, "LINE's refusal is the caller's failure");
+});
+
+test("a live OpenChat message keeps the event's sender name when the member lookup fails or is slow", async () => {
+  const slow = `p${"w".repeat(32)}`;
+  const broken = `p${"x".repeat(32)}`;
+  const base = fakeBase({ square: {
+    getSquareMember({ squareMemberMid }) {
+      if (squareMemberMid === broken) return Promise.reject(new Error("offline"));
+      return new Promise(() => {});
+    },
+  } });
+  const { provider, received, emit } = await activeProvider(base);
+  const raw = (id, from) => ({ message: { id, to: SQUARE, from, contentType: "NONE", text: "嗨", createdTime: String(1_700_000_000_000 + id), contentMetadata: {} } });
+  const notify = (message, senderDisplayName) => ({ type: "NOTIFICATION_MESSAGE", payload: { notificationMessage: { squareChatMid: SQUARE, squareMessage: message, senderDisplayName } } });
+  const first = raw(1, broken);
+  emit("square:event", notify(first, "壞掉的查詢"));
+  emit("square:message", { raw: first });
+  await settle();
+  assert.equal(received.at(-1).message.senderName, "壞掉的查詢");
+  const second = raw(2, slow);
+  emit("square:event", notify(second, "慢慢查"));
+  emit("square:message", { raw: second });
+  // Ill-formed names or ids change nothing.
+  emit("square:event", notify(raw(3, "not-a-member-id"), "忽略"));
+  emit("square:event", notify(raw(4, slow), ""));
+  emit("square:event", notify(raw(5, slow), 42));
+  assert.equal(provider.profiles.get(slow).name, "慢慢查");
+  assert.equal(provider.profiles.has("not-a-member-id"), false);
+  // Delivery still waits for the lookup (picture and role): the name is ready when it settles.
+  assert.equal(received.length, 1);
+  await provider.close();
+});
+
+test("a reusing listing skips getSquareChatStatus for chats already summarised; status events keep the counts current and are reported", async () => {
+  const OTHER_SQUARE = `m${"o".repeat(32)}`;
+  let statusCalls = [];
+  let unread = 2;
+  const statuses = [];
+  const base = fakeBase({
+    talk: { async getMessageBoxes() { return { messageBoxes: [], hasNext: false }; } },
+    square: {
+      async getSquareChatStatus({ request: { squareChatMid } }) {
+        statusCalls.push(squareChatMid);
+        return { chatStatus: { otherStatus: { unreadMessageCount: unread, memberCount: 10 }, lastMessage: { message: { id: "9", to: squareChatMid, from: `p${"q".repeat(32)}`, contentType: "NONE", text: "最後", createdTime: String(1_700_000_000_009), contentMetadata: {} } }, senderDisplayName: "小Q" } };
+      },
+      async getSquareMember({ squareMemberMid }) { return { squareMember: { squareMemberMid, displayName: "小Q", role: "MEMBER" } }; },
+    },
+  });
+  const { provider, emit } = await activeProvider(base);
+  provider.events.onSquareStatus = (chatId, counts) => statuses.push([chatId, counts]);
+  let squareChats = [{ raw: { squareChatMid: SQUARE, squareMid: `s${"c".repeat(32)}`, name: "社群" } }];
+  Object.assign(provider.client, {
+    async fetchJoinedChats() { return []; },
+    async fetchJoinedSquares() { return []; },
+    async fetchJoinedSquareChats() { return squareChats; },
+  });
+  base.relation.getUserFriendIds = async () => ({ userFriendMids: [] });
+  const first = await provider.fetchChannels();
+  assert.deepEqual([first[0].unreadCount, first[0].memberCount, first[0].lastMessage.text], [2, 10, "最後"]);
+  assert.deepEqual(statusCalls, [SQUARE]);
+  unread = 5;
+  const reused = await provider.fetchChannels({ reuseSquareSummaries: true });
+  assert.deepEqual(statusCalls, [SQUARE], "no second status request");
+  assert.deepEqual([reused[0].unreadCount, reused[0].lastMessage.text], [2, "最後"], "the summary is the remembered one");
+  // LINE's status event updates the remembered counts and is reported.
+  emit("square:event", { type: "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", payload: { notifiedUpdateSquareChatStatus: { squareChatMid: SQUARE, statusWithoutMessage: { memberCount: 12, unreadMessageCount: 7 } } } });
+  emit("square:event", { type: 13, payload: { notifiedUpdateSquareChatStatus: { squareChatMid: SQUARE, statusWithoutMessage: { memberCount: 0, unreadMessageCount: 0 } } } });
+  emit("square:event", { type: 13, payload: { notifiedUpdateSquareChatStatus: { squareChatMid: "bad", statusWithoutMessage: { unreadMessageCount: 1 } } } });
+  emit("square:event", { type: 13, payload: { notifiedUpdateSquareChatStatus: { squareChatMid: SQUARE, statusWithoutMessage: { unreadMessageCount: -1 } } } });
+  emit("square:event", { type: 13, payload: {} });
+  assert.deepEqual(statuses, [[SQUARE, { unreadCount: 7, memberCount: 12 }], [SQUARE, { unreadCount: 0 }]]);
+  const afterEvents = await provider.fetchChannels({ reuseSquareSummaries: true });
+  assert.deepEqual([afterEvents[0].unreadCount, afterEvents[0].memberCount], [undefined, 12], "zero unread shows no badge; the member count stays");
+  // A chat without a remembered summary is still asked, and a fresh listing asks everything again.
+  squareChats = [...squareChats, { raw: { squareChatMid: OTHER_SQUARE, squareMid: `s${"c".repeat(32)}`, name: "另一個" } }];
+  await provider.fetchChannels({ reuseSquareSummaries: true });
+  assert.deepEqual(statusCalls, [SQUARE, OTHER_SQUARE]);
+  statusCalls = [];
+  const fresh = await provider.fetchChannels();
+  assert.deepEqual(statusCalls.sort(), [SQUARE, OTHER_SQUARE].sort());
+  assert.equal(fresh[0].unreadCount, 5);
+  // Another session must not inherit the summaries.
+  await provider.close();
+  assert.equal(provider.squareSummaries.size, 0);
+});
+
+
+/** A chat with messages 1..total; backward pages come newest first, forward pages oldest first. */
+function backwardBase(total, { honoursBackward = true } = {}) {
+  const requests = [];
+  const base = fakeBase({
+    talk: { async getMessageBoxes() { return { messageBoxes: [], hasNext: false }; } },
+    square: {
+      async getSquareChatStatus({ request: { squareChatMid } }) {
+        return { chatStatus: { otherStatus: { unreadMessageCount: 0, memberCount: 3 }, lastMessage: { message: { id: String(total), to: squareChatMid, from: `p${"m".repeat(32)}`, contentType: "NONE", text: "最新", createdTime: String(1_700_000_000_000 + total), contentMetadata: {} } }, senderDisplayName: "成員" } };
+      },
+      async getSquareMember({ squareMemberMid }) { return { squareMember: { squareMemberMid, displayName: "成員", role: "MEMBER" } }; },
+      async fetchSquareChatEvents(options) {
+        requests.push(options);
+        const page = 100;
+        if (options.direction === "BACKWARD" && honoursBackward) {
+          const from = options.continuationToken ? Number(options.continuationToken) : total;
+          const ids = []; for (let id = from; id > Math.max(0, from - page); id -= 1) ids.push(id);
+          const next = from - page;
+          return { events: ids.map((id) => squareEvent(id)), syncToken: "sync", ...(next > 0 ? { continuationToken: String(next) } : {}) };
+        }
+        const from = options.continuationToken ? Number(options.continuationToken) : 1;
+        const ids = []; for (let id = from; id < Math.min(total + 1, from + page); id += 1) ids.push(id);
+        const next = from + page;
+        return { events: ids.map((id) => squareEvent(id)), syncToken: "sync", ...(next <= total ? { continuationToken: String(next) } : {}) };
+      },
+    },
+  });
+  base.relation.getUserFriendIds = async () => ({ userFriendMids: [] });
+  return { base, requests };
+}
+
+async function listedProvider(base) {
+  const result = await activeProvider(base);
+  Object.assign(result.provider.client, { async fetchJoinedChats() { return []; }, async fetchJoinedSquares() { return []; }, async fetchJoinedSquareChats() { return [{ raw: { squareChatMid: SQUARE, squareMid: `s${"c".repeat(32)}`, name: "社群" } }]; } });
+  await result.provider.fetchChannels();
+  return result;
+}
+
+test("OpenChat history reads newest-first when LINE's backward page carries the listed last message, extending on demand", async () => {
+  const { base, requests } = backwardBase(1000);
+  const { provider } = await listedProvider(base);
+  const channel = { channelId: SQUARE, kind: "square" };
+  const first = await provider.fetchHistory(channel, 50);
+  assert.deepEqual(first.messages.map((message) => message.messageId).slice(-3), ["998", "999", "1000"]);
+  assert.equal(first.messages.length, 50);
+  assert.equal(first.hasMore, true);
+  assert.deepEqual(requests.map((request) => [request.direction, request.continuationToken]), [["BACKWARD", undefined]], "one page covers the first request");
+  // Paging back inside the window costs nothing; past it, the next older page is read.
+  const second = await provider.fetchHistory(channel, 50, first.cursor);
+  assert.deepEqual([second.messages[0].messageId, second.messages.at(-1).messageId, requests.length], ["901", "950", 1]);
+  const third = await provider.fetchHistory(channel, 50, second.cursor);
+  assert.deepEqual([third.messages[0].messageId, third.messages.at(-1).messageId, third.hasMore], ["851", "900", true]);
+  assert.deepEqual(requests.at(-1), { squareChatMid: SQUARE, limit: 100, syncToken: "sync", continuationToken: "900", direction: "BACKWARD" });
+  // All the way to the oldest: hasMore turns false exactly at message 1.
+  let page = third;
+  while (page.hasMore) page = await provider.fetchHistory(channel, 100, page.cursor);
+  assert.equal(page.messages[0].messageId, "1");
+  assert.equal(requests.length, 10, "ten pages for a thousand messages, no full walk");
+  // A live message lands in the window and shows at the newest end.
+  provider.client.emit("square:message", { raw: squareEvent(1001).payload.receiveMessage.squareMessage });
+  await provider.deliveries.get(SQUARE);
+  assert.equal((await provider.fetchHistory(channel, 2)).messages.at(-1).messageId, "1001");
+  assert.equal(requests.length, 10);
+});
+
+test("OpenChat history falls back to the full oldest-first walk when the backward page does not show the listed last message, or no listing exists", async () => {
+  const { base, requests } = backwardBase(250, { honoursBackward: false });
+  const { provider } = await listedProvider(base);
+  const channel = { channelId: SQUARE, kind: "square" };
+  const page = await provider.fetchHistory(channel, 50);
+  assert.deepEqual([page.messages[0].messageId, page.messages.at(-1).messageId, page.hasMore], ["201", "250", true]);
+  assert.deepEqual(requests.map((request) => request.direction), ["BACKWARD", undefined, undefined, undefined], "one probe, then the whole stream forward");
+  const oldest = await provider.fetchHistory(channel, 300, page.cursor);
+  assert.deepEqual([oldest.messages[0].messageId, oldest.hasMore, requests.length], ["1", false, 4]);
+
+  const plain = backwardBase(150);
+  const unlisted = await activeProvider(plain.base);
+  assert.equal((await unlisted.provider.fetchHistory(channel, 50)).messages.at(-1).messageId, "150");
+  assert.deepEqual(plain.requests.map((request) => request.direction), [undefined, undefined], "without a listed last message nothing is probed");
+});
+
+test("OpenChat members are looked up in batches of 50; a refused batch falls back to bounded single lookups for good", async () => {
+  const member = (id) => `p${String(id).padStart(32, "0")}`;
+  const mids = Array.from({ length: 120 }, (_, index) => member(index + 1));
+  const batches = [];
+  const singles = [];
+  let refuse = false;
+  let active = 0;
+  let peak = 0;
+  const diag = [];
+  const base = fakeBase({ square: {
+    async getSquareMembers({ request: { mids: asked } }) {
+      batches.push(asked.length);
+      if (refuse) throw new Error("not available");
+      // LINE answers for whom it knows; one member is missing and one stray extra must be ignored.
+      const members = Object.fromEntries(asked.slice(0, -1).map((mid) => [mid, { squareMemberMid: mid, displayName: `batch-${mid.slice(-3)}`, role: "MEMBER" }]));
+      members.stray = { squareMemberMid: `p${"z".repeat(32)}`, displayName: "外人", role: "ADMIN" };
+      return { members };
+    },
+    async getSquareMember({ squareMemberMid }) {
+      singles.push(squareMemberMid);
+      peak = Math.max(peak, ++active);
+      await new Promise(setImmediate);
+      active -= 1;
+      return { squareMember: { displayName: `single-${squareMemberMid.slice(-3)}` } };
+    },
+  } });
+  const { provider } = await activeProvider(base);
+  provider.events.onDiagnostic = (line) => diag.push(line);
+  await provider.resolveMembers(provider.client, "square", mids.slice(0, 100));
+  assert.deepEqual(batches, [50, 50]);
+  assert.equal(provider.profiles.get(member(1)).name, "batch-001");
+  assert.equal(provider.profiles.get(member(50)), undefined, "a member LINE left out stays unknown (retried later)");
+  assert.equal(provider.profiles.has(`p${"z".repeat(32)}`), false, "answers about members not asked for are dropped");
+  assert.deepEqual(singles, [], "no single lookups while batching works");
+  refuse = true;
+  await provider.resolveMembers(provider.client, "square", mids.slice(100, 120));
+  assert.deepEqual(batches, [50, 50, 20]);
+  assert.deepEqual([...singles].sort(), mids.slice(100, 120).sort(), "the refused batch is looked up one by one");
+  assert.equal(peak, 5, "single lookups keep the global bound");
+  assert.equal(provider.profiles.get(member(120)).name, "single-120");
+  assert.deepEqual(diag, ["社群成員批次查詢失敗，改為逐一查詢"]);
+  refuse = false;
+  const late = `p${"y".repeat(32)}`;
+  await provider.resolveMembers(provider.client, "square", [late, member(49)]);
+  assert.equal(batches.length, 3, "batching is not tried again this session");
+  assert.equal(provider.profiles.get(late).name, "single-yyy");
+  assert.equal(singles.filter((mid) => mid === member(50)).length, 0, "a member LINE left out waits for the retry delay");
+  await provider.close();
+});
+
+test("an OpenChat sender resolved late completes the cached history entry without undoing a newer edit", async () => {
+  const gates = new Map();
+  const base = fakeBase({ square: {
+    async fetchSquareChatEvents() { return { events: [] }; },
+    async getSquareChatStatus() { return { chatStatus: { otherStatus: { unreadMessageCount: 0, memberCount: 2 } } }; },
+    getSquareMember({ squareMemberMid }) { return new Promise((resolve) => gates.set(squareMemberMid, () => resolve({ squareMember: { squareMemberMid, displayName: "慢來的", profileImageObsHash: "0hAbCdEfGh", role: "ADMIN" } }))); },
+  } });
+  const { provider, received, emit } = await activeProvider(base);
+  const channel = { channelId: SQUARE, kind: "square" };
+  await provider.fetchHistory(channel, 50);
+  const slow = `p${"s".repeat(32)}`;
+  const raw = (text) => ({ message: { id: "77", to: SQUARE, from: slow, contentType: "NONE", text, createdTime: String(1_700_000_000_077), contentMetadata: {} } });
+  emit("square:message", { raw: raw("第一版") });
+  await settle();
+  assert.deepEqual(received.map(({ message, kind }) => [kind, message.senderName, message.text]), [["new", "成員", "第一版"]]);
+  // The sender edits before the lookup answers: the edit is shown, and the late lookup must not restore the old text.
+  emit("square:message", { raw: raw("第二版") });
+  await settle();
+  gates.get(slow)();
+  await settle();
+  const senderEvents = received.filter(({ kind }) => kind === "sender");
+  assert.ok(senderEvents.length >= 1);
+  for (const { message } of senderEvents) assert.deepEqual([message.senderName, message.senderPictureId, message.senderRole], ["慢來的", "avatar-o-0hAbCdEfGh", "admin"]);
+  const cached = (await provider.fetchHistory(channel, 50)).messages.find((message) => message.messageId === "77");
+  assert.deepEqual([cached.text, cached.senderName, cached.senderRole], ["第二版", "慢來的", "admin"]);
 });

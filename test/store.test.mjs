@@ -170,6 +170,30 @@ test("scoped channel snapshots preserve activity, name and stable tie ordering w
   assert.deepEqual(store.snapshotChannels(scope), [{ channelId: "c2", kind: "group", name: "new account" }]);
 });
 
+test("setChannels reports whether a client-visible change happened and keeps unchanged channels' identity", () => {
+  const store = new ChatStore(500);
+  const list = () => [
+    { channelId: "c1", kind: "group", name: "群", lastMessageAt: 10, lastMessage: message("s1", 10) },
+    { channelId: "c2", kind: "user", name: "友" },
+  ];
+  assert.equal(store.setChannels(list()), true, "first listing");
+  const before = store.channelOf("c1");
+  assert.equal(store.setChannels(list()), false, "same listing again");
+  assert.equal(store.channelOf("c1"), before, "unchanged channel object is reused");
+  // A live message moved the chat ahead of LINE's summary: a refresh still carrying the old summary changes nothing.
+  store.upsert(message("m2", 20), false);
+  const live = store.channelOf("c1");
+  assert.equal(store.setChannels(list()), false);
+  assert.equal(store.channelOf("c1"), live);
+  assert.equal(store.setChannels(list().map((channel) => (channel.channelId === "c2" ? { ...channel, unreadCount: 3 } : channel))), true, "a badge");
+  assert.equal(store.setChannels(list().map((channel) => (channel.channelId === "c2" ? { ...channel, name: "改名" } : channel))), true, "a name");
+  assert.equal(store.setChannels(list().reverse()), true, "listing order is the sort tie-breaker");
+  assert.equal(store.setChannels(list().reverse()), false);
+  assert.equal(store.setChannels([list()[0]]), true, "a removal");
+  assert.equal(store.setChannels(list()), true, "a return");
+  assert.equal(store.setChannels(list()), false);
+});
+
 test("equivalent reactions ignore object key order without replacing messages or channel previews", () => {
   const store = new ChatStore(500);
   const original = store.upsert(message("m1", 10, { reactions: { counts: { NICE: 2, LOVE: 1, OMG: 3 }, mine: "LOVE" } }), false);
@@ -248,4 +272,18 @@ test("edits, reactions and take-backs still target the same message after insert
   assert.equal(store.get("m3", "c1"), edited);
   for (const entry of store.messagesOf("c1")) assert.equal(store.get(entry.messageId, "c1"), entry);
   assert.equal(store.channelOf("c1").lastMessage.messageId, "m4");
+});
+
+test("setSender moves only sender fields; text follows only while the message was never edited", () => {
+  const store = new ChatStore(500);
+  store.upsert(message("m1", 10, { senderName: "成員", text: "原文" }), false);
+  store.upsert(message("m2", 20, { senderName: "成員", contentType: "CHATEVENT", text: "成員 加入" }), false);
+  assert.equal(store.setSender(message("m1", 10, { senderName: "小明", senderRole: "admin", text: "原文" })).senderRole, "admin");
+  assert.equal(store.setSender(message("m2", 20, { senderName: "小明", text: "小明 加入" })).text, "小明 加入", "event text built from the name follows");
+  store.upsert(message("m1", 10, { senderName: "小明", senderRole: "admin", text: "改過" }), true);
+  const after = store.setSender(message("m1", 10, { senderName: "小明", senderPictureId: "avatar-p-x", text: "原文" }));
+  assert.deepEqual([after.text, after.senderPictureId], ["改過", "avatar-p-x"], "an edit keeps its text");
+  assert.equal(store.setSender(message("m1", 10, { senderName: "小明", senderPictureId: "avatar-p-x", text: "原文" })), undefined, "nothing new");
+  assert.equal(store.setSender(message("m9", 10, { senderName: "x" })), undefined);
+  assert.equal(store.get("m1", "c1").text, "改過");
 });

@@ -4,7 +4,7 @@ import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import type { Config } from "../config.js";
 import type { LoginController } from "../line/login.js";
-import type { LineProvider } from "../line/provider.js";
+import type { LineProvider, SquareChatCounts } from "../line/provider.js";
 import type { ApiTokenStore } from "../http/apiToken.js";
 import { SlidingWindowLimiter } from "../limit.js";
 import type { MediaService } from "../media/service.js";
@@ -49,7 +49,8 @@ export interface HubOptions {
 
 export interface Hub {
   setStatus(state: ListenState): void;
-  handleMessage(message: Message, kind: "new" | "edit"): void;
+  /** `sender`: a shown message's sender details arrived late; pages get it as `message:edit`, bots nothing new. */
+  handleMessage(message: Message, kind: "new" | "edit" | "sender"): void;
   handleRead(chatId: string, position: ReadPosition): void;
   /** A message was taken back (by its sender or by this account); `chatHint` is where LINE placed it. */
   handleUnsend(chatHint: string | undefined, messageId: string): void;
@@ -63,6 +64,8 @@ export interface Hub {
   handleNotePosted(chatId: string, note: SquareNote): void;
   /** Names, pictures or members changed somewhere: the list is fetched again (settled and rate limited). */
   handleChatsChanged(): void;
+  /** LINE's own counts for an OpenChat chat changed: its list entry follows, here and on every page. */
+  handleSquareStatus(chatId: string, counts: SquareChatCounts): void;
   /** Announces (or clears) the newest known release to everyone connected and to later connections. */
   setUpdate(info: UpdateInfo | undefined): void;
   close(): void;
@@ -108,7 +111,7 @@ export function createHub(options: HubOptions): Hub {
   const botSendLimiter = new SlidingWindowLimiter(config.api.sendsPerMinute, 60_000);
   const noteFetchLimiter = new SlidingWindowLimiter(NOTE_FETCHES_PER_MINUTE, 60_000);
   let status: ListenState = "starting";
-  let refreshing: Promise<void> | undefined;
+  let refreshing: { promise: Promise<void>; fresh: boolean } | undefined;
   // State can become ready again before an old LINE request settles; "ready" alone is not an account boundary.
   let generation = 0;
   let update: UpdateInfo | undefined;
@@ -656,15 +659,23 @@ export function createHub(options: HubOptions): Hub {
     broadcastChannel(placeholder.channelId, placeholder.channelId === chatHint ? before : undefined);
   }
 
-  function ingest(message: Message, kind: "new" | "edit"): void {
+  function ingest(message: Message, kind: "new" | "edit" | "sender"): void {
     const before = store.channelOf(message.channelId);
+    if (kind === "sender") {
+      const stored = store.setSender(message);
+      if (!stored) return;
+      // Bots already have the id; only pages show the name and picture.
+      broadcast({ type: "message:edit", message: stored });
+      broadcastChannel(message.channelId, before);
+      return;
+    }
     const stored = store.upsert(message, kind === "edit");
     if (!stored) return;
     if (!before) {
       // The channel list is fetched lazily; show the chat now, name it after a refresh.
       broadcastChannels();
       clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => { void refreshChannels(); }, NEW_CHANNEL_REFRESH_MS);
+      refreshTimer = setTimeout(() => { void refreshChannels(false); }, NEW_CHANNEL_REFRESH_MS);
     }
     const frame: ServerFrame = { type: kind === "edit" ? "message:edit" : "message", message: stored };
     if (botScope.has(message.channelId)) broadcastAll(frame);
@@ -756,15 +767,22 @@ export function createHub(options: HubOptions): Hub {
     send(socket, { type: "channels", channels: store.snapshotChannels() });
   }
 
-  function refreshChannels(): Promise<void> {
+  /**
+   * Lists the chats again. `fresh` asks LINE for every OpenChat chat's counts too (one request each);
+   * otherwise the counts from the last fresh listing are reused, kept current by LINE's status events.
+   * One in-flight refresh serves every requester (LINE is rate sensitive); a fresh request made while a
+   * reusing one runs follows it.
+   */
+  function refreshChannels(fresh = true): Promise<void> {
+    const current = refreshing;
+    if (current && (current.fresh || !fresh)) return current.promise;
     const account = generation;
-    // One in-flight refresh serves every requester; LINE is rate sensitive.
-    refreshing ??= (async () => {
+    const run = async () => {
       try {
-        const channels = await provider.fetchChannels();
+        const channels = await provider.fetchChannels({ reuseSquareSummaries: !fresh });
         // A logout while LINE was answering must not repopulate the cleared cache.
         if (account !== generation || login.state !== "ready") return;
-        store.setChannels(channels);
+        const changed = store.setChannels(channels);
         // Joins are pushed only to bots, so only their allowed OpenChat chats cost LINE requests.
         provider.watchSquareJoins(config.api.enabled ? [...botScope].filter((chatId) => store.channelOf(chatId)?.kind === "square") : []);
         const removed: string[] = [];
@@ -775,7 +793,8 @@ export function createHub(options: HubOptions): Hub {
             broadcast({ type: "chat:admin-token:changed", chatId });
           }
         }
-        broadcastChannels();
+        // An unchanged list (most periodic refreshes) would only make every page rebuild its rows.
+        if (changed) broadcastChannels();
         for (const chatId of removed) {
           if (botScope.has(chatId)) broadcastBots({ type: "chat:admin-token:changed", chatId });
         }
@@ -785,10 +804,13 @@ export function createHub(options: HubOptions): Hub {
         console.error("CHANNELS_FAILED");
         broadcast({ type: "error", code: "CHANNELS_FAILED", message: GENERIC.CHANNELS_FAILED });
       } finally {
-        if (account === generation) refreshing = undefined;
+        if (account === generation && refreshing === entry) refreshing = undefined;
       }
-    })();
-    return refreshing;
+    };
+    const entry = { promise: Promise.resolve(), fresh };
+    refreshing = entry;
+    entry.promise = current ? current.promise.then(run) : run();
+    return entry.promise;
   }
 
   function sendReady(socket: WebSocket): void {
@@ -1052,8 +1074,14 @@ export function createHub(options: HubOptions): Hub {
       const wait = Math.max(LIST_CHANGE_SETTLE_MS, lastListChange + LIST_CHANGE_MIN_GAP_MS - Date.now());
       listChangeTimer = setTimeout(() => {
         lastListChange = Date.now();
-        void refreshChannels();
+        void refreshChannels(false);
       }, wait);
+    },
+    handleSquareStatus(chatId, counts) {
+      const before = store.channelOf(chatId);
+      if (!before || before.kind !== "square" || login.state !== "ready") return;
+      store.setCounts(chatId, counts.unreadCount, counts.memberCount);
+      broadcastChannel(chatId, before);
     },
     handleRead(chatId, position) {
       if (!store.hasChannel(chatId) || !rememberRead(chatId, position)) return;

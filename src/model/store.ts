@@ -53,24 +53,41 @@ export class ChatStore {
     this.unsentIds.clear();
   }
 
-  setChannels(channels: Channel[]): void {
+  /**
+   * Replaces the channel list with LINE's latest. Returns false when nothing a client can see changed,
+   * so an unchanged refresh costs no broadcast; unchanged channels keep their object identity.
+   */
+  setChannels(channels: Channel[]): boolean {
     const next: Record<string, Channel> = {};
+    let changed = false;
     for (const channel of channels) {
       const known = this.channels[channel.channelId];
       // A live message this service saw may be newer than what LINE's summary says: keep the newest.
       const newest = (channel.lastMessageAt ?? 0) >= (known?.lastMessageAt ?? 0) ? channel : known;
       const lastMessageAt = newest?.lastMessageAt ?? 0;
       const lastMessage = newest?.lastMessage ?? channel.lastMessage ?? known?.lastMessage;
-      next[channel.channelId] = { ...channel, ...(lastMessageAt > 0 ? { lastMessageAt } : {}), ...(lastMessage ? { lastMessage } : {}) };
+      const merged: Channel = { ...channel, ...(lastMessageAt > 0 ? { lastMessageAt } : {}), ...(lastMessage ? { lastMessage } : {}) };
+      // The adapter builds channels and previews in a fixed field order, so equal lists serialize equally.
+      if (known && JSON.stringify(known) === JSON.stringify(merged)) {
+        next[channel.channelId] = known;
+      } else {
+        next[channel.channelId] = merged;
+        changed = true;
+      }
     }
     // A channel that only appears through a live message must survive a refresh
     // that raced ahead of LINE's own listing.
     for (const [id, channel] of Object.entries(this.channels)) {
       if (!next[id] && this.messages[id]?.length) next[id] = channel;
     }
+    // Removals, and the listing order (the tie-breaker when nothing else differs).
+    const previous = Object.keys(this.channels);
+    const ids = Object.keys(next);
+    if (previous.length !== ids.length || previous.some((id, index) => ids[index] !== id)) changed = true;
     this.channels = next;
     this.channelOrder.clear();
     for (const id in next) this.channelOrder.set(id, this.channelOrder.size);
+    return changed;
   }
 
   hasChannel(channelId: string): boolean {
@@ -87,6 +104,43 @@ export class ChatStore {
     if (!channel?.unreadCount) return;
     const { unreadCount: _cleared, ...rest } = channel;
     this.channels[channelId] = rest;
+  }
+
+  /** LINE's current counts for a chat (an OpenChat status event); the object is replaced only when they differ. */
+  setCounts(channelId: string, unreadCount: number, memberCount: number | undefined): void {
+    const channel = this.channels[channelId];
+    if (!channel) return;
+    const shown = Math.min(unreadCount, 9999);
+    const next = { ...channel };
+    if (shown > 0) next.unreadCount = shown;
+    else delete next.unreadCount;
+    if (memberCount) next.memberCount = memberCount;
+    if (next.unreadCount === channel.unreadCount && next.memberCount === channel.memberCount) return;
+    this.channels[channelId] = next;
+  }
+
+  /**
+   * A shown message's sender details arrived late: only name, picture, role (and text built from member
+   * names, when the content itself did not change meanwhile) move. Nothing for a message not cached,
+   * taken back or already identical. Returns the message as now cached.
+   */
+  setSender(incoming: Message): Message | undefined {
+    const known = this.byId[incoming.channelId]?.get(incoming.messageId);
+    if (!known || known.unsent) return undefined;
+    const stored: Message = {
+      ...known,
+      senderName: incoming.senderName,
+      ...(incoming.senderPictureId ? { senderPictureId: incoming.senderPictureId } : {}),
+      ...(incoming.senderRole ? { senderRole: incoming.senderRole } : {}),
+      ...(known.editedAt === undefined && incoming.text !== undefined ? { text: incoming.text } : {}),
+    };
+    if (JSON.stringify(stored) === JSON.stringify(known)) return undefined;
+    const list = this.messages[incoming.channelId]!;
+    list[list.indexOf(known)] = stored;
+    this.byId[incoming.channelId]!.set(incoming.messageId, stored);
+    const channel = this.channels[incoming.channelId];
+    if (channel?.lastMessage?.messageId === stored.messageId) this.channels[incoming.channelId] = { ...channel, lastMessage: stored };
+    return stored;
   }
 
   /**

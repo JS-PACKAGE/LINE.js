@@ -594,6 +594,21 @@ async function signedIn(t, options) {
   return { ...env, client, request };
 }
 
+test("a refresh that finds the same list sends no channels frame; a changed one does", async (t) => {
+  const env = await signedIn(t);
+  const count = () => env.client.frames.filter((frame) => frame.type === "channels").length;
+  const before = count();
+  env.request({ type: "channels:refresh" });
+  env.request({ type: "ping" });
+  await env.client.until((frame) => frame.type === "pong");
+  await settle();
+  assert.equal(count(), before, "nothing changed: pages keep their rows");
+  env.provider.channels = [...env.provider.channels, { channelId: OTHER, kind: "group", name: "新群" }];
+  env.request({ type: "channels:refresh" });
+  await env.client.until((frame) => frame.type === "channels" && frame.channels.some((channel) => channel.channelId === OTHER));
+  assert.equal(count(), before + 1);
+});
+
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 7)]);
 
 async function upload(env, body, headers = {}) {
@@ -1347,6 +1362,63 @@ test("group and profile changes refresh the list once per burst, and at most onc
   t.mock.timers.tick(20_000);
   await settle();
   assert.equal(fetches, atLogin + 2, "the next change is picked up once the gap has passed");
+});
+
+test("list-change refreshes reuse OpenChat counts, page refreshes and login ask LINE afresh, and a fresh request follows a reusing one", async (t) => {
+  const env = await start(t);
+  const modes = [];
+  const gate = { pending: undefined };
+  env.provider.fetchChannels = async (options) => {
+    modes.push(options?.reuseSquareSummaries === true ? "reuse" : "fresh");
+    if (gate.pending) await gate.pending.promise;
+    return env.provider.channels;
+  };
+  await env.login.restore();
+  await settle();
+  assert.deepEqual(modes, ["fresh"], "login lists everything");
+  const page = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => page.socket.close());
+  await page.opened;
+  await page.until((frame) => frame.type === "channels");
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
+  env.hub.handleChatsChanged();
+  t.mock.timers.tick(3000);
+  for (let i = 0; i < 5; i += 1) await Promise.resolve();
+  assert.deepEqual(modes, ["fresh", "reuse"], "a talk-side change does not re-ask every OpenChat chat");
+  t.mock.timers.reset();
+  // A reusing refresh is in flight; the page asks for a fresh one: it must not be served the reusing result.
+  gate.pending = Promise.withResolvers();
+  env.hub.handleMessage({ messageId: "77", channelId: `c${"7".repeat(32)}`, channelKind: "group", senderId: "u1", senderName: "新", text: "新群", contentType: "NONE", createdAt: 7 }, "new");
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(modes.at(-1), "reuse", "an unknown chat's message triggers a reusing refresh");
+  page.socket.send(JSON.stringify({ type: "channels:refresh" }));
+  page.socket.send(JSON.stringify({ type: "channels:refresh" }));
+  await settle();
+  assert.equal(modes.filter((mode) => mode === "fresh").length, 1, "the fresh request waits for the running one");
+  gate.pending.resolve();
+  gate.pending = undefined;
+  await settle();
+  assert.deepEqual(modes.slice(-2), ["reuse", "fresh"], "then runs once");
+});
+
+test("an OpenChat status event updates that chat's counts on every page without a LINE request", async (t) => {
+  const env = await signedIn(t);
+  env.store.setChannels([{ channelId: SQUARE, kind: "square", name: "社群", memberCount: 10 }, { channelId: CHAT, kind: "group", name: "群" }]);
+  const fetches = env.provider.calls.length;
+  env.hub.handleSquareStatus(SQUARE, { unreadCount: 3, memberCount: 11 });
+  const frame = await env.client.until((f) => f.type === "channel" && f.channel.channelId === SQUARE);
+  assert.deepEqual(frame.channel, { channelId: SQUARE, kind: "square", name: "社群", memberCount: 11, unreadCount: 3 });
+  env.hub.handleSquareStatus(SQUARE, { unreadCount: 0 });
+  const cleared = await env.client.until((f) => f.type === "channel" && f.channel.channelId === SQUARE && f.channel.unreadCount === undefined);
+  assert.equal(cleared.channel.memberCount, 11, "a count-only event keeps the member count");
+  const before = env.client.frames.length;
+  env.hub.handleSquareStatus(SQUARE, { unreadCount: 0 });
+  env.hub.handleSquareStatus(CHAT, { unreadCount: 5 });
+  env.hub.handleSquareStatus(`m${"n".repeat(32)}`, { unreadCount: 5 });
+  env.client.socket.send(JSON.stringify({ type: "ping" }));
+  await env.client.until((f) => f.type === "pong");
+  assert.equal(env.client.frames.slice(before).filter((f) => f.type === "channel").length, 0, "unchanged, non-OpenChat and unknown chats send nothing");
+  assert.equal(env.provider.calls.length, fetches);
 });
 
 test("a newer release is announced to every client, including ones that connect later and are not signed in", async (t) => {
@@ -2593,4 +2665,28 @@ test("member removal shares the connection's send budget; membership lookups sha
   for (let i = 0; i < 9; i += 1) await env.ask(bot, "profile:get", {});
   assert.equal((await env.ask(bot, "chat:membership:get", { chatId: SQUARE })).code, "RATE_LIMITED");
   assert.equal((await env.ask(env.page, "chat:member:remove", { chatId: CHAT, memberId: GROUP_MEMBER })).type, "chat:member:removed", "other sockets have their own budgets");
+});
+
+test("a late sender detail reaches pages as message:edit without an edited mark; bots get nothing and unknown or taken-back messages are ignored", async (t) => {
+  const env = await botEnv(t);
+  const bot = await env.open();
+  const base = { messageId: "501", channelId: CHAT, channelKind: "group", senderId: "u1", senderName: "成員", text: "嗨", contentType: "NONE", createdAt: 10 };
+  env.hub.handleMessage(base, "new");
+  await env.page.until((frame) => frame.type === "message" && frame.message.messageId === "501");
+  await bot.until((frame) => frame.type === "message" && frame.message.messageId === "501");
+  env.hub.handleMessage({ ...base, senderName: "小明", senderPictureId: "avatar-p-abc" }, "sender");
+  const edit = await env.page.until((frame) => frame.type === "message:edit" && frame.message.messageId === "501");
+  assert.deepEqual(edit.message, { ...base, senderName: "小明", senderPictureId: "avatar-p-abc" });
+  assert.equal("editedAt" in edit.message, false);
+  assert.equal(env.store.channelOf(CHAT).lastMessage.senderName, "小明", "the list preview follows");
+  env.hub.handleMessage({ ...base, senderName: "小明", senderPictureId: "avatar-p-abc" }, "sender");
+  env.hub.handleMessage({ ...base, messageId: "999", senderName: "沒這則" }, "sender");
+  env.hub.handleUnsend(CHAT, "501");
+  env.hub.handleMessage({ ...base, senderName: "收回後" }, "sender");
+  bot.socket.send(JSON.stringify({ type: "ping" }));
+  await bot.until((frame) => frame.type === "pong");
+  env.page.socket.send(JSON.stringify({ type: "ping" }));
+  await env.page.until((frame) => frame.type === "pong");
+  assert.equal(bot.frames.filter((frame) => frame.type === "message:edit").length, 0, "bots never see sender-only edits");
+  assert.equal(env.page.frames.filter((frame) => frame.type === "message:edit").length, 1, "identical, unknown and taken-back messages send nothing");
 });

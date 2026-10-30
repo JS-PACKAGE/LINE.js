@@ -22,7 +22,11 @@ export interface QRCallbacks {
 }
 
 export interface ProviderEvents {
-  onMessage: (message: Message, kind: "new" | "edit") => void;
+  /**
+   * `new`/`edit` as LINE reported them. `sender`: the same message again once a slow member lookup
+   * named its sender (name, picture, role and any text built from member names); its content is unchanged.
+   */
+  onMessage: (message: Message, kind: "new" | "edit" | "sender") => void;
   onRead: (chatId: string, position: ReadPosition) => void;
   /** A message was taken back. `chatHint` is where LINE placed it (see parseUnsendOperation). */
   onUnsend: (chatHint: string, messageId: string) => void;
@@ -39,6 +43,8 @@ export interface ProviderEvents {
   onMemberJoined: (chatId: string, member: JoinedMember) => void;
   /** A new note in the OpenChat community of a watched chat (NOTIFIED_UPDATE_SQUARE_NOTE_STATUS), once per watched chat. */
   onNotePosted: (chatId: string, note: SquareNote) => void;
+  /** An OpenChat chat's counts changed (NOTIFIED_UPDATE_SQUARE_CHAT_STATUS): LINE's own unread and member counts. */
+  onSquareStatus: (chatId: string, status: SquareChatCounts) => void;
   onStatus: (state: "listening" | "reconnecting") => void;
   onError: (code: "SESSION_WRITE_FAILED" | "LINE_LISTEN_FAILED" | "MESSAGE_PARSE_FAILED") => void;
   /** One log line for diagnosing unparsed LINE input (types, ids and shapes only; never message text or secrets). */
@@ -50,6 +56,19 @@ export interface LogoutResult {
   remoteRevoked: boolean;
 }
 
+export interface SquareChatCounts {
+  unreadCount: number;
+  memberCount?: number;
+}
+
+export interface FetchChannelsOptions {
+  /**
+   * Reuse the OpenChat counts and previews from the last full listing instead of asking LINE for each chat
+   * again (one request per chat). Talk-side changes that trigger a refresh do not touch them, and LINE
+   * pushes OpenChat count changes as events in between.
+   */
+  reuseSquareSummaries?: boolean;
+}
 export interface SendTextOptions {
   mentions?: Mention[];
   /** Id of the message being answered. */
@@ -76,7 +95,7 @@ export interface LineProvider {
   markRead(channel: ChannelRef, messageId: string): Promise<void>;
   /** Where other members have read up to; empty when LINE has none (or the chat type has no receipts). */
   fetchReadPositions(channel: ChannelRef): Promise<ReadPosition[]>;
-  fetchChannels(): Promise<Channel[]>;
+  fetchChannels(options?: FetchChannelsOptions): Promise<Channel[]>;
   fetchChatAdmins(channel: ChannelRef): Promise<ChatAdmins>;
   fetchHistory(channel: ChannelRef, limit: number, before?: string): Promise<HistoryPage>;
   sendText(channel: ChannelRef, text: string, options?: SendTextOptions): Promise<Message>;
@@ -124,6 +143,8 @@ const SQUARE_CACHE_ENTRIES = 5;
 const SQUARE_MAX_MESSAGES = SQUARE_PAGE_SIZE * SQUARE_MAX_PAGES;
 const CONTACT_BATCH = 100;
 const SQUARE_LOOKUP_CONCURRENCY = 5;
+// getSquareMembers takes a list; its limit is undocumented, so batches stay well under the 100 of getContactsV2.
+const SQUARE_MEMBER_BATCH = 50;
 const MAX_LOOKUPS_PER_CALL = 100;
 const LOOKUP_TIMEOUT_MS = 5000;
 const LOOKUP_RETRY_MS = 5 * 60 * 1000;
@@ -181,12 +202,28 @@ const MAX_REPORTED_NOTES = 500;
 
 interface SquareHistory {
   at: number;
+  /** LINE pages read for this entry (the walk and later extensions share one cap). */
+  pages: number;
   byId: Map<string, Message>;
   messages: Message[];
   origins: Map<string, LineMessage>;
   updates: Map<string, { unsent?: boolean; reactions?: Reactions }>;
   liveUpdates: Set<string>;
   loading?: Promise<Message[]>;
+  /** Newest-first windows only: where to read the next older page; absent once LINE has no more (or never did backward). */
+  older?: { syncToken?: string; continuationToken: string };
+  extending?: Promise<void>;
+}
+
+type FoundSquareMessages = Map<string, { raw: LineSquareMessage; name?: string; reactions?: unknown }>;
+type SquareEventPage = Awaited<ReturnType<Client["base"]["square"]["fetchSquareChatEvents"]>>;
+
+/** What getSquareChatStatus said about one OpenChat chat, for the channel list. */
+interface SquareSummary {
+  client: Client;
+  unreadCount: number;
+  memberCount?: number;
+  last?: { raw: LineSquareMessage; name?: string };
 }
 
 /** Where a watched OpenChat chat's event stream was read up to. */
@@ -233,9 +270,14 @@ export class EvexLineProvider implements LineProvider {
   private lookupJobs = new Set<{ run: () => void; cancel: () => void }>();
   // Slots are released only when the actual LINE request settles, not when our waiter times out.
   private activeLookups = 0;
+  // OpenChat members are looked up in batches (getSquareMembers) until LINE refuses one; then one per request.
+  private squareBatchLookups = true;
   // Per chat, the tail of its delivery chain: one slow member lookup holds back only its own chat.
   private deliveries = new Map<string, Promise<void>>();
   private squareCache = new Map<string, SquareHistory>();
+  // Per OpenChat chat, LINE's counts and preview from the last listing that asked (one request per chat);
+  // the status event keeps the counts current in between. Dropped with the client.
+  private squareSummaries = new Map<string, SquareSummary>();
   private adminFlights = new Map<string, { client: Client; promise: Promise<ChatAdmins> }>();
   private stickerPackages?: { at: number; packages: StickerPackage[] };
   // Messages whose media the browser may ask for, newest last. Requests are only honoured for
@@ -342,11 +384,15 @@ export class EvexLineProvider implements LineProvider {
     this.activatedAt = Date.now();
     const profile = this.getProfile();
     this.rememberProfile(profile.userId, profile.displayName, profile.pictureId, true);
-    // Sender lookups are asynchronous; chaining per chat keeps each chat's messages in arrival order.
+    // Chaining per chat keeps each chat's messages in arrival order. A message whose sender is still
+    // unknown is shown at once (name from the event or a placeholder) and completed when the lookup
+    // answers, instead of holding the chat's messages until LINE describes the member.
     const deliver = (chatId: string, source: "talk" | "square", senderMid: string, convert: () => Message, kind: "new" | "edit", extraMids: string[] = []) => {
-      const members = this.resolveMembers(client, source, [senderMid, ...extraMids]);
+      const mids = [senderMid, ...extraMids];
+      const members = this.resolveMembers(client, source, mids);
+      const pending = mids.some((mid) => mid && !this.profiles.get(mid)?.settled);
       const next = (this.deliveries.get(chatId) ?? Promise.resolve()).then(async () => {
-        await members;
+        if (!pending) await members;
         if (this.client !== client) return;
         let message: Message;
         try {
@@ -358,6 +404,25 @@ export class EvexLineProvider implements LineProvider {
         this.retryDelay = 1000;
         if (message.channelKind === "square") this.rememberSquareMessage(message);
         this.events.onMessage(message, kind);
+        if (!pending) return;
+        void members.then(() => {
+          if (this.client !== client) return;
+          let enriched: Message;
+          try {
+            enriched = convert();
+          } catch {
+            return;
+          }
+          const sender = (m: Message) => [m.senderName, m.senderPictureId, m.senderRole, m.text];
+          if (JSON.stringify(sender(enriched)) === JSON.stringify(sender(message))) return;
+          // Only what the lookup can change moves; a newer edit or take-back of the message stays as it is.
+          const fields = { senderName: enriched.senderName, ...(enriched.senderPictureId ? { senderPictureId: enriched.senderPictureId } : {}), ...(enriched.senderRole ? { senderRole: enriched.senderRole } : {}) };
+          if (message.channelKind === "square") {
+            const current = this.squareCache.get(chatId)?.byId.get(message.messageId);
+            if (current && !current.unsent) this.rememberSquareMessage({ ...current, ...fields, ...(current.text === message.text ? { text: enriched.text } : {}) });
+          }
+          this.events.onMessage({ ...message, ...fields, ...(enriched.text !== undefined ? { text: enriched.text } : {}) }, "sender");
+        });
       }).catch(() => this.events.onError("MESSAGE_PARSE_FAILED"));
       this.deliveries.set(chatId, next);
       void next.then(() => { if (this.deliveries.get(chatId) === next) this.deliveries.delete(chatId); });
@@ -396,7 +461,15 @@ export class EvexLineProvider implements LineProvider {
       // Every account-wide push may follow a join: read each watched chat's own events right away.
       for (const chatId of this.joinWatches.keys()) this.checkJoins(chatId);
       const type = String(event.type);
-      if (type === "NOTIFIED_DESTROY_MESSAGE" || type === "5") {
+      if (type === "NOTIFICATION_MESSAGE" || type === "29") {
+        // linejs re-emits this as square:message without the sender's name; keeping it here means the
+        // message shows the name even when the member lookup is slow, times out or is refused.
+        const notified = event.payload?.notificationMessage;
+        const from = notified?.squareMessage?.message?.from;
+        if (typeof from === "string" && SQUARE_MEMBER_MID.test(from) && typeof notified.senderDisplayName === "string" && notified.senderDisplayName) {
+          this.rememberName(from, notified.senderDisplayName);
+        }
+      } else if (type === "NOTIFIED_DESTROY_MESSAGE" || type === "5") {
         const destroyed = event.payload?.notifiedDestroyMessage;
         if (typeof destroyed?.squareChatMid === "string" && typeof destroyed.messageId === "string" && /^\d{1,24}$/.test(destroyed.messageId)) {
           this.unsent(destroyed.squareChatMid, destroyed.messageId);
@@ -413,6 +486,16 @@ export class EvexLineProvider implements LineProvider {
         }
       } else if (type === "NOTIFIED_UPDATE_SQUARE_NOTE_STATUS" || type === "36") {
         this.squareNoteStatus(client, event.payload?.notifiedUpdateSquareNoteStatus);
+      } else if (type === "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS" || type === "13") {
+        const update = event.payload?.notifiedUpdateSquareChatStatus;
+        const status = update?.statusWithoutMessage;
+        const unreadCount = Number(status?.unreadMessageCount);
+        const memberCount = Number(status?.memberCount);
+        if (typeof update?.squareChatMid !== "string" || !SQUARE_CHAT_MID.test(update.squareChatMid) || !Number.isSafeInteger(unreadCount) || unreadCount < 0) return;
+        const counts: SquareChatCounts = { unreadCount, ...(Number.isSafeInteger(memberCount) && memberCount > 0 ? { memberCount } : {}) };
+        const summary = this.squareSummaries.get(update.squareChatMid);
+        if (summary?.client === client) Object.assign(summary, counts);
+        this.events.onSquareStatus(update.squareChatMid, counts);
       } else if (!QUIET_SQUARE_EVENTS.has(type)) {
         this.events.onDiagnostic?.(`LINE 未處理社群事件：type=${type.slice(0, 60)}`);
       }
@@ -1015,7 +1098,7 @@ export class EvexLineProvider implements LineProvider {
       if (flight) waiting.push(flight);
       else fresh.push(mid);
     }
-    const batchSize = source === "talk" ? CONTACT_BATCH : 1;
+    const batchSize = source === "talk" ? CONTACT_BATCH : this.squareBatchLookups ? SQUARE_MEMBER_BATCH : 1;
     for (let offset = 0; offset < fresh.length; offset += batchSize) {
       const batch = fresh.slice(offset, offset + batchSize);
       const done = Promise.withResolvers<void>();
@@ -1044,6 +1127,8 @@ export class EvexLineProvider implements LineProvider {
         },
         run: () => {
           this.activeLookups += 1;
+          // A refused batch is looked up again one member at a time, through the queue so the bound holds.
+          let retry: string[] | undefined;
           void (async () => {
             try {
               if (source === "talk") {
@@ -1052,10 +1137,27 @@ export class EvexLineProvider implements LineProvider {
                 for (const { contact } of Object.values(contacts ?? {})) {
                   if (contact?.mid) this.rememberProfile(contact.mid, contact.displayNameOverridden || contact.displayName, avatarMediaId("profile", contact.pictureStatus), true);
                 }
+              } else if (batch.length === 1) {
+                await this.lookupSquareMember(client, batch[0]!, () => expired);
+              } else if (!this.squareBatchLookups) {
+                // Batching was switched off after this batch was queued.
+                retry = batch;
               } else {
-                const mid = batch[0]!;
-                const { squareMember } = await client.base.square.getSquareMember({ squareMemberMid: mid });
-                if (!expired && this.client === client) this.rememberProfile(mid, squareMember.displayName, avatarMediaId("obs", squareMember.profileImageObsHash), true, memberRole(squareMember.role));
+                try {
+                  const { members } = await client.base.square.getSquareMembers({ request: { mids: batch } });
+                  if (expired || this.client !== client) return;
+                  for (const member of Object.values(members ?? {})) {
+                    if (typeof member?.squareMemberMid === "string" && batch.includes(member.squareMemberMid)) {
+                      this.rememberProfile(member.squareMemberMid, member.displayName, avatarMediaId("obs", member.profileImageObsHash), true, memberRole(member.role));
+                    }
+                  }
+                } catch {
+                  if (expired || this.client !== client) return;
+                  // The batch call is unconfirmed with a real account: after one refusal, lookups stay one per request.
+                  if (this.squareBatchLookups) this.events.onDiagnostic?.("社群成員批次查詢失敗，改為逐一查詢");
+                  this.squareBatchLookups = false;
+                  retry = batch;
+                }
               }
             } catch {
               // Failed and timed-out lookups retain the existing retry delay.
@@ -1063,9 +1165,14 @@ export class EvexLineProvider implements LineProvider {
               clearTimeout(timer);
               this.lookupJobs.delete(job);
               forget();
-              if (!expired) finish();
               this.activeLookups -= 1;
               this.drainLookups();
+              if (retry) {
+                // Waiters on this batch get their answer when the single lookups have run.
+                this.resolveMembers(client, source, retry).then(finish, finish);
+              } else if (!expired) {
+                finish();
+              }
             }
           })();
         },
@@ -1078,6 +1185,11 @@ export class EvexLineProvider implements LineProvider {
     }
     this.drainLookups();
     await Promise.all(waiting);
+  }
+
+  private async lookupSquareMember(client: Client, mid: string, expired: () => boolean): Promise<void> {
+    const { squareMember } = await client.base.square.getSquareMember({ squareMemberMid: mid });
+    if (!expired() && this.client === client) this.rememberProfile(mid, squareMember.displayName, avatarMediaId("obs", squareMember.profileImageObsHash), true, memberRole(squareMember.role));
   }
 
   private drainLookups(): void {
@@ -1221,30 +1333,43 @@ export class EvexLineProvider implements LineProvider {
   // Walk LINE's retained event window once. Cursors identify messages rather than array offsets:
   // a refreshed window or an out-of-order live delivery must not shift the next page.
   private async fetchSquareHistory(client: Client, channel: ChannelRef, limit: number, before?: string): Promise<HistoryPage> {
-    const all = await this.loadSquareMessages(client, channel.channelId);
+    let all = await this.loadSquareMessages(client, channel.channelId, limit);
     if (this.client !== client) throw new Error("HISTORY_INVALIDATED");
-    let end = all.length;
+    let target: Pick<Message, "createdAt" | "messageId"> | undefined;
     if (before !== undefined) {
       const match = /^(\d+):(\d{1,24})$/.exec(before);
       if (!match || !Number.isSafeInteger(Number(match[1]))) throw new Error("INVALID_CURSOR");
-      end = this.squareLowerBound(all, { createdAt: Number(match[1]), messageId: match[2]! });
+      target = { createdAt: Number(match[1]), messageId: match[2]! };
     }
-    const start = Math.max(0, end - limit);
+    const window = () => {
+      const end = target ? this.squareLowerBound(all, target) : all.length;
+      return { start: Math.max(0, end - limit), end };
+    };
+    let { start, end } = window();
+    // A newest-first window may not reach back far enough yet: read older pages until it does or LINE has none.
+    let entry = this.squareCache.get(channel.channelId);
+    while (entry?.older && end - start < limit && this.client === client) {
+      await this.extendSquareHistory(client, channel.channelId, entry, limit - (end - start));
+      entry = this.squareCache.get(channel.channelId);
+      if (this.client !== client || !entry) throw new Error("HISTORY_INVALIDATED");
+      all = entry.messages;
+      ({ start, end } = window());
+    }
     const messages = all.slice(start, end);
-    const cached = this.squareCache.get(channel.channelId);
     for (const message of messages) {
-      const raw = cached?.origins.get(message.messageId);
+      const raw = entry?.origins.get(message.messageId);
       if (raw && !message.unsent) this.rememberMedia(raw, true);
     }
     const oldest = messages[0];
-    return { messages, hasMore: start > 0, ...(start > 0 && oldest ? { cursor: `${oldest.createdAt}:${oldest.messageId}` } : {}) };
+    const hasMore = start > 0 || entry?.older !== undefined;
+    return { messages, hasMore, ...(hasMore && oldest ? { cursor: `${oldest.createdAt}:${oldest.messageId}` } : {}) };
   }
 
-  private async loadSquareMessages(client: Client, squareChatMid: string): Promise<Message[]> {
+  private async loadSquareMessages(client: Client, squareChatMid: string, need: number): Promise<Message[]> {
     const cached = this.squareCache.get(squareChatMid);
     if (cached?.loading) return cached.loading;
     if (cached && Date.now() - cached.at < SQUARE_CACHE_MS) return cached.messages;
-    const entry: SquareHistory = { at: 0, messages: [], byId: new Map(), origins: new Map(), updates: new Map(), liveUpdates: new Set() };
+    const entry: SquareHistory = { at: 0, pages: 0, messages: [], byId: new Map(), origins: new Map(), updates: new Map(), liveUpdates: new Set() };
     // Take-backs are permanent; reaction snapshots are not. Only events arriving during this
     // walk override its history statuses, otherwise an expired live snapshot would win forever.
     if (cached) for (const [id, update] of cached.updates) {
@@ -1252,7 +1377,7 @@ export class EvexLineProvider implements LineProvider {
     }
     if (!cached && this.squareCache.size >= SQUARE_CACHE_ENTRIES) this.squareCache.delete(this.squareCache.keys().next().value!);
     this.squareCache.set(squareChatMid, entry);
-    const loading = this.walkSquareMessages(client, squareChatMid, entry);
+    const loading = this.walkSquareMessages(client, squareChatMid, entry, need);
     entry.loading = loading;
     try {
       return await loading;
@@ -1264,32 +1389,97 @@ export class EvexLineProvider implements LineProvider {
     }
   }
 
-  private async walkSquareMessages(client: Client, squareChatMid: string, entry: SquareHistory): Promise<Message[]> {
-    const found = new Map<string, { raw: LineSquareMessage; name?: string; reactions?: unknown }>();
-    let token: { syncToken?: string; continuationToken?: string } = {};
-    for (let page = 0; page < SQUARE_MAX_PAGES; page += 1) {
-      // The installed 3.4.2 wrapper spreads options; thrift declares continuationToken.
-      const response = await client.base.square.fetchSquareChatEvents({
-        squareChatMid, limit: SQUARE_PAGE_SIZE, ...token,
-      } as Parameters<Client["base"]["square"]["fetchSquareChatEvents"]>[0]);
-      if (this.client !== client || this.squareCache.get(squareChatMid) !== entry) throw new Error("HISTORY_INVALIDATED");
-      for (const event of response.events) {
-        const payload = event.payload.receiveMessage ?? event.payload.sendMessage;
-        if (payload?.squareMessage?.message.to === squareChatMid) {
-          found.set(payload.squareMessage.message.id, { raw: payload.squareMessage, name: payload.senderDisplayName, reactions: payload.messageReactionStatus });
-        }
-        const destroyed = event.payload.notifiedDestroyMessage;
-        if (destroyed?.squareChatMid === squareChatMid) this.updateSquareMessage(squareChatMid, destroyed.messageId, { unsent: true }, false);
-        const update = event.payload.notifiedUpdateMessageStatus;
-        const status = update?.messageStatus?.contents?.messageReactionStatus;
-        if (update?.squareChatMid === squareChatMid) {
-          const reactions = squareReactions(status);
-          if (reactions || isEmptySquareStatus(status)) this.updateSquareMessage(squareChatMid, update.messageId, { reactions }, false);
+  /**
+   * Fills a fresh cache entry. LINE's event stream is oldest-first; `direction: BACKWARD` is in the
+   * protocol and would let the newest page come first, but it is unconfirmed with a real account. It is
+   * tried once per entry and trusted only when its first page carries the chat's last message as the
+   * channel list reported it; anything else falls back to the full oldest-first walk (fail closed).
+   */
+  private async walkSquareMessages(client: Client, squareChatMid: string, entry: SquareHistory, need: number): Promise<Message[]> {
+    const found: FoundSquareMessages = new Map();
+    const summary = this.squareSummaries.get(squareChatMid);
+    const lastId = summary?.client === client ? summary.last?.raw.message.id : undefined;
+    let backward = false;
+    if (lastId !== undefined) {
+      const response = await this.squareEventPage(client, squareChatMid, entry, { direction: "BACKWARD" });
+      const page: FoundSquareMessages = new Map();
+      this.collectSquareEvents(squareChatMid, response, page);
+      if (page.has(lastId)) {
+        backward = true;
+        for (const [id, message] of page) found.set(id, message);
+        entry.older = response.continuationToken ? { syncToken: response.syncToken, continuationToken: response.continuationToken } : undefined;
+        while (entry.older && found.size < need && entry.pages < SQUARE_MAX_PAGES) {
+          const more = await this.squareEventPage(client, squareChatMid, entry, { ...entry.older, direction: "BACKWARD" });
+          this.collectSquareEvents(squareChatMid, more, found);
+          entry.older = more.continuationToken && more.events.length > 0 ? { syncToken: more.syncToken, continuationToken: more.continuationToken } : undefined;
         }
       }
-      if (response.events.length === 0 || !response.continuationToken) break;
-      token = { syncToken: response.syncToken, continuationToken: response.continuationToken };
+      this.events.onDiagnostic?.(`社群歷史：chat=${squareChatMid} backward=${backward ? "verified" : "fallback"} firstPage=${page.size}`);
     }
+    if (!backward) {
+      entry.older = undefined;
+      let token: { syncToken?: string; continuationToken?: string } = {};
+      while (entry.pages < SQUARE_MAX_PAGES) {
+        const response = await this.squareEventPage(client, squareChatMid, entry, token);
+        this.collectSquareEvents(squareChatMid, response, found);
+        if (response.events.length === 0 || !response.continuationToken) break;
+        token = { syncToken: response.syncToken, continuationToken: response.continuationToken };
+      }
+    }
+    await this.mergeSquareMessages(client, squareChatMid, entry, found);
+    entry.at = Date.now();
+    return entry.messages;
+  }
+
+  /** Reads older pages of a newest-first window until `need` more messages are known or LINE has none left. */
+  private async extendSquareHistory(client: Client, squareChatMid: string, entry: SquareHistory, need: number): Promise<void> {
+    if (entry.extending) return entry.extending;
+    const extending = (async () => {
+      const found: FoundSquareMessages = new Map();
+      while (entry.older && found.size < need && entry.pages < SQUARE_MAX_PAGES) {
+        const response = await this.squareEventPage(client, squareChatMid, entry, { ...entry.older, direction: "BACKWARD" });
+        this.collectSquareEvents(squareChatMid, response, found);
+        entry.older = response.continuationToken && response.events.length > 0 ? { syncToken: response.syncToken, continuationToken: response.continuationToken } : undefined;
+      }
+      if (entry.pages >= SQUARE_MAX_PAGES) entry.older = undefined;
+      await this.mergeSquareMessages(client, squareChatMid, entry, found);
+    })();
+    entry.extending = extending;
+    try {
+      await extending;
+    } finally {
+      entry.extending = undefined;
+    }
+  }
+
+  private async squareEventPage(client: Client, squareChatMid: string, entry: SquareHistory, options: { syncToken?: string; continuationToken?: string; direction?: "BACKWARD" }): Promise<SquareEventPage> {
+    entry.pages += 1;
+    // The installed wrapper spreads options; thrift declares continuationToken and direction.
+    const response = await client.base.square.fetchSquareChatEvents({
+      squareChatMid, limit: SQUARE_PAGE_SIZE, ...options,
+    } as Parameters<Client["base"]["square"]["fetchSquareChatEvents"]>[0]);
+    if (this.client !== client || this.squareCache.get(squareChatMid) !== entry) throw new Error("HISTORY_INVALIDATED");
+    return response;
+  }
+
+  private collectSquareEvents(squareChatMid: string, response: SquareEventPage, found: FoundSquareMessages): void {
+    for (const event of response.events) {
+      const payload = event.payload.receiveMessage ?? event.payload.sendMessage;
+      if (payload?.squareMessage?.message.to === squareChatMid) {
+        found.set(payload.squareMessage.message.id, { raw: payload.squareMessage, name: payload.senderDisplayName, reactions: payload.messageReactionStatus });
+      }
+      const destroyed = event.payload.notifiedDestroyMessage;
+      if (destroyed?.squareChatMid === squareChatMid) this.updateSquareMessage(squareChatMid, destroyed.messageId, { unsent: true }, false);
+      const update = event.payload.notifiedUpdateMessageStatus;
+      const status = update?.messageStatus?.contents?.messageReactionStatus;
+      if (update?.squareChatMid === squareChatMid) {
+        const reactions = squareReactions(status);
+        if (reactions || isEmptySquareStatus(status)) this.updateSquareMessage(squareChatMid, update.messageId, { reactions }, false);
+      }
+    }
+  }
+
+  private async mergeSquareMessages(client: Client, squareChatMid: string, entry: SquareHistory, found: FoundSquareMessages): Promise<void> {
     for (const { raw, name } of found.values()) if (name) this.rememberName(raw.message.from, name);
     await this.resolveMembers(client, "square", squareMemberMids(found.values()));
     if (this.client !== client || this.squareCache.get(squareChatMid) !== entry) throw new Error("HISTORY_INVALIDATED");
@@ -1304,14 +1494,13 @@ export class EvexLineProvider implements LineProvider {
       entry.origins.set(message.messageId, raw.message);
       merged.set(message.messageId, message);
     }
+    // What the cache already holds (live deliveries, an earlier window) wins over a walked copy.
     for (const message of entry.messages) merged.set(message.messageId, message);
     entry.messages = [...merged.values()];
     entry.messages.sort((a, b) => this.compareSquareMessages(a, b));
     entry.byId = merged;
     for (const [id, update] of entry.updates) this.applySquareUpdate(entry, id, update);
     this.boundSquareHistory(entry);
-    entry.at = Date.now();
-    return entry.messages;
   }
 
   private compareSquareMessages(a: Pick<Message, "createdAt" | "messageId">, b: Pick<Message, "createdAt" | "messageId">): number {
@@ -1611,7 +1800,7 @@ export class EvexLineProvider implements LineProvider {
     return friends;
   }
 
-  async fetchChannels(): Promise<Channel[]> {
+  async fetchChannels(options: FetchChannelsOptions = {}): Promise<Channel[]> {
     const client = this.client;
     if (!client || this.stopped) throw new Error("NOT_AUTHENTICATED");
     // Square access is optional (accounts without OpenChat must still list talk chats); all four start at once.
@@ -1646,7 +1835,7 @@ export class EvexLineProvider implements LineProvider {
         });
       }
     }
-    await this.attachSummaries(client, channels);
+    await this.attachSummaries(client, channels, options.reuseSquareSummaries === true);
     return channels;
   }
 
@@ -1655,7 +1844,7 @@ export class EvexLineProvider implements LineProvider {
    * (the list preview). Badges must match LINE (a chat read on the phone has none), not what this page
    * happened to receive. Best effort: without a summary the list simply shows no badge or preview.
    */
-  private async attachSummaries(client: Client, channels: Channel[]): Promise<void> {
+  private async attachSummaries(client: Client, channels: Channel[], reuseSquareSummaries: boolean): Promise<void> {
     const counts = new Map<string, number>();
     const activeAt = new Map<string, number>();
     const talkLast = new Map<string, LineMessage>();
@@ -1690,17 +1879,29 @@ export class EvexLineProvider implements LineProvider {
     const squareWorker = async (): Promise<void> => {
       while (nextSquare < squares.length && this.client === client && !this.stopped) {
         const channel = squares[nextSquare++]!;
-        try {
-          const { chatStatus } = await client.base.square.getSquareChatStatus({ request: { squareChatMid: channel.channelId } });
-          if (this.client !== client || this.stopped) return;
-          counts.set(channel.channelId, Number(chatStatus.otherStatus.unreadMessageCount));
-          const members = Number(chatStatus.otherStatus.memberCount);
-          if (Number.isInteger(members) && members > 0) channel.memberCount = members;
-          const last = chatStatus.lastMessage;
-          if (last?.message && typeof last.message.id === "string") squareLast.set(channel.channelId, { raw: last, name: chatStatus.senderDisplayName });
-        } catch {
-          // This OpenChat shows no badge or preview this time.
+        const known = this.squareSummaries.get(channel.channelId);
+        let summary: SquareSummary | undefined = reuseSquareSummaries && known?.client === client ? known : undefined;
+        if (!summary) {
+          try {
+            const { chatStatus } = await client.base.square.getSquareChatStatus({ request: { squareChatMid: channel.channelId } });
+            if (this.client !== client || this.stopped) return;
+            const members = Number(chatStatus.otherStatus.memberCount);
+            const last = chatStatus.lastMessage;
+            summary = {
+              client,
+              unreadCount: Number(chatStatus.otherStatus.unreadMessageCount),
+              ...(Number.isInteger(members) && members > 0 ? { memberCount: members } : {}),
+              ...(last?.message && typeof last.message.id === "string" ? { last: { raw: last, name: chatStatus.senderDisplayName } } : {}),
+            };
+            this.squareSummaries.set(channel.channelId, summary);
+          } catch {
+            // This OpenChat shows no badge or preview this time.
+            continue;
+          }
         }
+        counts.set(channel.channelId, summary.unreadCount);
+        if (summary.memberCount) channel.memberCount = summary.memberCount;
+        if (summary.last) squareLast.set(channel.channelId, summary.last);
       }
     };
     await Promise.all([talkLoading, ...Array.from({ length: Math.min(SQUARE_LOOKUP_CONCURRENCY, squares.length) }, squareWorker)]);
@@ -1793,6 +1994,7 @@ export class EvexLineProvider implements LineProvider {
     this.client = undefined;
     this.profiles.clear();
     this.lookupMisses.clear();
+    this.squareBatchLookups = true;
     for (const job of this.lookupJobs) job.cancel();
     this.lookupQueue.clear();
     this.lookupJobs.clear();
@@ -1804,6 +2006,7 @@ export class EvexLineProvider implements LineProvider {
     this.previewDecrypts.clear();
     this.stickerPackages = undefined;
     this.squareCache.clear();
+    this.squareSummaries.clear();
     this.joinWatches.clear();
     this.noteBaselines.clear();
     this.reportedNotes.clear();

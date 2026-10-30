@@ -31,6 +31,7 @@ async function main(): Promise<void> {
     },
     onChecked: (chatId) => hub.handleChecked(chatId),
     onChatsChanged: () => hub.handleChatsChanged(),
+    onSquareStatus: (chatId, counts) => hub.handleSquareStatus(chatId, counts),
     onReactions: (chatId, messageId, reactions) => hub.handleReactions(chatId, messageId, reactions),
     onMemberJoined: (chatId, member) => {
       // 小語's decision: name and picture are logged. JSON quoting keeps a crafted name to one log line.
