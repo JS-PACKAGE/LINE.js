@@ -45,6 +45,14 @@ export interface ChatAdmins {
   admins: ChatAdmin[];
 }
 
+/** This account's own standing in a group or OpenChat chat. */
+export interface ChatMembership {
+  /** The id other members see this account as: its mid in a group, its member id ("p…") in OpenChat. */
+  memberId: string;
+  /** OpenChat only: set when this account manages the community. Absent in groups, where any member may remove others. */
+  role?: MemberRole;
+}
+
 /** Someone who just joined an OpenChat chat, as LINE's NOTIFIED_JOIN_SQUARE_CHAT reports them. */
 export interface JoinedMember {
   userId: string;

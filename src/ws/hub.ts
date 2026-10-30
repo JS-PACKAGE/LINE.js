@@ -13,7 +13,7 @@ import { noteFailureReason } from "../line/notes.js";
 import type { UpdateInfo } from "../update/checker.js";
 import { withMyReaction, type ChatStore } from "../model/store.js";
 import { PROTOCOL_VERSION, type ClientFrame, type ListenState, type ServerFrame } from "./protocol.js";
-import { parseChatRead, parseChatRequest, parseHistory, parseMessageRequest, parseReact, parseSend, requestIdOf } from "./requests.js";
+import { parseChatRead, parseChatRequest, parseHistory, parseMemberRemove, parseMessageRequest, parseReact, parseSend, requestIdOf } from "./requests.js";
 
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const REPLAY_FRAME_BYTES = 256 * 1024;
@@ -90,6 +90,10 @@ const GENERIC = {
   API_FAILED: "無法更新 API Token，請稍後重試。",
   UNSEND_FAILED: "無法收回這則訊息，請稍後重試。",
   REACT_FAILED: "無法送出回應，請稍後重試。",
+  MEMBERSHIP_UNSUPPORTED: "這種聊天室沒有成員管理。",
+  MEMBERSHIP_FAILED: "無法讀取成員身分，請稍後重試。",
+  MEMBER_REMOVE_UNSUPPORTED: "這種聊天室不支援這個操作。",
+  MEMBER_REMOVE_FAILED: "無法移除這位成員，請稍後重試。",
 } as const;
 
 function updateFrame(info: UpdateInfo): ServerFrame {
@@ -390,6 +394,49 @@ export function createHub(options: HubOptions): Hub {
       // LINE errors can contain credentials or private member data; log only our own code.
       console.error("CHAT_ADMINS_FAILED");
       fail(socket, "CHAT_ADMINS_FAILED", requestId);
+    }
+  }
+
+  /** Pages and bots: this account's own standing in a group or OpenChat chat (whether it may manage members). */
+  async function handleMembership(socket: WebSocket, frame: Record<string, unknown>, scope?: ReadonlySet<string>): Promise<void> {
+    const parsed = parseChatRequest(frame);
+    if (!parsed.ok) return fail(socket, "INVALID_REQUEST", parsed.requestId);
+    const { requestId, chatId } = parsed.value;
+    const channel = store.channelOf(chatId);
+    if (login.state !== "ready" || !channel || (scope && !scope.has(chatId))) return fail(socket, "UNKNOWN_CHAT", requestId);
+    if (channel.kind !== "group" && channel.kind !== "square") return fail(socket, "MEMBERSHIP_UNSUPPORTED", requestId);
+    const account = generation;
+    try {
+      const membership = await provider.fetchMembership({ channelId: chatId, kind: channel.kind });
+      if (account !== generation || login.state !== "ready") return;
+      send(socket, { type: "chat:membership", requestId, chatId, ...membership });
+    } catch {
+      if (account !== generation) return;
+      console.error("MEMBERSHIP_FAILED");
+      fail(socket, "MEMBERSHIP_FAILED", requestId);
+    }
+  }
+
+  /** Pages and bots. Changes the real chat for everyone in it; LINE, not this server, decides whether the account may. */
+  async function handleMemberRemove(socket: WebSocket, frame: Record<string, unknown>, scope?: ReadonlySet<string>): Promise<void> {
+    const parsed = parseMemberRemove(frame);
+    if (!parsed.ok) return fail(socket, "INVALID_REQUEST", parsed.requestId);
+    const { requestId, chatId, memberId, block } = parsed.value;
+    const channel = store.channelOf(chatId);
+    if (login.state !== "ready" || !channel || (scope && !scope.has(chatId))) return fail(socket, "UNKNOWN_CHAT", requestId);
+    if ((channel.kind !== "group" && channel.kind !== "square") || (block && channel.kind !== "square")) return fail(socket, "MEMBER_REMOVE_UNSUPPORTED", requestId);
+    // Group members are account mids ("u…"), OpenChat members membership ids ("p…"): the other kind is never sent to LINE.
+    if (!memberId.startsWith(channel.kind === "square" ? "p" : "u")) return fail(socket, "INVALID_REQUEST", requestId);
+    const account = generation;
+    try {
+      await provider.removeMember({ channelId: chatId, kind: channel.kind }, memberId, block);
+      if (account !== generation || login.state !== "ready") return;
+      console.log(`成員已移除：chat=${chatId} member=${memberId} block=${block}`);
+      send(socket, { type: "chat:member:removed", requestId, chatId, memberId, block });
+    } catch {
+      if (account !== generation) return;
+      console.error("MEMBER_REMOVE_FAILED");
+      fail(socket, "MEMBER_REMOVE_FAILED", requestId);
     }
   }
 
@@ -813,7 +860,7 @@ export function createHub(options: HubOptions): Hub {
     socket.once("close", () => grants.clear());
     const sendLimiter = new SlidingWindowLimiter(config.limits.sendsPerSecond, 1000);
     const historyLimiter = new SlidingWindowLimiter(HISTORY_PER_SECOND, 1000);
-    send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion, capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined", "chat:note-posted", "media:upload"] });
+    send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion, capabilities: ["chat:admins", "chat:admin-token", "chat:members", "chat:member-joined", "chat:note-posted", "media:upload"] });
     send(socket, { type: "auth:state", state: login.state });
     send(socket, { type: "status", state: status });
     if (login.state === "ready") {
@@ -835,6 +882,15 @@ export function createHub(options: HubOptions): Hub {
           return;
         case "chat:admins:get":
           void handleChatAdmins(socket, frame as Record<string, unknown>, grants, historyLimiter.allow());
+          return;
+        case "chat:membership:get":
+          if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else void handleMembership(socket, frame as Record<string, unknown>, botScope);
+          return;
+        case "chat:member:remove":
+          // Changes the real chat like a send does, so it shares this connection's send budget.
+          if (!sendLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else void handleMemberRemove(socket, frame as Record<string, unknown>, botScope);
           return;
         case "chat:admin-token:get":
         case "chat:admin-token:consume":
@@ -898,6 +954,14 @@ export function createHub(options: HubOptions): Hub {
           // Visible to the other side like a send, so it shares the send budget.
           if (!sendLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
           else void handleReactRequest(socket, frame as Record<string, unknown>);
+          return;
+        case "chat:membership:get":
+          if (!historyLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else void handleMembership(socket, frame as Record<string, unknown>);
+          return;
+        case "chat:member:remove":
+          if (!sendLimiter.allow()) fail(socket, "RATE_LIMITED", requestIdOf(frame as Record<string, unknown>));
+          else void handleMemberRemove(socket, frame as Record<string, unknown>);
           return;
         case "chat:read":
           // Silent on purpose (see handleChatRead); the shared limiter keeps a script from hammering LINE.

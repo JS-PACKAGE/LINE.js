@@ -146,3 +146,20 @@ export function parseReact(frame: Record<string, unknown>): Parsed<ReactRequest>
   if (reaction !== null && !(REACTION_KINDS as readonly unknown[]).includes(reaction)) return { ok: false, requestId: base.requestId };
   return { ok: true, value: { ...base, messageId, reaction: (reaction ?? undefined) as ReactionKind | undefined } };
 }
+
+export interface MemberRemoveRequest {
+  requestId: string;
+  chatId: string;
+  memberId: string;
+  block: boolean;
+}
+
+/** "Remove this member": a group member mid ("u…") or OpenChat member id ("p…"), optionally banned from rejoining. */
+export function parseMemberRemove(frame: Record<string, unknown>): Parsed<MemberRemoveRequest> {
+  const base = header(frame);
+  if (!base) return { ok: false, ...(requestIdOf(frame) ? { requestId: requestIdOf(frame)! } : {}) };
+  const { memberId, block } = frame;
+  if (typeof memberId !== "string" || !MEMBER_ID.test(memberId)) return { ok: false, requestId: base.requestId };
+  if (block !== undefined && typeof block !== "boolean") return { ok: false, requestId: base.requestId };
+  return { ok: true, value: { ...base, memberId, block: block === true } };
+}

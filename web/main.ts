@@ -1,6 +1,6 @@
 import QRCode from "qrcode";
 import "./style.css";
-import { REACTION_KINDS, type AuthState, type Channel, type Message, type MessageCard, type Profile, type ReactionKind, type Reactions, type TextEmoji, type TextMention } from "../src/model/dto.js";
+import { REACTION_KINDS, type AuthState, type Channel, type MemberRole, type Message, type MessageCard, type Profile, type ReactionKind, type Reactions, type TextEmoji, type TextMention } from "../src/model/dto.js";
 import type { ClientFrame, ListenState, ServerFrame } from "../src/ws/protocol.js";
 import { createComposer, type MentionCandidate } from "./composer.js";
 import { confirmDialog } from "./dialog.js";
@@ -146,6 +146,13 @@ const sortedReadPositions = new WeakMap<Record<string, bigint>, bigint[]>();
 let messageReadIds = new WeakMap<Message, bigint | null>();
 // OpenChat chat → the member id this account's sends came back with there (it differs from myUserId).
 let mySquareSenders: Record<string, string> = {};
+// Group / OpenChat chat → this account's standing there (OpenChat `role` is set when it manages the community).
+// Asked when a chat is opened and kept a while: roles rarely change, and each answer costs LINE calls.
+let memberships: Record<string, { role?: MemberRole; at: number }> = {};
+const MEMBERSHIP_FRESH_MS = 5 * 60 * 1000;
+let membershipSequence = 0;
+// requestId → chat, so a late answer or error is matched to its chat.
+let pendingMembership: Record<string, string> = {};
 // Where the "未讀" divider sits in the chat that was just opened; dropped when switching chats.
 let unreadFrom: { channelId: string; messageId: string; count: number } | undefined;
 // Newest message id per chat already reported to the server as read.
@@ -345,6 +352,8 @@ function applyAuthState(state: AuthState): void {
     reportedRead = {};
     readPositions = {};
     mySquareSenders = {};
+    memberships = {};
+    pendingMembership = {};
     unreadFrom = undefined;
     composer.reset();
     renderChannels();
@@ -923,6 +932,37 @@ async function takeBack(message: Message): Promise<void> {
   if (confirmed) send({ type: "message:unsend", requestId: crypto.randomUUID(), chatId: message.channelId, messageId: message.messageId });
 }
 
+/** Asks the server whether this account may manage members of a group or OpenChat chat, unless a recent answer is kept. */
+function requestMembership(chatId: string): void {
+  const kind = channelsById.get(chatId)?.kind;
+  if (kind !== "group" && kind !== "square") return;
+  const known = memberships[chatId];
+  if (known && Date.now() - known.at < MEMBERSHIP_FRESH_MS) return;
+  if (Object.values(pendingMembership).includes(chatId)) return;
+  const requestId = `membership-${++membershipSequence}`;
+  if (send({ type: "chat:membership:get", requestId, chatId })) pendingMembership[requestId] = chatId;
+}
+
+/** Can this account remove the sender? Any other member in a group; in OpenChat only when it manages the community. */
+function removable(message: Message): boolean {
+  if (isMine(message) || message.unsent || message.contentType === "CHATEVENT") return false;
+  if (message.channelKind === "group") return /^u[0-9a-f]{32}$/.test(message.senderId);
+  return message.channelKind === "square" && memberships[message.channelId]?.role !== undefined && /^p[A-Za-z0-9]{10,64}$/.test(message.senderId);
+}
+
+async function removeMember(message: Message, block: boolean): Promise<void> {
+  const place = message.channelKind === "square" ? "社群" : "群組";
+  const confirmed = await confirmDialog({
+    title: block ? "踢出並封鎖成員" : "踢出成員",
+    message: block
+      ? `將 ${message.senderName} 踢出這個社群，並封鎖對方再次加入。這會立刻改變真實的 LINE 社群，無法在這裡復原。`
+      : `將 ${message.senderName} 踢出這個${place}。對方之後仍可再次加入；這會立刻改變真實的 LINE ${place}。`,
+    confirmLabel: block ? "踢出並封鎖" : "踢出",
+    danger: true,
+  });
+  if (confirmed) send({ type: "chat:member:remove", requestId: crypto.randomUUID(), chatId: message.channelId, memberId: message.senderId, block });
+}
+
 function openMessageMenu(message: Message, x: number, y: number): void {
   const items: MenuItem[] = [];
   // Replies point at LINE's numeric message id; local placeholders have none yet, and a message taken back cannot be answered.
@@ -950,6 +990,10 @@ function openMessageMenu(message: Message, x: number, y: number): void {
   }
   if (reactable(message)) items.push({ label: "回應…", action: () => openReactionMenu(message, x, y) });
   if (isMine(message) && !message.unsent && /^\d{1,24}$/.test(message.messageId)) items.push({ label: "收回", action: () => { void takeBack(message); } });
+  if (removable(message)) {
+    items.push({ label: `踢出 ${message.senderName}`, action: () => { void removeMember(message, false); } });
+    if (message.channelKind === "square") items.push({ label: `踢出並封鎖 ${message.senderName}`, action: () => { void removeMember(message, true); } });
+  }
   showMenu(x, y, items);
 }
 
@@ -1601,6 +1645,18 @@ async function handle(frame: ServerFrame): Promise<void> {
     case "chat:admin-token:changed":
       if (adminTokenDialog.open && frame.chatId === adminTokenChat) requestAdminToken();
       return;
+    case "chat:membership": {
+      const chatId = pendingMembership[frame.requestId];
+      delete pendingMembership[frame.requestId];
+      if (chatId !== frame.chatId || !channelsById.has(chatId)) return;
+      memberships[chatId] = { ...(frame.role ? { role: frame.role } : {}), at: Date.now() };
+      // The same id this account's OpenChat sends come back with: lets "mine" be known before the first send.
+      if (channelsById.get(chatId)?.kind === "square") mySquareSenders[chatId] = frame.memberId;
+      return;
+    }
+    case "chat:member:removed":
+      if (signedIn && frame.chatId === selected) channelMeta.textContent = frame.block ? "已踢出並封鎖該成員。" : "已踢出該成員。";
+      return;
     case "chat:checked":
       // Read on the phone: whatever this page counted for that chat is read now.
       delete unread[frame.chatId];
@@ -1696,6 +1752,11 @@ async function handle(frame: ServerFrame): Promise<void> {
           clearAdminToken();
           adminTokenStatus.textContent = "無法讀取權杖，請確認聊天室與連線狀態後重新讀取。";
         }
+        return;
+      }
+      if (frame.requestId && pendingMembership[frame.requestId]) {
+        // A background lookup: the menu simply offers no member actions until a later answer arrives.
+        delete pendingMembership[frame.requestId];
         return;
       }
       const channelId = frame.requestId ? pendingHistory[frame.requestId] : undefined;
@@ -1886,6 +1947,7 @@ function openChat(id: string): void {
   renderChannels();
   drawMessages();
   if (!historyOf[id]?.loaded) requestHistory(id);
+  requestMembership(id);
   reportRead();
 }
 

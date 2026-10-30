@@ -180,6 +180,10 @@
 
 > 日誌降噪（2026-10 小語裁示）：`NOTIFIED_UPDATE_SQUARE_CHAT_STATUS`（社群聊天室狀態：成員數、未讀數、已讀位置等，幾乎每次聊天室變動都會送）不再記 `LINE 未處理社群事件`；其他未處理事件照舊記類型。此事件仍與其他推播一樣觸發 `api.chats` 社群事件讀取（成員加入偵測不變）。
 
+> v1.24（小語裁示：帳號有權限時，網頁與 `/api/ws` 可踢出成員，社群另可踢出並封鎖；涵蓋社群與一般群組，協定版本仍為 2）：新增 `chat:membership:get { requestId, chatId }` 回 `chat:membership { requestId, chatId, memberId, role? }`（群組：`memberId` 為本帳號 mid、無 `role`，LINE 讓任何群組成員踢人；社群：`memberId` 為 `getSquareChat.squareChatMember` 的成員 ID，`role` 來自 `getSquareMember` 的 `ADMIN`／`CO_ADMIN`，一般成員省略；私聊與多人聊天室回 `MEMBERSHIP_UNSUPPORTED`，失敗回 `MEMBERSHIP_FAILED`），與歷史共用每連線每秒 10 次。新增 `chat:member:remove { requestId, chatId, memberId, block? }` 回 `chat:member:removed { requestId, chatId, memberId, block }`：群組經 `deleteOtherFromChat`（`memberId` 須為 `u` 開頭 mid，`block` 回 `MEMBER_REMOVE_UNSUPPORTED`）；社群經 `updateSquareMember`（屬性 5 `MEMBERSHIP_STATE`，`KICK_OUT`＝踢出、`BANNED`＝踢出並封鎖；`memberId` 須為 `p` 開頭成員 ID，adapter 先以 `getSquareMember` 確認對象屬於該聊天室所屬社群，否則不送出），永遠不接受本帳號自己；伺服器不自行判斷權限，LINE 拒絕時回 `MEMBER_REMOVE_FAILED`，與 `message:send` 共用每連線每秒 5 次。網頁開啟群組／社群時查詢一次身分（結果保留 5 分鐘），別人的訊息右鍵選單在群組顯示「踢出」、在自己是管理員／共同管理員的社群顯示「踢出」與「踢出並封鎖」，皆先以危險樣式確認；`/api/ws` 限 `api.chats`，`hello.capabilities` 加入 `chat:members`。成功只記 `成員已移除：chat=… member=… block=…`。`BANNED` 對應「踢出並封鎖」為依協定列舉與其他用戶端實作的推斷，尚未以真實帳號確認。
+
+> v1.24 驗證：typecheck、build 與全部測試通過（含 adapter 兩種聊天室的呼叫參數、跨社群對象與自己被拒、hub 的範圍、格式、限流與失敗代碼）；另以實際 `dist/main.js`（linejs 呼叫為替身）於瀏覽器操作右鍵選單與 `/api/ws` 影格驗證。未呼叫真實 LINE，不宣稱真實踢出與封鎖生效。
+
 > v1.21（小語裁示：詐騙機率分析移交 NekoGuard，協定版本仍為 2）：移除 `jev` 設定區段、`src/jev/`、`scam:check`／`scam:state`／`scam:result` 與相關錯誤碼、網頁右鍵選單「詐騙機率分析」；舊設定檔的 `jev` 區段會被忽略。v1.15、v1.16 與詐騙分析加速的紀錄僅保留為歷史。驗證：typecheck、build 與 346 項測試通過；以含舊 `jev` 區段的設定啟動實際 `dist/main.js`，服務正常啟動、網頁連線不再收到 `scam:state`，`scam:check` 回 `UNKNOWN_TYPE`（機器人連線同樣由測試確認）。
 
 > v1.22（小語裁示：群組與社群記事本發文推送給機器人，並抓完整文章，協定版本仍為 2）：LINE 以 `POSTNOTIFICATION` 訊息通知記事本發文；依其他用戶端的實測紀錄，群組為 `serviceType: GB`、`postEndUrl` 為 `…/group/home/posts/post?homeId=c…&postId=…`，社群為 `serviceType: SN`、`line://square/post?squareMid=s…&postId=…`（相簿 `AB`、分享 VOOM `MH` 同類型，不處理）。`src/line/notes.ts` 只接受完全符合的格式，訊息帶 `card: { kind: "note", postId, preview? }`（網頁以「記事本」小卡顯示摘要）。`api.chats` 內的即時新訊息，在已登入且有機器人連線時，由 adapter `fetchNoteText` 以 linejs `base.timeline.getPost` 取全文（首次使用核發 LINE Timeline 頻道權杖），只讀自己看過通知的貼文，群組 `homeId` 須等於該群組、社群 `squareMid` 須等於 `getSquareChat` 的所屬社群，回應須含所要求的 `postId`；逾時 15 秒、全體每分鐘 20 次。hub 以 `chat:note-posted { chatId, messageId, postId, senderId, senderName, createdAt, preview?, text | error: "NOTE_FETCH_FAILED" }` 只推給機器人，`hello.capabilities` 加入 `chat:note-posted`。驗證：typecheck、build 與 355 項測試通過；以正式 adapter、hub、HTTP 與 `/api/ws` 的隔離環境確認群組與社群通知各推送全文給兩個機器人連線、指向其他群組的偽造通知不呼叫 LINE 並回 `NOTE_FETCH_FAILED`、網頁不收；瀏覽器確認「記事本」小卡與聊天列表預覽。尚未以真實 LINE 帳號確認通知格式、記事本 API 的端點與回應格式，也未確認分享記事本是否產生相同通知。
@@ -386,7 +390,7 @@
 
 | type | 負載 |
 |---|---|
-| `hello` | `{ protocol: 2, serverVersion, capabilities? }`（僅 `/api/ws` 宣告 `capabilities: ["chat:admins", "chat:admin-token", "chat:member-joined", "chat:note-posted", "media:upload"]`） |
+| `hello` | `{ protocol: 2, serverVersion, capabilities? }`（僅 `/api/ws` 宣告 `capabilities: ["chat:admins", "chat:admin-token", "chat:members", "chat:member-joined", "chat:note-posted", "media:upload"]`） |
 | `update:available` | `{ version, current, url }`（url 僅限本專案 GitHub Release 頁） |
 | `auth:state` | `{ state: "restoring"｜"idle"｜"authenticating"｜"ready"｜"error" }`（連線即送、變動廣播；不含祕密） |
 | `auth:qr` | `{ url }`（一次性；只送給發起 `auth:start` 的連線） |
@@ -394,6 +398,8 @@
 | `auth:ready` | `{ profile }` |
 | `profile` | `{ requestId, profile }`（回應 `profile:get`；只送給要求的連線） |
 | `chat:admins` | `{ requestId, chatId, ownMemberId, admins: ChatAdmin[] }`（只回要求的機器人連線） |
+| `chat:membership` | `{ requestId, chatId, memberId, role? }`（本帳號在群組／社群的身分；只回要求的連線） |
+| `chat:member:removed` | `{ requestId, chatId, memberId, block }`（LINE 已接受踢出；只回要求的連線） |
 | `chat:admin-token` | `{ requestId?, chatId, token, createdAt }`（有 `requestId`：回應要求者；無 `requestId`：主動推送給所有外掛，限 `api.chats`） |
 | `chat:admin-token:consumed` | `{ requestId, chatId }`（只回成功兌換的機器人，不含新權杖；新權杖另行推送） |
 | `chat:admin-token:changed` | `{ chatId }`（失效通知，不含祕密；網頁重新取得，外掛於 `api.chats` 聊天室移除時收到） |
@@ -426,6 +432,8 @@
 | `message:react` | `{ requestId, chatId, messageId, reaction: "NICE"｜"LOVE"｜"FUN"｜"AMAZING"｜"SAD"｜"OMG"｜null }`（僅網頁，與 `message:send` 共用頻率上限） |
 | `profile:get` | `{ requestId }`（自己的 `profile`；網頁與機器人皆可，不呼叫 LINE） |
 | `chat:admins:get` | `{ requestId, chatId }`（僅機器人 API；指定社群聊天室的全部管理員與共同管理員） |
+| `chat:membership:get` | `{ requestId, chatId }`（網頁與機器人；群組／社群，機器人限 `api.chats`） |
+| `chat:member:remove` | `{ requestId, chatId, memberId, block? }`（踢出成員；`block` 僅社群；與 `message:send` 共用頻率上限） |
 | `chat:admin-token:get` | `{ requestId, chatId }`（網頁可取任何已知聊天室；機器人限 `api.chats`） |
 | `chat:admin-token:consume` | `{ requestId, chatId, token }`（僅機器人；成功一次即輪替） |
 | `channels:refresh` | `{}` |

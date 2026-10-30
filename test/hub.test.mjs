@@ -128,6 +128,19 @@ class FakeProvider {
     this.calls.push(["react", channel, messageId, kind]);
     if (this.reactError) throw this.reactError;
   }
+  membershipError = undefined;
+  membershipRole = undefined;
+  async fetchMembership(channel) {
+    this.calls.push(["membership", channel]);
+    if (this.membershipError) throw this.membershipError;
+    if (channel.kind === "group") return { memberId: "u-me" };
+    return { memberId: this.ownMemberId, ...(this.membershipRole ? { role: this.membershipRole } : {}) };
+  }
+  removeError = undefined;
+  async removeMember(channel, memberId, block) {
+    this.calls.push(["remove", channel, memberId, block]);
+    if (this.removeError) throw this.removeError;
+  }
 }
 
 async function freePort() {
@@ -2483,4 +2496,101 @@ test("a connection that stops answering pings is closed by the next heartbeat; o
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(healthy.socket.readyState, WebSocket.OPEN);
   assert.equal(pings, 2);
+});
+
+const GROUP_MEMBER = `u${"1".repeat(32)}`;
+const SQUARE_MEMBER = `p${"c".repeat(32)}`;
+
+async function memberEnv(t) {
+  const env = await botEnv(t, { chats: [CHAT, SQUARE] });
+  env.provider.channels = [
+    { channelId: CHAT, kind: "group", name: "群組" },
+    { channelId: OTHER, kind: "group", name: "清單外群組" },
+    { channelId: SQUARE, kind: "square", name: "社群" },
+    { channelId: `u${"9".repeat(32)}`, kind: "user", name: "朋友" },
+  ];
+  env.store.setChannels(env.provider.channels);
+  let nextId = 0;
+  const ask = async (client, type, payload) => {
+    const requestId = `member-${++nextId}`;
+    client.socket.send(JSON.stringify({ type, requestId, ...payload }));
+    return client.until((frame) => frame.requestId === requestId);
+  };
+  const removals = () => env.provider.calls.filter(([kind]) => kind === "remove").map((call) => call.slice(1));
+  return { ...env, ask, removals };
+}
+
+test("pages and bots learn their own membership; bots only for allowed group and OpenChat chats", async (t) => {
+  const env = await memberEnv(t);
+  const bot = await env.open();
+  assert.ok(bot.frames.find((frame) => frame.type === "hello").capabilities.includes("chat:members"));
+  env.provider.membershipRole = "coAdmin";
+  assert.deepEqual(await env.ask(bot, "chat:membership:get", { chatId: SQUARE }), {
+    type: "chat:membership", requestId: "member-1", chatId: SQUARE, memberId: env.provider.ownMemberId, role: "coAdmin",
+  });
+  env.provider.membershipRole = undefined;
+  const plain = await env.ask(env.page, "chat:membership:get", { chatId: SQUARE });
+  assert.equal(plain.type, "chat:membership");
+  assert.equal("role" in plain, false, "an ordinary member has no role");
+  assert.deepEqual(await env.ask(env.page, "chat:membership:get", { chatId: CHAT }), { type: "chat:membership", requestId: "member-3", chatId: CHAT, memberId: "u-me" });
+  assert.equal((await env.ask(bot, "chat:membership:get", { chatId: OTHER })).code, "UNKNOWN_CHAT");
+  assert.equal((await env.ask(env.page, "chat:membership:get", { chatId: OTHER })).type, "chat:membership", "pages are not scoped");
+  assert.equal((await env.ask(env.page, "chat:membership:get", { chatId: `u${"9".repeat(32)}` })).code, "MEMBERSHIP_UNSUPPORTED");
+  env.provider.membershipError = new Error("offline");
+  const failed = await env.ask(bot, "chat:membership:get", { chatId: SQUARE });
+  assert.equal(failed.code, "MEMBERSHIP_FAILED");
+  assert.equal(JSON.stringify(failed).includes("offline"), false);
+});
+
+test("members are removed through the adapter with the chat kind's id, blocking only in OpenChat", async (t) => {
+  const env = await memberEnv(t);
+  const bot = await env.open();
+  // Refusals still spend the send budget (5/s): the mocked clock gives each request its own second.
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  assert.deepEqual(await env.ask(bot, "chat:member:remove", { chatId: SQUARE, memberId: SQUARE_MEMBER, block: true }), {
+    type: "chat:member:removed", requestId: "member-1", chatId: SQUARE, memberId: SQUARE_MEMBER, block: true,
+  });
+  assert.equal((await env.ask(bot, "chat:member:remove", { chatId: SQUARE, memberId: SQUARE_MEMBER })).block, false, "block defaults to a plain kick");
+  assert.equal((await env.ask(env.page, "chat:member:remove", { chatId: CHAT, memberId: GROUP_MEMBER, block: false })).type, "chat:member:removed");
+  assert.deepEqual(env.removals(), [
+    [{ channelId: SQUARE, kind: "square" }, SQUARE_MEMBER, true],
+    [{ channelId: SQUARE, kind: "square" }, SQUARE_MEMBER, false],
+    [{ channelId: CHAT, kind: "group" }, GROUP_MEMBER, false],
+  ]);
+  const refused = [
+    [bot, { chatId: OTHER, memberId: GROUP_MEMBER }, "UNKNOWN_CHAT"],
+    [env.page, { chatId: `u${"9".repeat(32)}`, memberId: GROUP_MEMBER }, "MEMBER_REMOVE_UNSUPPORTED"],
+    [env.page, { chatId: CHAT, memberId: GROUP_MEMBER, block: true }, "MEMBER_REMOVE_UNSUPPORTED"],
+    [env.page, { chatId: CHAT, memberId: SQUARE_MEMBER }, "INVALID_REQUEST"],
+    [bot, { chatId: SQUARE, memberId: GROUP_MEMBER }, "INVALID_REQUEST"],
+    [bot, { chatId: SQUARE, memberId: "p-short" }, "INVALID_REQUEST"],
+    [bot, { chatId: SQUARE, memberId: SQUARE_MEMBER, block: "yes" }, "INVALID_REQUEST"],
+    [bot, { chatId: SQUARE }, "INVALID_REQUEST"],
+  ];
+  for (const [client, payload, code] of refused) {
+    t.mock.timers.tick(1_000);
+    assert.equal((await env.ask(client, "chat:member:remove", payload)).code, code, JSON.stringify(payload));
+  }
+  assert.equal(env.removals().length, 3, "refused requests never reach LINE");
+  env.provider.removeError = new Error("not allowed: secret");
+  const failed = await env.ask(bot, "chat:member:remove", { chatId: SQUARE, memberId: SQUARE_MEMBER });
+  assert.equal(failed.code, "MEMBER_REMOVE_FAILED");
+  assert.equal(JSON.stringify(failed).includes("secret"), false);
+  env.provider.removeError = undefined;
+  await env.login.logout();
+  assert.equal((await env.ask(bot, "chat:member:remove", { chatId: SQUARE, memberId: SQUARE_MEMBER })).code, "UNKNOWN_CHAT");
+  assert.equal(env.removals().length, 4);
+});
+
+test("member removal shares the connection's send budget; membership lookups share the history budget", async (t) => {
+  const env = await memberEnv(t);
+  const bot = await env.open();
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  for (let i = 0; i < 5; i += 1) assert.equal((await env.ask(bot, "chat:member:remove", { chatId: SQUARE, memberId: SQUARE_MEMBER })).type, "chat:member:removed");
+  assert.equal((await env.ask(bot, "chat:member:remove", { chatId: SQUARE, memberId: SQUARE_MEMBER })).code, "RATE_LIMITED");
+  assert.equal((await env.ask(bot, "message:send", { chatId: CHAT, text: "滿了" })).code, "RATE_LIMITED");
+  assert.equal((await env.ask(bot, "chat:membership:get", { chatId: SQUARE })).type, "chat:membership", "a different budget");
+  for (let i = 0; i < 9; i += 1) await env.ask(bot, "profile:get", {});
+  assert.equal((await env.ask(bot, "chat:membership:get", { chatId: SQUARE })).code, "RATE_LIMITED");
+  assert.equal((await env.ask(env.page, "chat:member:remove", { chatId: CHAT, memberId: GROUP_MEMBER })).type, "chat:member:removed", "other sockets have their own budgets");
 });

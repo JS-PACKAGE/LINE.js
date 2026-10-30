@@ -1,4 +1,4 @@
-import type { AuthState, Channel, ChatAdmins, JoinedMember, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
+import type { AuthState, Channel, ChatAdmins, ChatMembership, JoinedMember, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
 
 export type ListenState = "starting" | "listening" | "reconnecting";
 
@@ -32,6 +32,10 @@ export type ServerFrame =
   | { type: "history"; requestId: string; chatId: string; messages: Message[]; hasMore: boolean; cursor?: string }
   /** All administrators of the requested OpenChat, only to the bot connection that asked. */
   | ({ type: "chat:admins"; requestId: string; chatId: string } & ChatAdmins)
+  /** Answer to `chat:membership:get`: this account's own standing in a group or OpenChat chat. */
+  | ({ type: "chat:membership"; requestId: string; chatId: string } & ChatMembership)
+  /** LINE accepted the removal; `block` says the OpenChat member was also banned from rejoining. */
+  | { type: "chat:member:removed"; requestId: string; chatId: string; memberId: string; block: boolean }
   /** Current per-chat secret: answers a request (`requestId`), or is pushed to connected bots for allowed chats without one. */
   | { type: "chat:admin-token"; requestId?: string; chatId: string; token: string; createdAt: number }
   /** Successful one-time redemption; the replacement arrives separately as a pushed `chat:admin-token`. */
@@ -66,6 +70,13 @@ export type ClientFrame =
   | { type: "history:fetch"; requestId: string; chatId: string; limit?: number; before?: string }
   /** Bot API only; restricted to known OpenChats in `api.chats`. */
   | { type: "chat:admins:get"; requestId: string; chatId: string }
+  /** Pages and bots (bots: known chats in `api.chats`); groups and OpenChat chats only. */
+  | { type: "chat:membership:get"; requestId: string; chatId: string }
+  /**
+   * Removes another member of a group or OpenChat chat (LINE decides whether this account may).
+   * `block` (OpenChat only) also bans the member from rejoining the community.
+   */
+  | { type: "chat:member:remove"; requestId: string; chatId: string; memberId: string; block?: boolean }
   /** Pages and bots; bots are restricted to known chats in `api.chats`. */
   | { type: "chat:admin-token:get"; requestId: string; chatId: string }
   /** Bots only: verifies and rotates the secret, without granting LINE or API permissions. */

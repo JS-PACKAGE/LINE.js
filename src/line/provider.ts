@@ -3,7 +3,7 @@ import { BaseClient, type Device, type FetchLike } from "@evex/linejs/base";
 import { LINEStruct } from "@evex/linejs/thrift";
 import type { Message as LineMessage, SquareMessage as LineSquareMessage } from "@evex/linejs-types";
 import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
-import type { Channel, ChannelRef, ChatAdmin, ChatAdmins, HistoryPage, JoinedMember, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, SquareNote, StickerPackage } from "../model/dto.js";
+import type { Channel, ChannelRef, ChatAdmin, ChatAdmins, ChatMembership, HistoryPage, JoinedMember, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, SquareNote, StickerPackage } from "../model/dto.js";
 import { withMyReaction } from "../model/store.js";
 import { discardResponse, readResponseText } from "../response.js";
 import { memberRole, mentionMetadata, parseMentions, replyTarget } from "./members.js";
@@ -87,6 +87,14 @@ export interface LineProvider {
   unsendMessage(channel: ChannelRef, messageId: string): Promise<void>;
   /** Sets (or, with undefined, removes) this account's reaction to a message. */
   react(channel: ChannelRef, messageId: string, kind: ReactionKind | undefined): Promise<void>;
+  /** This account's own standing in a group or OpenChat chat; other chat kinds have no member management. */
+  fetchMembership(channel: ChannelRef): Promise<ChatMembership>;
+  /**
+   * Removes another member: from a group (LINE lets any member), or from an OpenChat chat's whole community
+   * (LINE lets managers; nothing is checked here). `block` also bans an OpenChat member from rejoining;
+   * groups cannot block.
+   */
+  removeMember(channel: ChannelRef, memberId: string, block: boolean): Promise<void>;
   /**
    * Full text of the note a live note notification (card kind "note") points to, from LINE's note API.
    * Only notes of the chat itself (a group) or of its OpenChat community can be read.
@@ -1514,6 +1522,54 @@ export class EvexLineProvider implements LineProvider {
     } else {
       await client.base.talk.cancelReaction({ cancelReactionRequest: { reqSeq, messageId: BigInt(messageId) } });
     }
+  }
+
+  async fetchMembership(channel: ChannelRef): Promise<ChatMembership> {
+    const client = this.requireClient();
+    if (channel.kind === "group") return { memberId: this.getProfile().userId };
+    if (channel.kind !== "square") throw new Error("MEMBERSHIP_UNSUPPORTED");
+    const { memberId } = await this.squareMembership(client, channel.channelId);
+    const { squareMember } = await client.base.square.getSquareMember({ squareMemberMid: memberId });
+    if (this.client !== client || this.stopped) throw new Error("SESSION_CHANGED");
+    if (squareMember?.squareMemberMid !== memberId) throw new Error("MEMBERSHIP_INVALID_MEMBER");
+    const role = memberRole(squareMember.role);
+    if (!role && squareMember.role !== "MEMBER" && squareMember.role !== 10) throw new Error("MEMBERSHIP_INVALID_ROLE");
+    return role ? { memberId, role } : { memberId };
+  }
+
+  async removeMember(channel: ChannelRef, memberId: string, block: boolean): Promise<void> {
+    const client = this.requireClient();
+    if (channel.kind === "group") {
+      if (block) throw new Error("MEMBER_REMOVE_UNSUPPORTED");
+      if (!TALK_USER_MID.test(memberId) || memberId === this.getProfile().userId) throw new Error("MEMBER_REMOVE_INVALID_TARGET");
+      const reqSeq = await client.base.getReqseq("talk");
+      await client.base.talk.deleteOtherFromChat({ request: { reqSeq, chatMid: channel.channelId, targetUserMids: [memberId] } });
+      return;
+    }
+    if (channel.kind !== "square") throw new Error("MEMBER_REMOVE_UNSUPPORTED");
+    const own = await this.squareMembership(client, channel.channelId);
+    if (!SQUARE_MEMBER_MID.test(memberId) || memberId === own.memberId) throw new Error("MEMBER_REMOVE_INVALID_TARGET");
+    const { squareMember } = await client.base.square.getSquareMember({ squareMemberMid: memberId });
+    if (this.client !== client || this.stopped) throw new Error("SESSION_CHANGED");
+    // A member id names a membership in one community: only this chat's community may be managed through this chat.
+    if (squareMember?.squareMemberMid !== memberId || squareMember.squareMid !== own.squareMid) throw new Error("MEMBER_REMOVE_INVALID_TARGET");
+    // Same call as linejs' deleteOtherFromSquare (membership attribute 5), which only knows KICK_OUT; BANNED also refuses a rejoin.
+    await client.base.square.updateSquareMember({
+      request: { updatedAttrs: [5], updatedPreferenceAttrs: [], squareMember: { ...squareMember, membershipState: block ? "BANNED" : "KICK_OUT" } },
+    });
+  }
+
+  /** This account's member id in an OpenChat chat and the community the chat belongs to, as getSquareChat reports them. */
+  private async squareMembership(client: Client, chatId: string): Promise<{ memberId: string; squareMid: string }> {
+    const chat = await client.base.square.getSquareChat({ squareChatMid: chatId });
+    if (this.client !== client || this.stopped) throw new Error("SESSION_CHANGED");
+    const membership = chat?.squareChatMember;
+    const squareMid = chat?.squareChat?.squareMid;
+    if (membership?.squareChatMid !== chatId || typeof membership.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(membership.squareMemberMid)
+      || chat.squareChat?.squareChatMid !== chatId || typeof squareMid !== "string" || !SQUARE_HOME.test(squareMid)) {
+      throw new Error("MEMBERSHIP_INVALID_CHAT");
+    }
+    return { memberId: membership.squareMemberMid, squareMid };
   }
 
   /** A plain upload's object id is the id of the message LINE created for it. */

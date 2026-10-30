@@ -1824,3 +1824,89 @@ test("an OpenChat note status reports each new note of the watched chats' commun
   await settle();
   assert.deepEqual(notes.at(-1), [SQUARE, { createdAt: start + 40, error: "NOTE_FETCH_FAILED", reason: "NOTE_NOT_IN_LIST" }], "an already reported note is not reported again");
 });
+
+test("own membership: groups answer locally, OpenChat asks LINE for the role and rejects malformed answers", async () => {
+  const COMMUNITY = `s${"c".repeat(32)}`;
+  const TARGET = `p${"t".repeat(32)}`;
+  let role = "CO_ADMIN";
+  let member = () => ({ squareMemberMid: OWN_MEMBER, squareMid: COMMUNITY, role, revision: 3 });
+  const calls = [];
+  const base = fakeBase({ square: {
+    async getSquareChat({ squareChatMid }) {
+      calls.push(["chat", squareChatMid]);
+      return { squareChat: { squareChatMid, squareMid: COMMUNITY }, squareChatMember: { squareChatMid, squareMemberMid: OWN_MEMBER } };
+    },
+    async getSquareMember({ squareMemberMid }) {
+      calls.push(["member", squareMemberMid]);
+      return { squareMember: member() };
+    },
+  } });
+  const { provider } = await activeProvider(base);
+  assert.deepEqual(await provider.fetchMembership({ channelId: GROUP_A, kind: "group" }), { memberId: ME });
+  assert.equal(calls.length, 0, "a group's own id is the account mid");
+  assert.deepEqual(await provider.fetchMembership({ channelId: SQUARE, kind: "square" }), { memberId: OWN_MEMBER, role: "coAdmin" });
+  assert.deepEqual(calls, [["chat", SQUARE], ["member", OWN_MEMBER]]);
+  role = 1;
+  assert.deepEqual(await provider.fetchMembership({ channelId: SQUARE, kind: "square" }), { memberId: OWN_MEMBER, role: "admin" });
+  role = "MEMBER";
+  assert.deepEqual(await provider.fetchMembership({ channelId: SQUARE, kind: "square" }), { memberId: OWN_MEMBER });
+  role = 99;
+  await assert.rejects(provider.fetchMembership({ channelId: SQUARE, kind: "square" }), /MEMBERSHIP_INVALID_ROLE/);
+  role = "ADMIN";
+  member = () => ({ squareMemberMid: TARGET, squareMid: COMMUNITY, role });
+  await assert.rejects(provider.fetchMembership({ channelId: SQUARE, kind: "square" }), /MEMBERSHIP_INVALID_MEMBER/, "LINE must answer about the asked member");
+  for (const kind of ["user", "room"]) await assert.rejects(provider.fetchMembership({ channelId: GROUP_A, kind }), /MEMBERSHIP_UNSUPPORTED/);
+  base.square.getSquareChat = async ({ squareChatMid }) => ({ squareChat: { squareChatMid: "other", squareMid: COMMUNITY }, squareChatMember: { squareChatMid, squareMemberMid: OWN_MEMBER } });
+  await assert.rejects(provider.fetchMembership({ channelId: SQUARE, kind: "square" }), /MEMBERSHIP_INVALID_CHAT/);
+  await provider.close();
+  await assert.rejects(provider.fetchMembership({ channelId: GROUP_A, kind: "group" }), /NOT_AUTHENTICATED/);
+});
+
+test("removing members: groups use deleteOtherFromChat, OpenChat updates the membership state of a member of this community only", async () => {
+  const COMMUNITY = `s${"c".repeat(32)}`;
+  const TARGET = `p${"t".repeat(32)}`;
+  const OUTSIDER = `p${"x".repeat(32)}`;
+  const calls = [];
+  const base = fakeBase({
+    talk: {
+      async deleteOtherFromChat(request) { calls.push(["kick", request]); return {}; },
+    },
+    square: {
+      async getSquareChat({ squareChatMid }) {
+        return { squareChat: { squareChatMid, squareMid: COMMUNITY }, squareChatMember: { squareChatMid, squareMemberMid: OWN_MEMBER } };
+      },
+      async getSquareMember({ squareMemberMid }) {
+        calls.push(["member", squareMemberMid]);
+        return { squareMember: { squareMemberMid, squareMid: squareMemberMid === OUTSIDER ? `s${"o".repeat(32)}` : COMMUNITY, displayName: "對象", role: "MEMBER", membershipState: "JOINED", revision: 7 } };
+      },
+      async updateSquareMember(request) { calls.push(["update", request]); return {}; },
+    },
+  });
+  base.getReqseq = async (bucket) => (bucket === "talk" ? 41 : 410);
+  const { provider } = await activeProvider(base);
+  const group = { channelId: GROUP_A, kind: "group" };
+  const square = { channelId: SQUARE, kind: "square" };
+  await provider.removeMember(group, mid(5), false);
+  assert.deepEqual(calls.splice(0), [["kick", { request: { reqSeq: 41, chatMid: GROUP_A, targetUserMids: [mid(5)] } }]]);
+  await assert.rejects(provider.removeMember(group, mid(5), true), /MEMBER_REMOVE_UNSUPPORTED/, "groups cannot block");
+  await assert.rejects(provider.removeMember(group, ME, false), /MEMBER_REMOVE_INVALID_TARGET/, "never the account itself");
+  await assert.rejects(provider.removeMember(group, TARGET, false), /MEMBER_REMOVE_INVALID_TARGET/, "a group member is an account mid");
+  assert.equal(calls.length, 0);
+
+  await provider.removeMember(square, TARGET, false);
+  await provider.removeMember(square, TARGET, true);
+  const expected = (membershipState) => ["update", {
+    request: {
+      updatedAttrs: [5], updatedPreferenceAttrs: [],
+      squareMember: { squareMemberMid: TARGET, squareMid: COMMUNITY, displayName: "對象", role: "MEMBER", membershipState, revision: 7 },
+    },
+  }];
+  assert.deepEqual(calls.splice(0), [["member", TARGET], expected("KICK_OUT"), ["member", TARGET], expected("BANNED")]);
+  await assert.rejects(provider.removeMember(square, OUTSIDER, false), /MEMBER_REMOVE_INVALID_TARGET/, "a member of another community");
+  await assert.rejects(provider.removeMember(square, OWN_MEMBER, true), /MEMBER_REMOVE_INVALID_TARGET/);
+  await assert.rejects(provider.removeMember(square, mid(5), false), /MEMBER_REMOVE_INVALID_TARGET/, "an OpenChat member is a membership id");
+  assert.deepEqual(calls.splice(0), [["member", OUTSIDER]], "nothing is updated after a refused check");
+  for (const kind of ["user", "room"]) await assert.rejects(provider.removeMember({ channelId: GROUP_A, kind }, mid(5), false), /MEMBER_REMOVE_UNSUPPORTED/);
+  base.square.updateSquareMember = async () => { throw new InternalError("SquareException", "no permission"); };
+  await assert.rejects(provider.removeMember(square, TARGET, false), /no permission/, "LINE's refusal is the caller's failure");
+});
