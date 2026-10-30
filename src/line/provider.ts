@@ -279,6 +279,8 @@ export class EvexLineProvider implements LineProvider {
   // the status event keeps the counts current in between. Dropped with the client.
   private squareSummaries = new Map<string, SquareSummary>();
   private adminFlights = new Map<string, { client: Client; promise: Promise<ChatAdmins> }>();
+  // A community's main chat holds every joined member, so its administrators are the community's: one role-filtered search instead of paging every member.
+  private squareDefaultChats = new Map<string, { client: Client; squareMid: string }>();
   private stickerPackages?: { at: number; packages: StickerPackage[] };
   // Messages whose media the browser may ask for, newest last. Requests are only honoured for
   // messages seen here, so the browser cannot use this session to probe arbitrary LINE objects.
@@ -1218,6 +1220,16 @@ export class EvexLineProvider implements LineProvider {
   }
 
   private async loadChatAdmins(client: Client, chatId: string): Promise<ChatAdmins> {
+    const main = this.squareDefaultChats.get(chatId);
+    if (main?.client === client) {
+      const admins = await this.searchCommunityAdmins(client, main.squareMid).catch((error: unknown) => {
+        if (this.client !== client || this.stopped) throw error;
+        // Paging the chat is slower but authoritative; never report a list the search could not vouch for.
+        this.events.onDiagnostic?.(`社群管理員搜尋失敗，改為逐頁查詢成員：chat=${chatId}`);
+        return undefined;
+      });
+      if (admins) return { ownMemberId: await this.ownSquareMemberId(client, chatId), admins };
+    }
     const admins = new Map<string, ChatAdmin>();
     const tokens = new Set<string>();
     let continuationToken: string | undefined;
@@ -1253,22 +1265,67 @@ export class EvexLineProvider implements LineProvider {
         }
       }
       continuationToken = response.continuationToken;
-      if (!continuationToken) {
-        // getSquareChat returns the authenticated account's membership, not its ordinary account mid.
-        const chat = await client.base.square.getSquareChat({ squareChatMid: chatId });
-        if (this.client !== client || this.stopped) throw new Error("SESSION_CHANGED");
-        const membership = chat?.squareChatMember;
-        if (membership?.squareChatMid !== chatId
-          || typeof membership.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(membership.squareMemberMid)) {
-          throw new Error("CHAT_ADMINS_INVALID_MEMBERSHIP");
-        }
-        return { ownMemberId: membership.squareMemberMid, admins: [...admins.values()] };
-      }
+      if (!continuationToken) return { ownMemberId: await this.ownSquareMemberId(client, chatId), admins: [...admins.values()] };
       // Cycles and bounds must fail, rather than claim that a partial administrator list is complete.
       if (tokens.has(continuationToken)) throw new Error("CHAT_ADMINS_PAGINATION_LOOP");
       tokens.add(continuationToken);
     }
     throw new Error("CHAT_ADMINS_PAGE_LIMIT");
+  }
+
+  /** Joined administrators and co-administrators of a community, by a role-filtered member search. */
+  private async searchCommunityAdmins(client: Client, squareMid: string): Promise<ChatAdmin[]> {
+    const admins = new Map<string, ChatAdmin>();
+    const tokens = new Set<string>();
+    let continuationToken: string | undefined;
+    for (let page = 0; page < SQUARE_MEMBER_MAX_PAGES; page += 1) {
+      const response = await client.base.square.searchSquareMembers({ request: {
+        squareMid,
+        searchOption: { membershipState: "JOINED", memberRoles: ["ADMIN", "CO_ADMIN"], includingMe: true },
+        limit: SQUARE_PAGE_SIZE,
+        ...(continuationToken ? { continuationToken } : {}),
+      } });
+      if (this.client !== client || this.stopped) throw new Error("SESSION_CHANGED");
+      if (!response || !Array.isArray(response.members)
+        || (response.continuationToken !== undefined && typeof response.continuationToken !== "string")) {
+        throw new Error("CHAT_ADMINS_INVALID_RESPONSE");
+      }
+      for (const member of response.members) {
+        if (!member || typeof member.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(member.squareMemberMid)
+          || typeof member.displayName !== "string" || member.squareMid !== squareMid
+          || (member.profileImageObsHash !== undefined && typeof member.profileImageObsHash !== "string")) {
+          throw new Error("CHAT_ADMINS_INVALID_MEMBER");
+        }
+        // The filter is LINE's; check each result too, so an ignored filter can only cost time, not correctness.
+        const role = memberRole(member.role);
+        const joined = member.membershipState === undefined || member.membershipState === "JOINED" || member.membershipState === 2;
+        if (!role || !joined) continue;
+        const pictureId = avatarMediaId("obs", member.profileImageObsHash);
+        admins.set(member.squareMemberMid, {
+          userId: member.squareMemberMid,
+          displayName: member.displayName,
+          role,
+          ...(pictureId ? { pictureId } : {}),
+        });
+      }
+      continuationToken = response.continuationToken || undefined;
+      if (!continuationToken) return [...admins.values()];
+      if (tokens.has(continuationToken)) throw new Error("CHAT_ADMINS_PAGINATION_LOOP");
+      tokens.add(continuationToken);
+    }
+    throw new Error("CHAT_ADMINS_PAGE_LIMIT");
+  }
+
+  /** getSquareChat returns the authenticated account's membership, not its ordinary account mid. */
+  private async ownSquareMemberId(client: Client, chatId: string): Promise<string> {
+    const chat = await client.base.square.getSquareChat({ squareChatMid: chatId });
+    if (this.client !== client || this.stopped) throw new Error("SESSION_CHANGED");
+    const membership = chat?.squareChatMember;
+    if (membership?.squareChatMid !== chatId
+      || typeof membership.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(membership.squareMemberMid)) {
+      throw new Error("CHAT_ADMINS_INVALID_MEMBERSHIP");
+    }
+    return membership.squareMemberMid;
   }
 
   async fetchNoteText(channel: ChannelRef, messageId: string): Promise<string> {
@@ -1823,7 +1880,13 @@ export class EvexLineProvider implements LineProvider {
     if (squareChats.status === "fulfilled") {
       const squareNames: Record<string, string> = {};
       if (squares.status === "fulfilled") for (const square of squares.value) squareNames[square.mid] = square.name;
+      // Rebuilt from the latest list only, so a chat that changed or disappeared falls back to paging.
+      this.squareDefaultChats.clear();
       for (const chat of squareChats.value) {
+        const type = chat.raw.type as unknown;
+        if ((type === "SQUARE_DEFAULT" || type === 4) && SQUARE_HOME.test(String(chat.raw.squareMid))) {
+          this.squareDefaultChats.set(chat.raw.squareChatMid, { client, squareMid: chat.raw.squareMid });
+        }
         const squareName = squareNames[chat.raw.squareMid];
         const chatName = chat.raw.name || "未命名聊天";
         const pictureId = avatarMediaId("obs", chat.raw.chatImageObsHash);

@@ -1241,6 +1241,60 @@ test("a failed shared administrator query rejects all consumers and allows a fre
   assert.equal(calls, 2);
 });
 
+test("a community's main chat finds its administrators by one role-filtered search; sub-chats and refused searches page the chat", async () => {
+  const COMMUNITY = `s${"q".repeat(20)}`;
+  const SUB = `m${"u".repeat(32)}`;
+  const searches = [];
+  let pages = 0;
+  let searchFails = false;
+  const inCommunity = (extra) => ({ squareMid: COMMUNITY, membershipState: "JOINED", ...extra });
+  const { provider } = await activeProvider(fakeBase({
+    square: {
+      async searchSquareMembers({ request }) {
+        searches.push(request);
+        if (searchFails) throw new Error("FORBIDDEN");
+        if (!request.continuationToken) return { members: [
+          squareMember("pAdmin0000000", "ADMIN", inCommunity({ profileImageObsHash: "avatarhash" })),
+          // Results are checked as well, so an ignored filter can never add these.
+          squareMember("pMember00000", "MEMBER", inCommunity()),
+          squareMember("pLeftAdmin000", "ADMIN", inCommunity({ membershipState: "LEFT" })),
+        ], continuationToken: "next" };
+        return { members: [squareMember("pCo000000000", 2, inCommunity({ membershipState: 2 }))] };
+      },
+      async getSquareChatMembers() { pages += 1; return { squareChatMembers: [squareMember("pPaged0000000", "ADMIN")] }; },
+      async getSquareChatStatus() { return {}; },
+    },
+    relation: { async getUserFriendIds() { return { userFriendMids: [] }; } },
+  }), {
+    async fetchJoinedChats() { return []; },
+    async fetchJoinedSquares() { return []; },
+    async fetchJoinedSquareChats() { return [
+      { raw: { squareChatMid: SQUARE, squareMid: COMMUNITY, name: "主聊天", type: "SQUARE_DEFAULT" } },
+      { raw: { squareChatMid: SUB, squareMid: COMMUNITY, name: "子聊天", type: "OPEN" } },
+    ]; },
+  });
+  const adminIds = async (channelId) => (await provider.fetchChatAdmins({ channelId, kind: "square" })).admins.map((admin) => admin.userId);
+  assert.deepEqual(await adminIds(SQUARE), ["pPaged0000000"], "until the chat list says which chat is the main one, it is paged");
+  await provider.fetchChannels();
+  assert.deepEqual(await provider.fetchChatAdmins({ channelId: SQUARE, kind: "square" }), {
+    ownMemberId: OWN_MEMBER,
+    admins: [
+      { userId: "pAdmin0000000", displayName: "名-pAdmin0000000", role: "admin", pictureId: "avatar-o-avatarhash" },
+      { userId: "pCo000000000", displayName: "名-pCo000000000", role: "coAdmin" },
+    ],
+  });
+  assert.equal(pages, 1, "the main chat is no longer paged");
+  assert.deepEqual(searches.map((request) => [request.squareMid, request.searchOption.memberRoles, request.searchOption.membershipState, request.continuationToken]), [
+    [COMMUNITY, ["ADMIN", "CO_ADMIN"], "JOINED", undefined],
+    [COMMUNITY, ["ADMIN", "CO_ADMIN"], "JOINED", "next"],
+  ]);
+  assert.deepEqual(await adminIds(SUB), ["pPaged0000000"], "a sub-chat holds only some members, so it is still paged");
+  assert.equal(searches.length, 2);
+  searchFails = true;
+  assert.deepEqual(await adminIds(SQUARE), ["pPaged0000000"], "a refused search falls back to paging instead of failing");
+  assert.equal(pages, 3);
+});
+
 test("late administrator completion cannot erase a replacement account's shared query", async (t) => {
   for (const teardown of [false, true]) await t.test(teardown ? "logout then activate" : "replace active client", async () => {
     const oldPage = Promise.withResolvers();
