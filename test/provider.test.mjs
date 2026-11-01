@@ -158,6 +158,9 @@ test("a member's new name or picture in a watched chat's own stream is reported 
       byChat(profile("別處", { revision: 6 }), GROUP_A),
       byChat(profile(5)),
       byChat({ ...profile("x"), squareMemberMid: "../evil" }, SQUARE, 7),
+      // Leaving, removal and bans arrive as member updates too; they are not profile changes.
+      byChat({ ...profile("被踢", { membershipState: "KICK_OUT", revision: 6 }), squareMemberMid: `p${"k".repeat(32)}` }),
+      bySquare({ ...profile("離開", { membershipState: 4, revision: 6 }), squareMemberMid: member }, 11),
     ], syncToken: "s1" },
     // Nothing new, then a new name only, then a picture LINE gave no hash for.
     { events: [byChat(profile("小豬", { profileImageObsHash: "0hCrownBadge", revision: 7 }))], syncToken: "s2" },
@@ -178,6 +181,7 @@ test("a member's new name or picture in a watched chat's own stream is reported 
     [SQUARE, { userId: member, displayName: "群管小豬", pictureUrl: `https://obs.line-scdn.net/r/g2/member/${member}`, changes: ["picture"] }],
   ]);
   assert.equal(diagnostics.filter((line) => line.startsWith("LINE 社群成員更新：格式不符")).length, 2, "malformed updates are dropped with a shape-only diagnostic");
+  assert.deepEqual(diagnostics.filter((line) => line.startsWith("LINE 社群成員更新：非現任成員")).map((line) => line.split(" state=")[1]), ["KICK_OUT", "4"]);
   await provider.close();
 });
 

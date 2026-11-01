@@ -42,7 +42,7 @@ async function main(): Promise<void> {
     onMemberUpdated: (chatId, member) => {
       // Logged like a join (小語's decision for joins): ids, name, picture and what changed.
       const delivery = hub.handleMemberUpdated(chatId, member);
-      console.info(`LINE 社群成員更新個人檔案：chat=${chatId} member=${member.userId} name=${JSON.stringify(member.displayName)} picture=${member.pictureUrl ?? "-"} changes=${member.changes.join(",")} ${delivery}`);
+      console.info(`LINE 社群成員更新個人檔案：chat=${chatId} member=${member.userId} name=${JSON.stringify(member.displayName)} picture=${member.pictureUrl ?? "-"} changes=${member.changes.join(",")}${member.role ? ` role=${member.role}` : ""} ${delivery}`);
     },
     onStatus: (state) => {
       console.info(`LINE 狀態：${state}`);

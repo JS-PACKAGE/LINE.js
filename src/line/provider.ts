@@ -712,7 +712,7 @@ export class EvexLineProvider implements LineProvider {
    * A member's new name or picture. Reported only when it differs from what is known here: a picture
    * without a hash cannot be compared, so it always counts as changed.
    */
-  private memberUpdated(chatId: string, member: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role" | "revision", unknown>> | undefined, type: string): void {
+  private memberUpdated(chatId: string, member: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role" | "revision" | "membershipState", unknown>> | undefined, type: string): void {
     if (typeof member?.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(member.squareMemberMid)
       || typeof member.displayName !== "string"
       || (member.profileImageObsHash !== undefined && typeof member.profileImageObsHash !== "string")) {
@@ -720,6 +720,12 @@ export class EvexLineProvider implements LineProvider {
       return;
     }
     const mid = member.squareMemberMid;
+    // LINE also announces leaving, removal and bans as member updates; only current members matter.
+    const state = member.membershipState;
+    if (state !== undefined && state !== "JOINED" && state !== 2) {
+      this.events.onDiagnostic?.(`LINE 社群成員更新：非現任成員，略過 chat=${chatId} member=${mid} type=${type.slice(0, 60)} state=${String(state).slice(0, 30)}`);
+      return;
+    }
     const revision = typeof member.revision === "number" || typeof member.revision === "bigint" || typeof member.revision === "string" ? String(member.revision) : undefined;
     const key = `${chatId}:${mid}`;
     if (revision !== undefined && /^\d{1,20}$/.test(revision)) {

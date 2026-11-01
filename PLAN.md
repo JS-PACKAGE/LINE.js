@@ -408,7 +408,7 @@
 | `chat:admin-token:consumed` | `{ requestId, chatId }`（只回成功兌換的機器人，不含新權杖；新權杖另行推送） |
 | `chat:admin-token:changed` | `{ chatId }`（失效通知，不含祕密；網頁重新取得，外掛於 `api.chats` 聊天室移除時收到） |
 | `chat:member-joined` | `{ chatId, member: { userId, displayName, pictureId?, pictureUrl? } }`（社群 `NOTIFIED_JOIN_SQUARE_CHAT`；只推給機器人，限 `api.chats`，不重播；日誌含 ID、暱稱與大頭貼網址） |
-| `chat:member-updated` | `{ chatId, member: { userId, displayName, pictureId?, pictureUrl?, role?, changes } }`（社群成員改名／換大頭貼 `NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE`／`NOTIFIED_UPDATE_SQUARE_MEMBER`；只推給機器人，限 `api.chats`，不重播；`changes` 為 `name`／`picture`，無照片 hash 時一律含 `picture`；同 revision 只報一次；日誌同加入格式加 `changes=`；待真實帳號實測） |
+| `chat:member-updated` | `{ chatId, member: { userId, displayName, pictureId?, pictureUrl?, role?, changes } }`（社群成員改名／換大頭貼 `NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE`／`NOTIFIED_UPDATE_SQUARE_MEMBER`；只推給機器人，限 `api.chats`，不重播；`changes` 為 `name`／`picture`，無照片 hash 時一律含 `picture`；同 revision 只報一次；`membershipState` 非現任成員（離開／踢出／封鎖）不推送，只記診斷；日誌同加入格式加 `changes=`，管理員加 `role=`；實際部署已收到事件，但 8 筆大頭貼都非新圖，可能是角色／狀態變更，換大頭貼情境待實測） |
 | `chat:note-posted` | `{ chatId, createdAt, postId?, messageId?, senderId?, senderName?, preview?, text }` 或以 `error: "NOTE_FETCH_FAILED"` 取代 `text`（群組／社群記事本發文：聊天訊息通知帶 `messageId`；社群 `NOTIFIED_UPDATE_SQUARE_NOTE_STATUS` 經列表找出，沒有 `messageId`，列表讀不到時也沒有 `postId`；只推給機器人，限 `api.chats`，不重播；內容不入日誌） |
 | `channels` | `{ channels: Channel[] }`（snapshot，連線即送、變動重送） |
 | `messages` | `{ chatId, messages: Message[] }`（連線時快照，同聊天室可分多個影格、依 ID 合併；舊訊息，不計未讀） |
