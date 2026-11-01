@@ -185,6 +185,39 @@ test("a member's new name or picture in a watched chat's own stream is reported 
   await provider.close();
 });
 
+test("watched OpenChat chats are also read every second without any push, and a failing chat backs off", async () => {
+  const member = `p${"j".repeat(32)}`;
+  let fresh = false;
+  let fail = false;
+  const reads = [];
+  const base = fakeBase({ square: { async fetchSquareChatEvents({ squareChatMid }) {
+    reads.push(squareChatMid);
+    if (fail) throw new Error("throttled");
+    return { syncToken: "s", events: fresh ? [{ type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", payload: { notifiedUpdateSquareMemberProfile: {
+      squareChatMid, squareMember: { squareMemberMid: member, displayName: "管管.星語", profileImageObsHash: "0hNewPicture", revision: 2 },
+    } } }] : [] };
+  } } });
+  const { provider, updated } = await activeProvider(base);
+  provider.watchSquareJoins([SQUARE]);
+  await settle();
+  assert.equal(reads.length, 1, "the first read walks to the newest event");
+  // A rename pushes nothing to this account: only the timer can find it.
+  fresh = true;
+  await new Promise((resolve) => setTimeout(resolve, 1300));
+  assert.deepEqual(updated.map(([, update]) => update.displayName), ["管管.星語"]);
+  fresh = false;
+  fail = true;
+  const before = reads.length;
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(reads.length, before + 1, "one timed read fails");
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(reads.length, before + 1, "the next timed read waits out the two-second backoff");
+  await provider.close();
+  const closed = reads.length;
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(reads.length, closed, "a closed session stops the timer");
+});
+
 const talk = (id, to, from, text, extra = {}) => ({ raw: { id, to, from, toType: "GROUP", contentType: "NONE", text, createdTime: String(1_700_000_000_000 + Number(id)), contentMetadata: {}, ...extra } });
 
 test("a slow member lookup no longer holds a chat's messages: they show at once and are completed when the lookup answers", async () => {

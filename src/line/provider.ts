@@ -202,6 +202,9 @@ const NOTE_TIMEOUT_MS = 15_000;
 const MAX_NOTES_PER_STATUS = 5;
 const MAX_REPORTED_NOTES = 500;
 const MAX_MEMBER_REVISIONS = 5000;
+// Watched OpenChat chats are read this often (linejs' own SquareChat.listen reads every second), backing off on failures.
+const JOIN_POLL_MS = 1000;
+const JOIN_POLL_MAX_BACKOFF_MS = 60_000;
 
 interface SquareHistory {
   at: number;
@@ -240,6 +243,9 @@ interface JoinWatch {
   again: boolean;
   /** The OpenChat community this chat belongs to, once LINE said so (note status events name the community). */
   squareMid?: string;
+  /** Reads failed in a row; timed reads pause until `retryAt` (performance.now()). */
+  failures: number;
+  retryAt: number;
 }
 
 // Let the lookup cap stop candidate preparation before traversing the remaining messages.
@@ -293,9 +299,11 @@ export class EvexLineProvider implements LineProvider {
   private previewDecrypts = new Map<string, { raw: LineMessage; undecryptable: boolean }>();
   // E2EE messages linejs could not decrypt; they stay ciphertext and become placeholders.
   private undecryptable = new WeakSet<LineMessage>();
-  // OpenChat chats watched for joins: LINE reports a join only in the chat's own event stream
-  // (fetchSquareChatEvents), never in the account-wide push stream that `listen` follows.
+  // OpenChat chats watched for joins and profile changes: LINE reports them only in the chat's own event
+  // stream (fetchSquareChatEvents), never in the account-wide push stream that `listen` follows. Each chat
+  // is read on every account-wide push and on a one-second timer.
   private joinWatches = new Map<string, JoinWatch>();
+  private joinPoller?: NodeJS.Timeout;
   // OpenChat notes: LINE only says a community's newest note time changed. Notes are new when created after
   // the newest one already handled (or, at first, after sign-in); each is reported once.
   private activatedAt = 0;
@@ -517,8 +525,24 @@ export class EvexLineProvider implements LineProvider {
     for (const chatId of this.joinWatches.keys()) if (!wanted.has(chatId)) this.joinWatches.delete(chatId);
     for (const chatId of wanted) {
       if (this.joinWatches.get(chatId)?.client === client) continue;
-      this.joinWatches.set(chatId, { client, caughtUp: false, again: false });
+      this.joinWatches.set(chatId, { client, caughtUp: false, again: false, failures: 0, retryAt: 0 });
       this.checkJoins(chatId);
+    }
+    // Profile changes reach no push of this account, so the watched chats are also read on a timer.
+    if (this.joinWatches.size === 0) {
+      clearInterval(this.joinPoller);
+      this.joinPoller = undefined;
+    } else if (!this.joinPoller) {
+      this.joinPoller = setInterval(() => this.pollJoins(), JOIN_POLL_MS);
+      this.joinPoller.unref();
+    }
+  }
+
+  /** A chat whose last read failed waits out its backoff; one still being read is not asked again. */
+  private pollJoins(): void {
+    const now = performance.now();
+    for (const [chatId, watch] of this.joinWatches) {
+      if (watch.client === this.client && !watch.running && now >= watch.retryAt) this.checkJoins(chatId);
     }
   }
 
@@ -638,8 +662,14 @@ export class EvexLineProvider implements LineProvider {
       return;
     }
     watch.running = this.fetchJoins(chatId, watch)
-      // The position is kept; the next trigger or tick retries from it.
-      .catch(() => {})
+      .then(() => {
+        watch.failures = 0;
+        watch.retryAt = 0;
+      }, () => {
+        // The position is kept; the next push or poll retries from it, polls after a growing pause.
+        watch.failures += 1;
+        watch.retryAt = performance.now() + Math.min(JOIN_POLL_MAX_BACKOFF_MS, JOIN_POLL_MS * 2 ** watch.failures);
+      })
       .finally(() => {
         watch.running = undefined;
         if (watch.again && this.joinWatches.get(chatId) === watch) {
@@ -2130,6 +2160,8 @@ export class EvexLineProvider implements LineProvider {
     this.squareCache.clear();
     this.squareSummaries.clear();
     this.joinWatches.clear();
+    clearInterval(this.joinPoller);
+    this.joinPoller = undefined;
     this.noteBaselines.clear();
     this.reportedNotes.clear();
     this.noteChecks.clear();
