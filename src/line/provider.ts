@@ -692,7 +692,9 @@ export class EvexLineProvider implements LineProvider {
 
   /**
    * The first fetches walk the chat from its oldest event to the newest without reporting anything
-   * (those joins are history); after that only events newer than the kept sync token arrive.
+   * (those joins and profiles are history); after that only events newer than the kept sync token arrive.
+   * The walk ends only on an empty page, as linejs' own SquareChat.listen does: LINE pages history by sync
+   * token too, so a page without a continuation token is not the end of it.
    */
   private async fetchJoins(chatId: string, watch: JoinWatch): Promise<void> {
     for (let page = 0; page < SQUARE_MAX_PAGES; page += 1) {
@@ -719,12 +721,13 @@ export class EvexLineProvider implements LineProvider {
       }
       if (typeof response?.syncToken === "string" && response.syncToken) watch.syncToken = response.syncToken;
       const next = typeof response?.continuationToken === "string" && response.continuationToken ? response.continuationToken : undefined;
-      if (events.length === 0 || !next) {
-        watch.continuationToken = undefined;
+      watch.continuationToken = events.length > 0 ? next : undefined;
+      if (events.length === 0) {
         watch.caughtUp = true;
         return;
       }
-      watch.continuationToken = next;
+      // Caught up, the rest waits for the next push or poll unless LINE says more follows right away.
+      if (report && !next) return;
     }
   }
 

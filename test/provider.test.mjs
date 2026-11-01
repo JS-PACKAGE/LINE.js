@@ -65,10 +65,14 @@ test("every account-wide OpenChat push reads the watched chats' own events: hist
   const joinEvent = (joined, type = "NOTIFIED_JOIN_SQUARE_CHAT") => ({ type, payload: { notifiedJoinSquareChat: joined } });
   const valid = (squareMemberMid, displayName, extra = {}) => joinEvent({ squareChatMid: SQUARE, joinedMember: { squareMemberMid, displayName, ...extra } });
   const requests = [];
-  // LINE's answers, in order: two history pages, then whatever happened since the last sync token.
+  // LINE's answers, in order: history pages (paged by continuation token and by sync token alike, ending
+  // only with an empty page), then whatever happened since the last sync token.
   const answers = [
     { events: [valid(`p${"o".repeat(32)}`, "老成員")], syncToken: "s0", continuationToken: "c1" },
     { events: [valid(`p${"q".repeat(32)}`, "也很老")], syncToken: "s1" },
+    // No continuation token, yet still history: reporting it would replay old joins after every restart.
+    { events: [valid(`p${"r".repeat(32)}`, "還是舊的")], syncToken: "s1b" },
+    { events: [], syncToken: "s1b" },
     {
       events: [
         valid(member, "新朋友", { profileImageObsHash: "0hAbCdEfGh", role: "MEMBER" }),
@@ -109,13 +113,15 @@ test("every account-wide OpenChat push reads the watched chats' own events: hist
     [SQUARE, undefined, undefined],
     [SQUARE, "s0", "c1"],
     [SQUARE, "s1", undefined],
+    [SQUARE, "s1b", undefined],
+    [SQUARE, "s1b", undefined],
     [SQUARE, "s2", undefined],
   ]);
   const client = provider.client;
   await provider.close();
   client.emit("square:event", { type: "NOTIFICATION_MESSAGE", payload: {} });
   await settle();
-  assert.equal(requests.length, 4, "a closed session stops watching");
+  assert.equal(requests.length, 6, "a closed session stops watching");
 });
 
 test("a join with an empty or invalid photo hash still provides the member OBS URL without accepting URL injection", async () => {
@@ -149,8 +155,9 @@ test("a member's new name or picture in a watched chat's own stream is reported 
   const byChat = (squareMember, chat = SQUARE, type = "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE") => ({ type, payload: { notifiedUpdateSquareMemberProfile: { squareChatMid: chat, squareMember } } });
   const bySquare = (squareMember, type = "NOTIFIED_UPDATE_SQUARE_MEMBER") => ({ type, payload: { notifiedUpdateSquareMember: { squareMid: squareMember.squareMid, squareMemberMid: member, squareMember } } });
   const answers = [
-    // History: updates from before the watch are not news.
+    // History: updates from before the watch are not news. It ends only with an empty page.
     { events: [byChat(profile("舊名", { profileImageObsHash: "0hOldPicture", revision: 1 }))], syncToken: "s0" },
+    { events: [], syncToken: "s0" },
     { events: [
       byChat(profile("小豬", { profileImageObsHash: "0hCrownBadge", role: "MEMBER", revision: 5 })),
       // The same change announced community-wide too: reported once.
