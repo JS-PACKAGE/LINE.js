@@ -709,13 +709,17 @@ export class EvexLineProvider implements LineProvider {
       // hands out events from before sign-in after the walk (小語's test: a restart re-reported old ones),
       // so an event is news only when LINE dated it after sign-in; undated ones are not trusted.
       let stale = 0;
+      let newestStale: number | undefined;
       for (const event of events) {
         const type = String(event?.type);
         const created = Number(event?.createdTime);
         const member = type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2" || type === "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE" || type === "7"
           || type === "NOTIFIED_UPDATE_SQUARE_MEMBER" || type === "11";
         const report = watch.caughtUp && Number.isSafeInteger(created) && created >= this.activatedAt;
-        if (member && watch.caughtUp && !report) stale += 1;
+        if (member && watch.caughtUp && !report) {
+          stale += 1;
+          if (Number.isSafeInteger(created) && created > (newestStale ?? -Infinity)) newestStale = created;
+        }
         if (type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2") this.memberJoined(chatId, event.payload?.notifiedJoinSquareChat, report);
         else if (type === "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE" || type === "7") {
           const update = event.payload?.notifiedUpdateSquareMemberProfile;
@@ -726,7 +730,11 @@ export class EvexLineProvider implements LineProvider {
           if (update?.squareMemberMid === update?.squareMember?.squareMemberMid) this.memberUpdated(chatId, update?.squareMember, type, report);
         }
       }
-      if (stale > 0) this.events.onDiagnostic?.(`社群事件串：略過登入前的舊成員事件 chat=${chatId} count=${stale}`);
+      if (stale > 0) {
+        // Dates only (LINE's and sign-in), so a wrongly dated fresh event shows up as such.
+        const newest = newestStale === undefined ? "-" : new Date(newestStale).toISOString();
+        this.events.onDiagnostic?.(`社群事件串：略過登入前的舊成員事件 chat=${chatId} count=${stale} newest=${newest} signedIn=${new Date(this.activatedAt).toISOString()}`);
+      }
       if (typeof response?.syncToken === "string" && response.syncToken) watch.syncToken = response.syncToken;
       const next = typeof response?.continuationToken === "string" && response.continuationToken ? response.continuationToken : undefined;
       watch.continuationToken = events.length > 0 ? next : undefined;
@@ -783,7 +791,10 @@ export class EvexLineProvider implements LineProvider {
     }
     const revision = memberRevision(member.revision);
     const previous = this.memberBaselines.get(`${chatId}:${mid}`);
-    if (revision !== undefined && previous?.revision === revision) return;
+    if (revision !== undefined && previous?.revision === revision) {
+      if (report) this.events.onDiagnostic?.(`LINE 社群成員更新：同一 revision 已處理，略過 chat=${chatId} member=${mid} type=${type.slice(0, 60)} revision=${revision}`);
+      return;
+    }
     const pictureId = avatarMediaId("obs", member.profileImageObsHash);
     this.setMemberBaseline(chatId, mid, member.displayName, pictureId, revision);
     if (!report) return;
@@ -792,7 +803,10 @@ export class EvexLineProvider implements LineProvider {
     if (!pictureId || !previous || previous.pictureId !== pictureId) changes.push("picture");
     const role = memberRole(member.role);
     this.rememberProfile(mid, member.displayName, pictureId, !!pictureId, role);
-    if (changes.length === 0) return;
+    if (changes.length === 0) {
+      this.events.onDiagnostic?.(`LINE 社群成員更新：名稱與大頭貼都沒變，略過 chat=${chatId} member=${mid} type=${type.slice(0, 60)} revision=${revision ?? "-"}`);
+      return;
+    }
     this.events.onMemberUpdated(chatId, {
       userId: mid,
       displayName: member.displayName,

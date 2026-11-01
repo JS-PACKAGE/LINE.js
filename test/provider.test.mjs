@@ -107,7 +107,9 @@ test("every account-wide OpenChat push reads the watched chats' own events: hist
     [SQUARE, { userId: member, displayName: "新朋友", pictureId: "avatar-o-0hAbCdEfGh", pictureUrl: "https://obs.line-scdn.net/0hAbCdEfGh" }],
     [SQUARE, { userId: OWN_MEMBER, displayName: "", pictureUrl: `https://obs.line-scdn.net/r/g2/member/${OWN_MEMBER}` }],
   ]);
-  assert.deepEqual(diagnostics.filter((line) => line.startsWith("社群事件串：")), [`社群事件串：略過登入前的舊成員事件 chat=${SQUARE} count=2`]);
+  const skipped = diagnostics.filter((line) => line.startsWith("社群事件串："));
+  assert.equal(skipped.length, 1);
+  assert.match(skipped[0], new RegExp(`^社群事件串：略過登入前的舊成員事件 chat=${SQUARE} count=2 newest=2020-09-13T12:26:40\\.000Z signedIn=\\d{4}-`));
   // linejs emits every push as "square:event" first; a message is one more push.
   const message = { message: { id: "77", to: SQUARE, from: member, contentType: "NONE", text: "嗨", createdTime: String(1_700_000_000_077), contentMetadata: {} } };
   emit("square:event", { type: "NOTIFICATION_MESSAGE", payload: { notificationMessage: { squareChatMid: SQUARE, squareMessage: message } } });
