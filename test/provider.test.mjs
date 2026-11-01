@@ -39,21 +39,25 @@ async function activeProvider(base, client = {}) {
   const errors = [];
   const reactions = [];
   const joined = [];
+  const updated = [];
   const notes = [];
+  const diagnostics = [];
   const storage = { async flush() {}, async get() {}, async set() {} };
   const provider = new EvexLineProvider(storage, "DESKTOPWIN", {
     onMessage: (message, kind) => received.push({ message, kind }),
     onRead() {}, onStatus() {}, onError: (code) => errors.push(code),
     onReactions: (...args) => reactions.push(args),
     onMemberJoined: (...args) => joined.push(args),
+    onMemberUpdated: (...args) => updated.push(args),
     onNotePosted: (...args) => notes.push(args),
+    onDiagnostic: (line) => diagnostics.push(line),
   });
   // Listening would start real polling; the tests emit events themselves.
   provider.listen = () => {};
   provider.base = base;
   await provider.activate(base);
   Object.assign(provider.client, client);
-  return { provider, received, errors, reactions, joined, notes, emit: (...args) => provider.client.emit(...args) };
+  return { provider, received, errors, reactions, joined, updated, notes, diagnostics, emit: (...args) => provider.client.emit(...args) };
 }
 
 test("every account-wide OpenChat push reads the watched chats' own events: history is skipped, new joins are reported once, malformed ones dropped", async () => {
@@ -137,6 +141,44 @@ test("a join with an empty or invalid photo hash still provides the member OBS U
     }]]);
     await provider.close();
   }
+});
+
+test("a member's new name or picture in a watched chat's own stream is reported once, with what changed and their role", async () => {
+  const member = `p${"j".repeat(32)}`;
+  const profile = (displayName, extra = {}) => ({ squareMemberMid: member, squareMid: `s${"q".repeat(32)}`, displayName, ...extra });
+  const byChat = (squareMember, chat = SQUARE, type = "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE") => ({ type, payload: { notifiedUpdateSquareMemberProfile: { squareChatMid: chat, squareMember } } });
+  const bySquare = (squareMember, type = "NOTIFIED_UPDATE_SQUARE_MEMBER") => ({ type, payload: { notifiedUpdateSquareMember: { squareMid: squareMember.squareMid, squareMemberMid: member, squareMember } } });
+  const answers = [
+    // History: updates from before the watch are not news.
+    { events: [byChat(profile("舊名", { profileImageObsHash: "0hOldPicture", revision: 1 }))], syncToken: "s0" },
+    { events: [
+      byChat(profile("小豬", { profileImageObsHash: "0hCrownBadge", role: "MEMBER", revision: 5 })),
+      // The same change announced community-wide too: reported once.
+      bySquare(profile("小豬", { profileImageObsHash: "0hCrownBadge", role: "MEMBER", revision: 5 }), 11),
+      byChat(profile("別處", { revision: 6 }), GROUP_A),
+      byChat(profile(5)),
+      byChat({ ...profile("x"), squareMemberMid: "../evil" }, SQUARE, 7),
+    ], syncToken: "s1" },
+    // Nothing new, then a new name only, then a picture LINE gave no hash for.
+    { events: [byChat(profile("小豬", { profileImageObsHash: "0hCrownBadge", revision: 7 }))], syncToken: "s2" },
+    { events: [byChat(profile("群管小豬", { profileImageObsHash: "0hCrownBadge", role: "CO_ADMIN", revision: 8 }))], syncToken: "s3" },
+    { events: [byChat(profile("群管小豬", { revision: 9 }))], syncToken: "s4" },
+  ];
+  const base = fakeBase({ square: { async fetchSquareChatEvents() { return answers.shift() ?? { events: [], syncToken: "s9" }; } } });
+  const { provider, updated, diagnostics, emit } = await activeProvider(base);
+  provider.watchSquareJoins([SQUARE]);
+  await settle();
+  for (let push = 0; push < 4; push++) {
+    emit("square:event", { type: "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", payload: {} });
+    await settle();
+  }
+  assert.deepEqual(updated, [
+    [SQUARE, { userId: member, displayName: "小豬", pictureId: "avatar-o-0hCrownBadge", pictureUrl: "https://obs.line-scdn.net/0hCrownBadge", changes: ["name", "picture"] }],
+    [SQUARE, { userId: member, displayName: "群管小豬", pictureId: "avatar-o-0hCrownBadge", pictureUrl: "https://obs.line-scdn.net/0hCrownBadge", role: "coAdmin", changes: ["name"] }],
+    [SQUARE, { userId: member, displayName: "群管小豬", pictureUrl: `https://obs.line-scdn.net/r/g2/member/${member}`, changes: ["picture"] }],
+  ]);
+  assert.equal(diagnostics.filter((line) => line.startsWith("LINE 社群成員更新：格式不符")).length, 2, "malformed updates are dropped with a shape-only diagnostic");
+  await provider.close();
 });
 
 const talk = (id, to, from, text, extra = {}) => ({ raw: { id, to, from, toType: "GROUP", contentType: "NONE", text, createdTime: String(1_700_000_000_000 + Number(id)), contentMetadata: {}, ...extra } });

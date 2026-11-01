@@ -3,7 +3,7 @@ import { BaseClient, type Device, type FetchLike } from "@evex/linejs/base";
 import { LINEStruct } from "@evex/linejs/thrift";
 import type { Message as LineMessage, SquareMessage as LineSquareMessage } from "@evex/linejs-types";
 import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
-import type { Channel, ChannelRef, ChatAdmin, ChatAdmins, ChatMembership, HistoryPage, JoinedMember, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, SquareNote, StickerPackage } from "../model/dto.js";
+import type { Channel, ChannelRef, ChatAdmin, ChatAdmins, ChatMembership, HistoryPage, JoinedMember, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, SquareNote, StickerPackage, UpdatedMember } from "../model/dto.js";
 import { withMyReaction } from "../model/store.js";
 import { discardResponse, readResponseText } from "../response.js";
 import { memberRole, mentionMetadata, parseMentions, replyTarget } from "./members.js";
@@ -41,6 +41,8 @@ export interface ProviderEvents {
   onReactions: (chatId: string, messageId: string, reactions: Reactions | undefined) => void;
   /** Someone joined an OpenChat chat (NOTIFIED_JOIN_SQUARE_CHAT). */
   onMemberJoined: (chatId: string, member: JoinedMember) => void;
+  /** A member of an OpenChat chat changed their name or picture (NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE / _MEMBER). */
+  onMemberUpdated: (chatId: string, member: UpdatedMember) => void;
   /** A new note in the OpenChat community of a watched chat (NOTIFIED_UPDATE_SQUARE_NOTE_STATUS), once per watched chat. */
   onNotePosted: (chatId: string, note: SquareNote) => void;
   /** An OpenChat chat's counts changed (NOTIFIED_UPDATE_SQUARE_CHAT_STATUS): LINE's own unread and member counts. */
@@ -199,6 +201,7 @@ const NOTE_TIMEOUT_MS = 15_000;
 // A burst of notes behind one status change: only the newest few are fetched.
 const MAX_NOTES_PER_STATUS = 5;
 const MAX_REPORTED_NOTES = 500;
+const MAX_MEMBER_REVISIONS = 5000;
 
 interface SquareHistory {
   at: number;
@@ -299,6 +302,8 @@ export class EvexLineProvider implements LineProvider {
   private noteBaselines = new Map<string, number>();
   private reportedNotes = new Set<string>();
   private noteChecks = new Map<string, Promise<void>>();
+  // chat:member -> newest profile revision reported, so one change announced by two event types is reported once.
+  private memberRevisions = new Map<string, string>();
 
   constructor(
     private readonly storage: SessionStorage,
@@ -661,6 +666,14 @@ export class EvexLineProvider implements LineProvider {
         for (const event of events) {
           const type = String(event?.type);
           if (type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2") this.memberJoined(chatId, event.payload?.notifiedJoinSquareChat);
+          else if (type === "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE" || type === "7") {
+            const update = event.payload?.notifiedUpdateSquareMemberProfile;
+            if (update?.squareChatMid === chatId) this.memberUpdated(chatId, update.squareMember, type);
+          } else if (type === "NOTIFIED_UPDATE_SQUARE_MEMBER" || type === "11") {
+            const update = event.payload?.notifiedUpdateSquareMember;
+            // Community-wide, but read from this chat's own stream; the ids must agree.
+            if (update?.squareMemberMid === update?.squareMember?.squareMemberMid) this.memberUpdated(chatId, update?.squareMember, type);
+          }
         }
       }
       if (typeof response?.syncToken === "string" && response.syncToken) watch.syncToken = response.syncToken;
@@ -692,6 +705,46 @@ export class EvexLineProvider implements LineProvider {
       pictureUrl: pictureId
         ? `https://obs.line-scdn.net/${pictureId.slice("avatar-o-".length)}`
         : `https://obs.line-scdn.net/r/g2/member/${member.squareMemberMid}`,
+    });
+  }
+
+  /**
+   * A member's new name or picture. Reported only when it differs from what is known here: a picture
+   * without a hash cannot be compared, so it always counts as changed.
+   */
+  private memberUpdated(chatId: string, member: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role" | "revision", unknown>> | undefined, type: string): void {
+    if (typeof member?.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(member.squareMemberMid)
+      || typeof member.displayName !== "string"
+      || (member.profileImageObsHash !== undefined && typeof member.profileImageObsHash !== "string")) {
+      this.events.onDiagnostic?.(`LINE 社群成員更新：格式不符，略過 chat=${chatId} type=${type.slice(0, 60)}`);
+      return;
+    }
+    const mid = member.squareMemberMid;
+    const revision = typeof member.revision === "number" || typeof member.revision === "bigint" || typeof member.revision === "string" ? String(member.revision) : undefined;
+    const key = `${chatId}:${mid}`;
+    if (revision !== undefined && /^\d{1,20}$/.test(revision)) {
+      if (this.memberRevisions.get(key) === revision) return;
+      this.memberRevisions.delete(key);
+      this.memberRevisions.set(key, revision);
+      if (this.memberRevisions.size > MAX_MEMBER_REVISIONS) this.memberRevisions.delete(this.memberRevisions.keys().next().value!);
+    }
+    const previous = this.profiles.get(mid);
+    const pictureId = avatarMediaId("obs", member.profileImageObsHash);
+    const changes: ("name" | "picture")[] = [];
+    if (!previous || previous.name !== (member.displayName || UNKNOWN_MEMBER)) changes.push("name");
+    if (!pictureId || !previous || previous.pictureId !== pictureId) changes.push("picture");
+    const role = memberRole(member.role);
+    this.rememberProfile(mid, member.displayName, pictureId, !!pictureId, role);
+    if (changes.length === 0) return;
+    this.events.onMemberUpdated(chatId, {
+      userId: mid,
+      displayName: member.displayName,
+      ...(pictureId ? { pictureId } : {}),
+      pictureUrl: pictureId
+        ? `https://obs.line-scdn.net/${pictureId.slice("avatar-o-".length)}`
+        : `https://obs.line-scdn.net/r/g2/member/${mid}`,
+      ...(role ? { role } : {}),
+      changes,
     });
   }
 

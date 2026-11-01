@@ -1774,24 +1774,32 @@ test("chat admin tokens are stable per chat, pushed only to bots, and preserve b
   assert.equal(env.apiTokens.verify(first.token), false, "chat secrets are not API credentials");
 });
 
-test("an OpenChat join reaches every bot allowed that chat, never pages, other chats or a signed-out session", async (t) => {
+test("an OpenChat join or profile update reaches every bot allowed that chat, never pages, other chats or a signed-out session", async (t) => {
   const env = await botEnv(t, { chats: [SQUARE] });
   const [first, second] = [await env.open(), await env.open()];
-  assert.ok(first.frames.find((frame) => frame.type === "hello").capabilities.includes("chat:member-joined"));
+  const capabilities = first.frames.find((frame) => frame.type === "hello").capabilities;
+  assert.ok(capabilities.includes("chat:member-joined") && capabilities.includes("chat:member-updated"));
   const member = { userId: `p${"j".repeat(32)}`, displayName: "新朋友", pictureId: "avatar-o-0hAbCdEfGh" };
+  const updated = { ...member, displayName: "管理員", role: "coAdmin", changes: ["name"] };
   const outside = `m${"z".repeat(32)}`;
   assert.equal(env.hub.handleMemberJoined(outside, { userId: `p${"k".repeat(32)}`, displayName: "別處" }), "skipped=not-in-api-chats");
+  assert.equal(env.hub.handleMemberUpdated(outside, { ...updated, userId: `p${"k".repeat(32)}` }), "skipped=not-in-api-chats");
   assert.equal(env.hub.handleMemberJoined(SQUARE, member), "bots=2");
-  const expected = { type: "chat:member-joined", chatId: SQUARE, member };
-  assert.deepEqual(await first.until((frame) => frame.type === "chat:member-joined"), expected);
-  assert.deepEqual(await second.until((frame) => frame.type === "chat:member-joined"), expected);
+  assert.equal(env.hub.handleMemberUpdated(SQUARE, updated), "bots=2");
+  for (const bot of [first, second]) {
+    assert.deepEqual(await bot.until((frame) => frame.type === "chat:member-joined"), { type: "chat:member-joined", chatId: SQUARE, member });
+    assert.deepEqual(await bot.until((frame) => frame.type === "chat:member-updated"), { type: "chat:member-updated", chatId: SQUARE, member: updated });
+  }
   await env.login.logout();
   assert.equal(env.hub.handleMemberJoined(SQUARE, member), "skipped=not-signed-in");
+  assert.equal(env.hub.handleMemberUpdated(SQUARE, updated), "skipped=not-signed-in");
   // A ping round trip orders the check after anything the join could have sent.
   first.socket.send(JSON.stringify({ type: "ping" }));
   await first.until((frame) => frame.type === "pong");
   for (const client of [first, second, env.page]) {
-    assert.deepEqual(client.frames.filter((frame) => frame.type === "chat:member-joined").map((frame) => frame.chatId), client === env.page ? [] : [SQUARE]);
+    for (const type of ["chat:member-joined", "chat:member-updated"]) {
+      assert.deepEqual(client.frames.filter((frame) => frame.type === type).map((frame) => frame.chatId), client === env.page ? [] : [SQUARE]);
+    }
   }
 });
 

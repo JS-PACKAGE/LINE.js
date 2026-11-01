@@ -63,6 +63,14 @@ export interface JoinedMember {
   pictureUrl?: string;
 }
 
+/** An OpenChat member who changed their name or picture; same fields as a join, plus what changed. */
+export interface UpdatedMember extends JoinedMember {
+  /** Present when LINE reports the member as an administrator. */
+  role?: MemberRole;
+  /** "picture" is always included when LINE gave no picture hash: the old and new pictures cannot be compared. */
+  changes: ("name" | "picture")[];
+}
+
 /**
  * A new OpenChat note, found through LINE's note status event (no chat message carries it). `reason` is
  * for the local log only and never leaves the server.

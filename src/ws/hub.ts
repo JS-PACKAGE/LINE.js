@@ -8,7 +8,7 @@ import type { LineProvider, SquareChatCounts } from "../line/provider.js";
 import type { ApiTokenStore } from "../http/apiToken.js";
 import { SlidingWindowLimiter } from "../limit.js";
 import type { MediaService } from "../media/service.js";
-import type { Channel, ChannelKind, JoinedMember, Message, Reactions, ReadPosition, SquareNote } from "../model/dto.js";
+import type { Channel, ChannelKind, JoinedMember, Message, Reactions, ReadPosition, SquareNote, UpdatedMember } from "../model/dto.js";
 import { noteFailureReason } from "../line/notes.js";
 import type { UpdateInfo } from "../update/checker.js";
 import { withMyReaction, type ChatStore } from "../model/store.js";
@@ -63,6 +63,8 @@ export interface Hub {
    * service log (`bots=N`, or `skipped=<reason>`): joins are never replayed, so a miss must be visible.
    */
   handleMemberJoined(chatId: string, member: JoinedMember): string;
+  /** A member changed their name or picture: told to bots like a join, with the same outcome string. */
+  handleMemberUpdated(chatId: string, member: UpdatedMember): string;
   /** A new OpenChat note found through the note status event: every bot allowed that chat is told. */
   handleNotePosted(chatId: string, note: SquareNote): void;
   /** Names, pictures or members changed somewhere: the list is fetched again (settled and rate limited). */
@@ -295,6 +297,20 @@ export function createHub(options: HubOptions): Hub {
 
   function broadcastBots(frame: ServerFrame): void {
     sendEach(botWss.clients, frame);
+  }
+
+  /**
+   * Member events go to every bot allowed the chat. They are never replayed, so the outcome is
+   * returned for the service log (`bots=N`, or `skipped=<reason>`): a miss must be visible.
+   */
+  function tellBots(chatId: string, frame: ServerFrame): string {
+    if (login.state !== "ready") return "skipped=not-signed-in";
+    if (!botScope.has(chatId)) return "skipped=not-in-api-chats";
+    let bots = 0;
+    for (const socket of botWss.clients) if (socket.readyState === WebSocket.OPEN) bots += 1;
+    if (bots === 0) return "skipped=no-bot-connected";
+    broadcastBots(frame);
+    return `bots=${bots}`;
   }
 
   /** A bot sees only the chats listed in `api.chats`. */
@@ -885,7 +901,7 @@ export function createHub(options: HubOptions): Hub {
     socket.once("close", () => grants.clear());
     const sendLimiter = new SlidingWindowLimiter(config.limits.sendsPerSecond, 1000);
     const historyLimiter = new SlidingWindowLimiter(HISTORY_PER_SECOND, 1000);
-    send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion, capabilities: ["chat:admins", "chat:admin-token", "chat:members", "chat:member-joined", "chat:note-posted", "media:upload"] });
+    send(socket, { type: "hello", protocol: PROTOCOL_VERSION, serverVersion, capabilities: ["chat:admins", "chat:admin-token", "chat:members", "chat:member-joined", "chat:member-updated", "chat:note-posted", "media:upload"] });
     send(socket, { type: "auth:state", state: login.state });
     send(socket, { type: "status", state: status });
     if (login.state === "ready") {
@@ -1046,13 +1062,10 @@ export function createHub(options: HubOptions): Hub {
       if (login.state === "ready") updateReactions(chatId, messageId, reactions);
     },
     handleMemberJoined(chatId, member) {
-      if (login.state !== "ready") return "skipped=not-signed-in";
-      if (!botScope.has(chatId)) return "skipped=not-in-api-chats";
-      let bots = 0;
-      for (const socket of botWss.clients) if (socket.readyState === WebSocket.OPEN) bots += 1;
-      if (bots === 0) return "skipped=no-bot-connected";
-      broadcastBots({ type: "chat:member-joined", chatId, member });
-      return `bots=${bots}`;
+      return tellBots(chatId, { type: "chat:member-joined", chatId, member });
+    },
+    handleMemberUpdated(chatId, member) {
+      return tellBots(chatId, { type: "chat:member-updated", chatId, member });
     },
     handleNotePosted(chatId, note) {
       if (login.state !== "ready" || !botScope.has(chatId)) return;

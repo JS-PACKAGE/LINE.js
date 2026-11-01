@@ -1,4 +1,4 @@
-import type { AuthState, Channel, ChatAdmins, ChatMembership, JoinedMember, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage } from "../model/dto.js";
+import type { AuthState, Channel, ChatAdmins, ChatMembership, JoinedMember, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, StickerPackage, UpdatedMember } from "../model/dto.js";
 
 export type ListenState = "starting" | "listening" | "reconnecting";
 
@@ -44,6 +44,8 @@ export type ServerFrame =
   | { type: "chat:admin-token:changed"; chatId: string }
   /** Someone joined an OpenChat chat. Bots only, and only for chats in `api.chats`. */
   | { type: "chat:member-joined"; chatId: string; member: JoinedMember }
+  /** A member of an OpenChat chat changed their name or picture. Bots only, and only for chats in `api.chats`. */
+  | { type: "chat:member-updated"; chatId: string; member: UpdatedMember }
   /**
    * A note (記事本) post appeared in a group or OpenChat chat. Bots only, only for chats in `api.chats`.
    * `text` is the post as LINE's note API returns it; when that fails `error` is set and only `preview`
