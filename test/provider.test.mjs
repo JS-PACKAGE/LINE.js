@@ -185,6 +185,35 @@ test("a member's new name or picture in a watched chat's own stream is reported 
   await provider.close();
 });
 
+test("a profile change is judged against that chat's own last report: a message under the new name or another chat's report cannot hide it", async () => {
+  const member = `p${"j".repeat(32)}`;
+  const second = `m${"t".repeat(32)}`;
+  const update = (squareChatMid, displayName, hash, revision) => ({ type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", payload: { notifiedUpdateSquareMemberProfile: {
+    squareChatMid, squareMember: { squareMemberMid: member, squareMid: `s${"q".repeat(32)}`, displayName, profileImageObsHash: hash, revision },
+  } } });
+  const pending = { [SQUARE]: [], [second]: [] };
+  const base = fakeBase({ square: { async fetchSquareChatEvents({ squareChatMid, syncToken }) {
+    // History (no sync token yet): the member's profile as it was before the watch began.
+    if (!syncToken) return { syncToken: "s", events: [update(squareChatMid, "小豬", "0hPlainPhoto", 1)] };
+    return { syncToken: "s", events: pending[squareChatMid].splice(0) };
+  } } });
+  const { provider, updated, emit } = await activeProvider(base);
+  provider.watchSquareJoins([SQUARE, second]);
+  await settle();
+  // A rename, then a message under the new name: the push that carries the message arrives before
+  // the chat's own events are read, so the adapter already knows the new name by then.
+  pending[SQUARE].push(update(SQUARE, "管理員小豬", "0hPlainPhoto", 2));
+  pending[second].push(update(second, "管理員小豬", "0hPlainPhoto", 2));
+  const message = { message: { id: "78", to: SQUARE, from: member, contentType: "NONE", text: "嗨", createdTime: String(1_700_000_000_078), contentMetadata: {} } };
+  emit("square:event", { type: "NOTIFICATION_MESSAGE", payload: { notificationMessage: { squareChatMid: SQUARE, senderDisplayName: "管理員小豬", squareMessage: message } } });
+  await settle();
+  assert.deepEqual(updated.map(([chatId, { displayName, changes }]) => [chatId, displayName, changes]), [
+    [SQUARE, "管理員小豬", ["name"]],
+    [second, "管理員小豬", ["name"]],
+  ]);
+  await provider.close();
+});
+
 test("watched OpenChat chats are also read every second without any push, and a failing chat backs off", async () => {
   const member = `p${"j".repeat(32)}`;
   let fresh = false;
@@ -197,7 +226,7 @@ test("watched OpenChat chats are also read every second without any push, and a 
       squareChatMid, squareMember: { squareMemberMid: member, displayName: "管管.星語", profileImageObsHash: "0hNewPicture", revision: 2 },
     } } }] : [] };
   } } });
-  const { provider, updated } = await activeProvider(base);
+  const { provider, updated, diagnostics } = await activeProvider(base);
   provider.watchSquareJoins([SQUARE]);
   await settle();
   assert.equal(reads.length, 1, "the first read walks to the newest event");
@@ -212,6 +241,12 @@ test("watched OpenChat chats are also read every second without any push, and a 
   assert.equal(reads.length, before + 1, "one timed read fails");
   await new Promise((resolve) => setTimeout(resolve, 1100));
   assert.equal(reads.length, before + 1, "the next timed read waits out the two-second backoff");
+  fail = false;
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.deepEqual(diagnostics.filter((line) => line.startsWith("社群事件讀取")), [
+    `社群事件讀取失敗，改為退避重試：chat=${SQUARE} reason=LINE_ERROR name=Error`,
+    `社群事件讀取恢復：chat=${SQUARE} failures=1`,
+  ], "a failure streak is logged once when it starts and once when it ends, without LINE's message");
   await provider.close();
   const closed = reads.length;
   await new Promise((resolve) => setTimeout(resolve, 1100));
