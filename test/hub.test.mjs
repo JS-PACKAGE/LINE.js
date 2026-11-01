@@ -1780,13 +1780,13 @@ test("an OpenChat join reaches every bot allowed that chat, never pages, other c
   assert.ok(first.frames.find((frame) => frame.type === "hello").capabilities.includes("chat:member-joined"));
   const member = { userId: `p${"j".repeat(32)}`, displayName: "新朋友", pictureId: "avatar-o-0hAbCdEfGh" };
   const outside = `m${"z".repeat(32)}`;
-  env.hub.handleMemberJoined(outside, { userId: `p${"k".repeat(32)}`, displayName: "別處" });
-  env.hub.handleMemberJoined(SQUARE, member);
+  assert.equal(env.hub.handleMemberJoined(outside, { userId: `p${"k".repeat(32)}`, displayName: "別處" }), "skipped=not-in-api-chats");
+  assert.equal(env.hub.handleMemberJoined(SQUARE, member), "bots=2");
   const expected = { type: "chat:member-joined", chatId: SQUARE, member };
   assert.deepEqual(await first.until((frame) => frame.type === "chat:member-joined"), expected);
   assert.deepEqual(await second.until((frame) => frame.type === "chat:member-joined"), expected);
   await env.login.logout();
-  env.hub.handleMemberJoined(SQUARE, member);
+  assert.equal(env.hub.handleMemberJoined(SQUARE, member), "skipped=not-signed-in");
   // A ping round trip orders the check after anything the join could have sent.
   first.socket.send(JSON.stringify({ type: "ping" }));
   await first.until((frame) => frame.type === "pong");

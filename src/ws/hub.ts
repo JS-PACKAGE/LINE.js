@@ -58,8 +58,11 @@ export interface Hub {
   handleChecked(chatId: string): void;
   /** A message's reactions changed on LINE (undefined: nobody reacts now). */
   handleReactions(chatId: string, messageId: string, reactions: Reactions | undefined): void;
-  /** Someone joined an OpenChat chat: every bot allowed that chat is told. */
-  handleMemberJoined(chatId: string, member: JoinedMember): void;
+  /**
+   * Someone joined an OpenChat chat: every bot allowed that chat is told. Returns the outcome for the
+   * service log (`bots=N`, or `skipped=<reason>`): joins are never replayed, so a miss must be visible.
+   */
+  handleMemberJoined(chatId: string, member: JoinedMember): string;
   /** A new OpenChat note found through the note status event: every bot allowed that chat is told. */
   handleNotePosted(chatId: string, note: SquareNote): void;
   /** Names, pictures or members changed somewhere: the list is fetched again (settled and rate limited). */
@@ -1043,7 +1046,13 @@ export function createHub(options: HubOptions): Hub {
       if (login.state === "ready") updateReactions(chatId, messageId, reactions);
     },
     handleMemberJoined(chatId, member) {
-      if (login.state === "ready" && botScope.has(chatId)) broadcastBots({ type: "chat:member-joined", chatId, member });
+      if (login.state !== "ready") return "skipped=not-signed-in";
+      if (!botScope.has(chatId)) return "skipped=not-in-api-chats";
+      let bots = 0;
+      for (const socket of botWss.clients) if (socket.readyState === WebSocket.OPEN) bots += 1;
+      if (bots === 0) return "skipped=no-bot-connected";
+      broadcastBots({ type: "chat:member-joined", chatId, member });
+      return `bots=${bots}`;
     },
     handleNotePosted(chatId, note) {
       if (login.state !== "ready" || !botScope.has(chatId)) return;

@@ -35,8 +35,9 @@ async function main(): Promise<void> {
     onReactions: (chatId, messageId, reactions) => hub.handleReactions(chatId, messageId, reactions),
     onMemberJoined: (chatId, member) => {
       // 小語's decision: name and picture are logged. JSON quoting keeps a crafted name to one log line.
-      console.info(`LINE 社群成員加入：chat=${chatId} member=${member.userId} name=${JSON.stringify(member.displayName)} picture=${member.pictureUrl ?? "-"}`);
-      hub.handleMemberJoined(chatId, member);
+      // The hub's outcome is appended: joins are never replayed, so a bot that was offline misses it.
+      const delivery = hub.handleMemberJoined(chatId, member);
+      console.info(`LINE 社群成員加入：chat=${chatId} member=${member.userId} name=${JSON.stringify(member.displayName)} picture=${member.pictureUrl ?? "-"} ${delivery}`);
     },
     onStatus: (state) => {
       console.info(`LINE 狀態：${state}`);
