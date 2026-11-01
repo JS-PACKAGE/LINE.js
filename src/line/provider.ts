@@ -201,13 +201,23 @@ const NOTE_TIMEOUT_MS = 15_000;
 // A burst of notes behind one status change: only the newest few are fetched.
 const MAX_NOTES_PER_STATUS = 5;
 const MAX_REPORTED_NOTES = 500;
-const MAX_MEMBER_BASELINES = 5000;
+// Every member of every watched chat is seeded (an OpenChat chat holds up to 5000), so this must hold several
+// whole chats: at 5000 two seeded chats evicted each other's baselines (小語's log: 1538 + 4999 members).
+const MAX_MEMBER_BASELINES = 50_000;
 
 /** SquareMember.revision as a decimal string; anything else is treated as absent. */
 const memberRevision = (revision: unknown): string | undefined => {
   const text = typeof revision === "number" || typeof revision === "bigint" || typeof revision === "string" ? String(revision) : undefined;
   return text !== undefined && /^\d{1,20}$/.test(text) ? text : undefined;
 };
+
+/**
+ * LINE raises a member's revision on every change, and replays old events after every catch-up (小語's
+ * log: the same events, with names since changed, on each restart). An event no newer than the baseline
+ * is one of those, or the same change twice.
+ */
+const notNewer = (revision: string | undefined, baseline: { revision?: string } | undefined): boolean =>
+  revision !== undefined && baseline?.revision !== undefined && BigInt(revision) <= BigInt(baseline.revision);
 // Watched OpenChat chats are read this often (linejs' own SquareChat.listen reads every second), backing off on failures.
 const JOIN_POLL_MS = 1000;
 const JOIN_POLL_MAX_BACKOFF_MS = 60_000;
@@ -783,7 +793,13 @@ export class EvexLineProvider implements LineProvider {
       || typeof member.displayName !== "string"
       || (member.profileImageObsHash !== undefined && typeof member.profileImageObsHash !== "string")) return;
     const pictureId = avatarMediaId("obs", member.profileImageObsHash);
-    this.setMemberBaseline(chatId, member.squareMemberMid, member.displayName, pictureId, memberRevision(member.revision));
+    const revision = memberRevision(member.revision);
+    const previous = this.memberBaselines.get(`${chatId}:${member.squareMemberMid}`);
+    if (notNewer(revision, previous)) {
+      if (report) this.events.onDiagnostic?.(`LINE 社群成員加入：不比基準新，略過 chat=${chatId} member=${member.squareMemberMid} revision=${revision} baseline=${previous!.revision}`);
+      return;
+    }
+    this.setMemberBaseline(chatId, member.squareMemberMid, member.displayName, pictureId, revision);
     if (!report) return;
     // An incomplete join payload must not mark the profile as fully resolved.
     this.rememberProfile(member.squareMemberMid, member.displayName, pictureId, !!pictureId, memberRole(member.role));
@@ -819,8 +835,8 @@ export class EvexLineProvider implements LineProvider {
     }
     const revision = memberRevision(member.revision);
     const previous = this.memberBaselines.get(`${chatId}:${mid}`);
-    if (revision !== undefined && previous?.revision === revision) {
-      if (report) this.events.onDiagnostic?.(`LINE 社群成員更新：同一 revision 已處理，略過 chat=${chatId} member=${mid} type=${type.slice(0, 60)} revision=${revision}`);
+    if (notNewer(revision, previous)) {
+      if (report) this.events.onDiagnostic?.(`LINE 社群成員更新：不比基準新，略過 chat=${chatId} member=${mid} type=${type.slice(0, 60)} revision=${revision} baseline=${previous!.revision}`);
       return;
     }
     const pictureId = avatarMediaId("obs", member.profileImageObsHash);

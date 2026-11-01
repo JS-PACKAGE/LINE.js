@@ -241,7 +241,7 @@ test("a watched chat's current members are its baselines: a first rename is caug
         : { squareChatMembers: [squareMember("星語", 10, { role: "CO_ADMIN" })], continuationToken: "p2" };
     },
   } });
-  const { provider, updated, diagnostics, emit } = await activeProvider(base);
+  const { provider, updated, joined, diagnostics, emit } = await activeProvider(base);
   provider.watchSquareJoins([SQUARE]);
   await settle();
   // The member list could not be read: an update waits behind the sync token instead of being judged
@@ -256,6 +256,17 @@ test("a watched chat's current members are its baselines: a first rename is caug
   emit("square:event", { type: "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", payload: {} });
   await settle();
   assert.deepEqual(updated.map(([chatId, { displayName, changes }]) => [chatId, displayName, changes]), [[SQUARE, "星語貓", ["name"]]]);
+  // LINE replays old events after catch-up, with names and pictures since changed (小語's restarts):
+  // anything no newer than the baseline's revision is one of those, joins included.
+  pending.push(
+    update(squareMember("改名前的舊名", 9, { profileImageObsHash: "0hOlderPhoto" })),
+    { type: "NOTIFIED_JOIN_SQUARE_CHAT", payload: { notifiedJoinSquareChat: { squareChatMid: SQUARE, joinedMember: squareMember("剛加入時", 1) } } },
+  );
+  emit("square:event", { type: "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", payload: {} });
+  await settle();
+  assert.equal(updated.length, 1);
+  assert.deepEqual(joined, []);
+  assert.deepEqual(diagnostics.filter((line) => line.includes("不比基準新")).map((line) => line.split(" revision=")[1]), ["9 baseline=12", "1 baseline=12"]);
   assert.deepEqual(diagnostics.filter((line) => line.startsWith("社群成員基準：")), [`社群成員基準：chat=${SQUARE} members=2 pages=2`]);
   assert.equal(diagnostics.filter((line) => line.startsWith("LINE 社群成員更新：名稱與大頭貼都沒變")).length, 1);
   await provider.close();
