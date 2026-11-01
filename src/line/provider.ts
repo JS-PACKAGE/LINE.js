@@ -705,10 +705,17 @@ export class EvexLineProvider implements LineProvider {
       } as Parameters<Client["base"]["square"]["fetchSquareChatEvents"]>[0]);
       if (this.client !== watch.client || this.joinWatches.get(chatId) !== watch) return;
       const events = Array.isArray(response?.events) ? response.events : [];
-      // History seeds each member's baseline without reporting; only events after it are news.
-      const report = watch.caughtUp;
+      // History seeds each member's baseline without reporting; only events after it are news. LINE also
+      // hands out events from before sign-in after the walk (小語's test: a restart re-reported old ones),
+      // so an event is news only when LINE dated it after sign-in; undated ones are not trusted.
+      let stale = 0;
       for (const event of events) {
         const type = String(event?.type);
+        const created = Number(event?.createdTime);
+        const member = type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2" || type === "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE" || type === "7"
+          || type === "NOTIFIED_UPDATE_SQUARE_MEMBER" || type === "11";
+        const report = watch.caughtUp && Number.isSafeInteger(created) && created >= this.activatedAt;
+        if (member && watch.caughtUp && !report) stale += 1;
         if (type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2") this.memberJoined(chatId, event.payload?.notifiedJoinSquareChat, report);
         else if (type === "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE" || type === "7") {
           const update = event.payload?.notifiedUpdateSquareMemberProfile;
@@ -719,6 +726,7 @@ export class EvexLineProvider implements LineProvider {
           if (update?.squareMemberMid === update?.squareMember?.squareMemberMid) this.memberUpdated(chatId, update?.squareMember, type, report);
         }
       }
+      if (stale > 0) this.events.onDiagnostic?.(`社群事件串：略過登入前的舊成員事件 chat=${chatId} count=${stale}`);
       if (typeof response?.syncToken === "string" && response.syncToken) watch.syncToken = response.syncToken;
       const next = typeof response?.continuationToken === "string" && response.continuationToken ? response.continuationToken : undefined;
       watch.continuationToken = events.length > 0 ? next : undefined;
@@ -727,7 +735,7 @@ export class EvexLineProvider implements LineProvider {
         return;
       }
       // Caught up, the rest waits for the next push or poll unless LINE says more follows right away.
-      if (report && !next) return;
+      if (watch.caughtUp && !next) return;
     }
   }
 

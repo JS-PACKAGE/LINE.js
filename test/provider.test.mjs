@@ -13,6 +13,8 @@ const SQUARE = "m" + "s".repeat(32);
 const OWN_MEMBER = `p${"0".repeat(32)}`;
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+// LINE dates every chat event; fixtures are built before sign-in, so "after sign-in" lies ahead.
+const LATER = () => String(Date.now() + 60_000);
 
 function fakeBase(overrides = {}) {
   return {
@@ -62,7 +64,7 @@ async function activeProvider(base, client = {}) {
 
 test("every account-wide OpenChat push reads the watched chats' own events: history is skipped, new joins are reported once, malformed ones dropped", async () => {
   const member = `p${"j".repeat(32)}`;
-  const joinEvent = (joined, type = "NOTIFIED_JOIN_SQUARE_CHAT") => ({ type, payload: { notifiedJoinSquareChat: joined } });
+  const joinEvent = (joined, type = "NOTIFIED_JOIN_SQUARE_CHAT", createdTime = LATER()) => ({ type, ...(createdTime === null ? {} : { createdTime }), payload: { notifiedJoinSquareChat: joined } });
   const valid = (squareMemberMid, displayName, extra = {}) => joinEvent({ squareChatMid: SQUARE, joinedMember: { squareMemberMid, displayName, ...extra } });
   const requests = [];
   // LINE's answers, in order: history pages (paged by continuation token and by sync token alike, ending
@@ -83,13 +85,16 @@ test("every account-wide OpenChat push reads the watched chats' own events: hist
         valid(member, "x", { profileImageObsHash: 1 }),
         joinEvent({ squareChatMid: SQUARE }),
         joinEvent(undefined),
+        // Handed out after the walk, yet from before sign-in (LINE did this after a restart), or undated.
+        joinEvent({ squareChatMid: SQUARE, joinedMember: { squareMemberMid: `p${"z".repeat(32)}`, displayName: "很久以前" } }, undefined, "1600000000000"),
+        joinEvent({ squareChatMid: SQUARE, joinedMember: { squareMemberMid: `p${"y".repeat(32)}`, displayName: "沒有日期" } }, undefined, null),
       ],
       syncToken: "s2",
     },
     { events: [], syncToken: "s2" },
   ];
   const base = fakeBase({ square: { async fetchSquareChatEvents(request) { requests.push(request); return answers.shift() ?? { events: [], syncToken: "s2" }; } } });
-  const { provider, joined, received, emit } = await activeProvider(base);
+  const { provider, joined, received, diagnostics, emit } = await activeProvider(base);
   // The account-wide stream never carries who joined; such an event there is ignored.
   emit("square:event", valid(member, "推播串"));
   provider.watchSquareJoins([SQUARE, GROUP_A]);
@@ -102,6 +107,7 @@ test("every account-wide OpenChat push reads the watched chats' own events: hist
     [SQUARE, { userId: member, displayName: "新朋友", pictureId: "avatar-o-0hAbCdEfGh", pictureUrl: "https://obs.line-scdn.net/0hAbCdEfGh" }],
     [SQUARE, { userId: OWN_MEMBER, displayName: "", pictureUrl: `https://obs.line-scdn.net/r/g2/member/${OWN_MEMBER}` }],
   ]);
+  assert.deepEqual(diagnostics.filter((line) => line.startsWith("社群事件串：")), [`社群事件串：略過登入前的舊成員事件 chat=${SQUARE} count=2`]);
   // linejs emits every push as "square:event" first; a message is one more push.
   const message = { message: { id: "77", to: SQUARE, from: member, contentType: "NONE", text: "嗨", createdTime: String(1_700_000_000_077), contentMetadata: {} } };
   emit("square:event", { type: "NOTIFICATION_MESSAGE", payload: { notificationMessage: { squareChatMid: SQUARE, squareMessage: message } } });
@@ -130,7 +136,7 @@ test("a join with an empty or invalid photo hash still provides the member OBS U
     const base = fakeBase({ square: {
       async fetchSquareChatEvents() {
         return { syncToken: "latest", events: fresh ? [{
-          type: "NOTIFIED_JOIN_SQUARE_CHAT",
+          type: "NOTIFIED_JOIN_SQUARE_CHAT", createdTime: LATER(),
           payload: { notifiedJoinSquareChat: { squareChatMid: SQUARE, joinedMember: { squareMemberMid: OWN_MEMBER, displayName: "新朋友", profileImageObsHash: hash } } },
         }] : [] };
       },
@@ -152,8 +158,8 @@ test("a join with an empty or invalid photo hash still provides the member OBS U
 test("a member's new name or picture in a watched chat's own stream is reported once, with what changed and their role", async () => {
   const member = `p${"j".repeat(32)}`;
   const profile = (displayName, extra = {}) => ({ squareMemberMid: member, squareMid: `s${"q".repeat(32)}`, displayName, ...extra });
-  const byChat = (squareMember, chat = SQUARE, type = "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE") => ({ type, payload: { notifiedUpdateSquareMemberProfile: { squareChatMid: chat, squareMember } } });
-  const bySquare = (squareMember, type = "NOTIFIED_UPDATE_SQUARE_MEMBER") => ({ type, payload: { notifiedUpdateSquareMember: { squareMid: squareMember.squareMid, squareMemberMid: member, squareMember } } });
+  const byChat = (squareMember, chat = SQUARE, type = "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE") => ({ type, createdTime: LATER(), payload: { notifiedUpdateSquareMemberProfile: { squareChatMid: chat, squareMember } } });
+  const bySquare = (squareMember, type = "NOTIFIED_UPDATE_SQUARE_MEMBER") => ({ type, createdTime: LATER(), payload: { notifiedUpdateSquareMember: { squareMid: squareMember.squareMid, squareMemberMid: member, squareMember } } });
   const answers = [
     // History: updates from before the watch are not news. It ends only with an empty page.
     { events: [byChat(profile("舊名", { profileImageObsHash: "0hOldPicture", revision: 1 }))], syncToken: "s0" },
@@ -195,7 +201,7 @@ test("a member's new name or picture in a watched chat's own stream is reported 
 test("a profile change is judged against that chat's own last report: a message under the new name or another chat's report cannot hide it", async () => {
   const member = `p${"j".repeat(32)}`;
   const second = `m${"t".repeat(32)}`;
-  const update = (squareChatMid, displayName, hash, revision) => ({ type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", payload: { notifiedUpdateSquareMemberProfile: {
+  const update = (squareChatMid, displayName, hash, revision) => ({ type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", createdTime: LATER(), payload: { notifiedUpdateSquareMemberProfile: {
     squareChatMid, squareMember: { squareMemberMid: member, squareMid: `s${"q".repeat(32)}`, displayName, profileImageObsHash: hash, revision },
   } } });
   const pending = { [SQUARE]: [], [second]: [] };
@@ -229,7 +235,7 @@ test("watched OpenChat chats are also read every second without any push, and a 
   const base = fakeBase({ square: { async fetchSquareChatEvents({ squareChatMid }) {
     reads.push(squareChatMid);
     if (fail) throw new Error("throttled");
-    return { syncToken: "s", events: fresh ? [{ type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", payload: { notifiedUpdateSquareMemberProfile: {
+    return { syncToken: "s", events: fresh ? [{ type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", createdTime: LATER(), payload: { notifiedUpdateSquareMemberProfile: {
       squareChatMid, squareMember: { squareMemberMid: member, displayName: "管管.星語", profileImageObsHash: "0hNewPicture", revision: 2 },
     } } }] : [] };
   } } });
