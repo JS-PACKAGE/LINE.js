@@ -187,6 +187,8 @@ test("every community member event in a watched chat's own stream after the walk
   ]);
   assert.equal(diagnostics.filter((line) => line.startsWith("LINE 社群成員更新：格式不符")).length, 2, "malformed updates are dropped with a shape-only diagnostic");
   assert.deepEqual(diagnostics.filter((line) => line.startsWith("LINE 社群成員更新：非現任成員")).map((line) => line.split(" state=")[1]), ["KICK_OUT", "4"]);
+  // Any other event type in the stream is logged by type only, so a rename's real event can be found.
+  assert.deepEqual(diagnostics.filter((line) => line.startsWith("社群事件串其他事件：")), [`社群事件串其他事件：chat=${SQUARE} type=NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE`]);
   await provider.close();
 });
 

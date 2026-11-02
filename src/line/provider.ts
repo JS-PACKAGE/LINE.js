@@ -177,6 +177,8 @@ const QUIET_SQUARE_EVENTS: ReadonlySet<string> = new Set([
   // Counts and read positions, sent on almost every chat change; it still triggers the join reads like any push.
   "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", "13", "NOTIFICATION_MESSAGE", "29",
 ]);
+// Message take-backs and reactions in a watched chat's own stream: handled through the account-wide push.
+const CHAT_STREAM_MESSAGE_EVENTS: ReadonlySet<string> = new Set(["NOTIFIED_DESTROY_MESSAGE", "5", "NOTIFIED_UPDATE_MESSAGE_STATUS", "46"]);
 
 /** Content types that may carry a note (記事本): post notifications and the older group board type. */
 const NOTE_CONTENT_TYPES: ReadonlySet<string> = new Set(["POSTNOTIFICATION", "16", "GROUPBOARD", "10"]);
@@ -705,6 +707,9 @@ export class EvexLineProvider implements LineProvider {
             if (typeof update?.squareMemberMid === "string" && update.squareMemberMid === update.squareMember?.squareMemberMid) {
               this.memberUpdated(chatId, update.squareMember);
             }
+          } else if (!QUIET_SQUARE_EVENTS.has(type) && !CHAT_STREAM_MESSAGE_EVENTS.has(type)) {
+            // Which event a rename or new picture brings is not documented; the type alone shows it (no parameters).
+            this.events.onDiagnostic?.(`社群事件串其他事件：chat=${chatId} type=${type.slice(0, 60)}`);
           }
         }
       }
