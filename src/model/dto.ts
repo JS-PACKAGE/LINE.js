@@ -63,11 +63,11 @@ export interface JoinedMember {
   pictureUrl?: string;
 }
 
-/** An OpenChat member who changed their name or picture; same fields as a join, plus what changed. */
+/** An OpenChat member event (NOTIFIED_UPDATE_SQUARE_MEMBER), passed on as LINE gives it. */
 export interface UpdatedMember extends JoinedMember {
   /** Present when LINE reports the member as an administrator. */
   role?: MemberRole;
-  /** "picture" is always included when LINE gave no picture hash: the old and new pictures cannot be compared. */
+  /** LINE does not say what changed, so this is always both; kept so bots read the frame unchanged. */
   changes: ("name" | "picture")[];
 }
 

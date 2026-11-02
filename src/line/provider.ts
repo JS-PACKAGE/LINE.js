@@ -41,7 +41,7 @@ export interface ProviderEvents {
   onReactions: (chatId: string, messageId: string, reactions: Reactions | undefined) => void;
   /** Someone joined an OpenChat chat (NOTIFIED_JOIN_SQUARE_CHAT). */
   onMemberJoined: (chatId: string, member: JoinedMember) => void;
-  /** A member of an OpenChat chat changed their name or picture (NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE / _MEMBER). */
+  /** A member event of an OpenChat chat's community (NOTIFIED_UPDATE_SQUARE_MEMBER), passed on as LINE gives it. */
   onMemberUpdated: (chatId: string, member: UpdatedMember) => void;
   /** A new note in the OpenChat community of a watched chat (NOTIFIED_UPDATE_SQUARE_NOTE_STATUS), once per watched chat. */
   onNotePosted: (chatId: string, note: SquareNote) => void;
@@ -201,23 +201,6 @@ const NOTE_TIMEOUT_MS = 15_000;
 // A burst of notes behind one status change: only the newest few are fetched.
 const MAX_NOTES_PER_STATUS = 5;
 const MAX_REPORTED_NOTES = 500;
-// Every member of every watched chat is seeded (an OpenChat chat holds up to 5000), so this must hold several
-// whole chats: at 5000 two seeded chats evicted each other's baselines (小語's log: 1538 + 4999 members).
-const MAX_MEMBER_BASELINES = 50_000;
-
-/** SquareMember.revision as a decimal string; anything else is treated as absent. */
-const memberRevision = (revision: unknown): string | undefined => {
-  const text = typeof revision === "number" || typeof revision === "bigint" || typeof revision === "string" ? String(revision) : undefined;
-  return text !== undefined && /^\d{1,20}$/.test(text) ? text : undefined;
-};
-
-/**
- * LINE raises a member's revision on every change, and replays old events after every catch-up (小語's
- * log: the same events, with names since changed, on each restart). An event no newer than the baseline
- * is one of those, or the same change twice.
- */
-const notNewer = (revision: string | undefined, baseline: { revision?: string } | undefined): boolean =>
-  revision !== undefined && baseline?.revision !== undefined && BigInt(revision) <= BigInt(baseline.revision);
 // Watched OpenChat chats are read this often (linejs' own SquareChat.listen reads every second), backing off on failures.
 const JOIN_POLL_MS = 1000;
 const JOIN_POLL_MAX_BACKOFF_MS = 60_000;
@@ -253,10 +236,8 @@ interface JoinWatch {
   client: Client;
   syncToken?: string;
   continuationToken?: string;
-  /** False until the walk up to the newest event is done and the members are seeded: events seen then are history, not news. */
+  /** False while walking up to the newest event: everything seen then is history, not news. */
   caughtUp: boolean;
-  /** The walk is done; the member list (the profile baselines) is still to be read. */
-  walked?: boolean;
   running?: Promise<void>;
   again: boolean;
   /** The OpenChat community this chat belongs to, once LINE said so (note status events name the community). */
@@ -328,10 +309,6 @@ export class EvexLineProvider implements LineProvider {
   private noteBaselines = new Map<string, number>();
   private reportedNotes = new Set<string>();
   private noteChecks = new Map<string, Promise<void>>();
-  // chat:member -> the profile this chat's own events last showed (history included) and its revision. Profile
-  // changes are judged against this alone: names learned from messages, lookups or another chat's events
-  // may already be the new ones and would hide the change. One change announced twice is reported once.
-  private memberBaselines = new Map<string, { name: string; pictureId?: string; revision?: string }>();
 
   constructor(
     private readonly storage: SessionStorage,
@@ -703,14 +680,12 @@ export class EvexLineProvider implements LineProvider {
   }
 
   /**
-   * The first fetches walk the chat from its oldest event to the newest without reporting anything
-   * (those joins and profiles are history); after that only events newer than the kept sync token arrive.
-   * The walk ends only on an empty page, as linejs' own SquareChat.listen does: LINE pages history by sync
-   * token too, so a page without a continuation token is not the end of it.
+   * The first fetches only move the sync token from the chat's oldest event to the newest, reading
+   * nothing; after that every join and profile event is reported as LINE gives it. The walk ends only
+   * on an empty page, as linejs' own SquareChat.listen does: a page without a continuation token is not
+   * the end of it.
    */
   private async fetchJoins(chatId: string, watch: JoinWatch): Promise<void> {
-    // A seeding that failed is retried first; events since the walk wait behind the sync token.
-    if (!watch.caughtUp && watch.walked) return this.seedMemberBaselines(chatId, watch);
     for (let page = 0; page < SQUARE_MAX_PAGES; page += 1) {
       const response = await watch.client.base.square.fetchSquareChatEvents({
         squareChatMid: chatId, limit: SQUARE_PAGE_SIZE,
@@ -719,88 +694,40 @@ export class EvexLineProvider implements LineProvider {
       } as Parameters<Client["base"]["square"]["fetchSquareChatEvents"]>[0]);
       if (this.client !== watch.client || this.joinWatches.get(chatId) !== watch) return;
       const events = Array.isArray(response?.events) ? response.events : [];
-      // History moves each member's baseline without reporting; only events after catch-up are news.
-      // LINE dates these events 0 (小語's log), so their time cannot tell old from new.
-      const report = watch.caughtUp;
-      for (const event of events) {
-        const type = String(event?.type);
-        if (type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2") this.memberJoined(chatId, event.payload?.notifiedJoinSquareChat, report);
-        else if (type === "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE" || type === "7") {
-          const update = event.payload?.notifiedUpdateSquareMemberProfile;
-          if (update?.squareChatMid === chatId) this.memberUpdated(chatId, update.squareMember, type, report);
-        } else if (type === "NOTIFIED_UPDATE_SQUARE_MEMBER" || type === "11") {
-          const update = event.payload?.notifiedUpdateSquareMember;
-          // Community-wide, but read from this chat's own stream; the ids must agree.
-          if (update?.squareMemberMid === update?.squareMember?.squareMemberMid) this.memberUpdated(chatId, update?.squareMember, type, report);
+      if (watch.caughtUp) {
+        for (const event of events) {
+          const type = String(event?.type);
+          if (type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2") this.memberJoined(chatId, event.payload?.notifiedJoinSquareChat);
+          else if (type === "NOTIFIED_UPDATE_SQUARE_MEMBER" || type === "11") {
+            // 小語's decision: the community-level member event, read from this chat's own stream. It names the
+            // community, not the chat, so only its two member ids are checked against each other.
+            const update = event.payload?.notifiedUpdateSquareMember;
+            if (typeof update?.squareMemberMid === "string" && update.squareMemberMid === update.squareMember?.squareMemberMid) {
+              this.memberUpdated(chatId, update.squareMember);
+            }
+          }
         }
       }
       if (typeof response?.syncToken === "string" && response.syncToken) watch.syncToken = response.syncToken;
       const next = typeof response?.continuationToken === "string" && response.continuationToken ? response.continuationToken : undefined;
       watch.continuationToken = events.length > 0 ? next : undefined;
       if (events.length === 0) {
-        if (watch.caughtUp) return;
-        watch.walked = true;
-        return this.seedMemberBaselines(chatId, watch);
+        watch.caughtUp = true;
+        return;
       }
       // Caught up, the rest waits for the next push or poll unless LINE says more follows right away.
       if (watch.caughtUp && !next) return;
     }
   }
 
-  /**
-   * 小語's decision: every current member's profile becomes the baseline before anything is reported, so
-   * an update that changes neither name nor picture (roles, states: LINE sends many) is not news, and a
-   * member's first rename is caught even if the history never showed them. One paged pass per watch.
-   * A rename between this read and the next event read compares equal and is missed; that window is
-   * only as long as the paging.
-   */
-  private async seedMemberBaselines(chatId: string, watch: JoinWatch): Promise<void> {
-    const tokens = new Set<string>();
-    let continuationToken: string | undefined;
-    let members = 0;
-    for (let page = 1; page <= SQUARE_MEMBER_MAX_PAGES; page += 1) {
-      const response = await watch.client.base.square.getSquareChatMembers({ squareChatMid: chatId, limit: SQUARE_PAGE_SIZE, continuationToken });
-      if (this.client !== watch.client || this.joinWatches.get(chatId) !== watch) return;
-      if (!response || !Array.isArray(response.squareChatMembers)
-        || (response.continuationToken !== undefined && typeof response.continuationToken !== "string")) {
-        throw new Error("MEMBER_BASELINE_INVALID_RESPONSE");
-      }
-      for (const member of response.squareChatMembers) {
-        // One malformed member must not leave the others without a baseline; it simply has none.
-        if (!member || typeof member.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(member.squareMemberMid)
-          || typeof member.displayName !== "string"
-          || (member.profileImageObsHash !== undefined && typeof member.profileImageObsHash !== "string")) continue;
-        this.setMemberBaseline(chatId, member.squareMemberMid, member.displayName,
-          avatarMediaId("obs", member.profileImageObsHash), memberRevision(member.revision));
-        members += 1;
-      }
-      continuationToken = response.continuationToken || undefined;
-      if (!continuationToken || tokens.has(continuationToken) || page === SQUARE_MEMBER_MAX_PAGES) {
-        // A loop or the page cap ends the pass with what was read: unseeded members are reported in full.
-        this.events.onDiagnostic?.(`社群成員基準：chat=${chatId} members=${members} pages=${page}${continuationToken ? " incomplete" : ""}`);
-        watch.caughtUp = true;
-        return;
-      }
-      tokens.add(continuationToken);
-    }
-  }
-
   /** Typed payload, but still LINE input: anything off-shape is dropped, never guessed at. */
-  private memberJoined(chatId: string, joined: { squareChatMid?: unknown; joinedMember?: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role" | "revision", unknown>> } | undefined, report: boolean): void {
+  private memberJoined(chatId: string, joined: { squareChatMid?: unknown; joinedMember?: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role", unknown>> } | undefined): void {
     const member = joined?.joinedMember;
     if (joined?.squareChatMid !== chatId
       || typeof member?.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(member.squareMemberMid)
       || typeof member.displayName !== "string"
       || (member.profileImageObsHash !== undefined && typeof member.profileImageObsHash !== "string")) return;
     const pictureId = avatarMediaId("obs", member.profileImageObsHash);
-    const revision = memberRevision(member.revision);
-    const previous = this.memberBaselines.get(`${chatId}:${member.squareMemberMid}`);
-    if (notNewer(revision, previous)) {
-      if (report) this.events.onDiagnostic?.(`LINE 社群成員加入：不比基準新，略過 chat=${chatId} member=${member.squareMemberMid} revision=${revision} baseline=${previous!.revision}`);
-      return;
-    }
-    this.setMemberBaseline(chatId, member.squareMemberMid, member.displayName, pictureId, revision);
-    if (!report) return;
     // An incomplete join payload must not mark the profile as fully resolved.
     this.rememberProfile(member.squareMemberMid, member.displayName, pictureId, !!pictureId, memberRole(member.role));
     this.events.onMemberJoined(chatId, {
@@ -815,42 +742,27 @@ export class EvexLineProvider implements LineProvider {
   }
 
   /**
-   * A member's new name or picture, judged against this chat's baseline (see memberBaselines). Without
-   * one (first seen since sign-in) both count as changed, as does a picture LINE gave no hash for.
-   * History events (`report` false) only move the baseline.
+   * 小語's decision: a member's profile event is reported as LINE gives it, with no history, member list or
+   * comparison (bots judge both name and picture every time; extra checks are cheap). LINE's events do not
+   * say what changed, so `changes` is always both. Leaving, removal and bans arrive as the same event and are
+   * not profile changes; they alone are dropped.
    */
-  private memberUpdated(chatId: string, member: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role" | "revision" | "membershipState", unknown>> | undefined, type: string, report: boolean): void {
+  private memberUpdated(chatId: string, member: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role" | "membershipState", unknown>> | undefined): void {
     if (typeof member?.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(member.squareMemberMid)
       || typeof member.displayName !== "string"
       || (member.profileImageObsHash !== undefined && typeof member.profileImageObsHash !== "string")) {
-      if (report) this.events.onDiagnostic?.(`LINE 社群成員更新：格式不符，略過 chat=${chatId} type=${type.slice(0, 60)}`);
+      this.events.onDiagnostic?.(`LINE 社群成員更新：格式不符，略過 chat=${chatId}`);
       return;
     }
     const mid = member.squareMemberMid;
-    // LINE also announces leaving, removal and bans as member updates; only current members matter.
     const state = member.membershipState;
     if (state !== undefined && state !== "JOINED" && state !== 2) {
-      if (report) this.events.onDiagnostic?.(`LINE 社群成員更新：非現任成員，略過 chat=${chatId} member=${mid} type=${type.slice(0, 60)} state=${String(state).slice(0, 30)}`);
-      return;
-    }
-    const revision = memberRevision(member.revision);
-    const previous = this.memberBaselines.get(`${chatId}:${mid}`);
-    if (notNewer(revision, previous)) {
-      if (report) this.events.onDiagnostic?.(`LINE 社群成員更新：不比基準新，略過 chat=${chatId} member=${mid} type=${type.slice(0, 60)} revision=${revision} baseline=${previous!.revision}`);
+      this.events.onDiagnostic?.(`LINE 社群成員更新：非現任成員，略過 chat=${chatId} member=${mid} state=${String(state).slice(0, 30)}`);
       return;
     }
     const pictureId = avatarMediaId("obs", member.profileImageObsHash);
-    this.setMemberBaseline(chatId, mid, member.displayName, pictureId, revision);
-    if (!report) return;
-    const changes: ("name" | "picture")[] = [];
-    if (!previous || previous.name !== member.displayName) changes.push("name");
-    if (!pictureId || !previous || previous.pictureId !== pictureId) changes.push("picture");
     const role = memberRole(member.role);
     this.rememberProfile(mid, member.displayName, pictureId, !!pictureId, role);
-    if (changes.length === 0) {
-      this.events.onDiagnostic?.(`LINE 社群成員更新：名稱與大頭貼都沒變，略過 chat=${chatId} member=${mid} type=${type.slice(0, 60)} revision=${revision ?? "-"}`);
-      return;
-    }
     this.events.onMemberUpdated(chatId, {
       userId: mid,
       displayName: member.displayName,
@@ -859,16 +771,8 @@ export class EvexLineProvider implements LineProvider {
         ? `https://obs.line-scdn.net/${pictureId.slice("avatar-o-".length)}`
         : `https://obs.line-scdn.net/r/g2/member/${mid}`,
       ...(role ? { role } : {}),
-      changes,
+      changes: ["name", "picture"],
     });
-  }
-
-  private setMemberBaseline(chatId: string, mid: string, name: string, pictureId: string | undefined, revision: string | undefined): void {
-    const key = `${chatId}:${mid}`;
-    // Re-inserted so the bound evicts the members not heard from the longest.
-    this.memberBaselines.delete(key);
-    this.memberBaselines.set(key, { name, ...(pictureId ? { pictureId } : {}), ...(revision !== undefined ? { revision } : {}) });
-    if (this.memberBaselines.size > MAX_MEMBER_BASELINES) this.memberBaselines.delete(this.memberBaselines.keys().next().value!);
   }
 
   /** The message's media is no longer fetchable through us, and the hub replaces what it shows. */
@@ -2247,7 +2151,6 @@ export class EvexLineProvider implements LineProvider {
     this.squareCache.clear();
     this.squareSummaries.clear();
     this.joinWatches.clear();
-    this.memberBaselines.clear();
     clearInterval(this.joinPoller);
     this.joinPoller = undefined;
     this.noteBaselines.clear();

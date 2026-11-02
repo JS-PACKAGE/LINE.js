@@ -27,8 +27,6 @@ function fakeBase(overrides = {}) {
     },
     square: {
       async getSquareChat({ squareChatMid }) { return { squareChatMember: { squareChatMid, squareMemberMid: OWN_MEMBER } }; },
-      // Watching a chat first reads its members as profile baselines; nobody by default.
-      async getSquareChatMembers() { return { squareChatMembers: [] }; },
       ...overrides.square,
     },
     relation: { ...overrides.relation },
@@ -151,124 +149,44 @@ test("a join with an empty or invalid photo hash still provides the member OBS U
   }
 });
 
-test("a member's new name or picture in a watched chat's own stream is reported once, with what changed and their role", async () => {
+test("every community member event in a watched chat's own stream after the walk is passed on as LINE gives it; only non-members and malformed ones are dropped", async () => {
   const member = `p${"j".repeat(32)}`;
   const profile = (displayName, extra = {}) => ({ squareMemberMid: member, squareMid: `s${"q".repeat(32)}`, displayName, ...extra });
-  const byChat = (squareMember, chat = SQUARE, type = "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE") => ({ type, payload: { notifiedUpdateSquareMemberProfile: { squareChatMid: chat, squareMember } } });
-  const bySquare = (squareMember, type = "NOTIFIED_UPDATE_SQUARE_MEMBER") => ({ type, payload: { notifiedUpdateSquareMember: { squareMid: squareMember.squareMid, squareMemberMid: member, squareMember } } });
+  const bySquare = (squareMember, type = "NOTIFIED_UPDATE_SQUARE_MEMBER", squareMemberMid = squareMember.squareMemberMid) => ({ type, payload: { notifiedUpdateSquareMember: { squareMid: squareMember.squareMid, squareMemberMid, squareMember } } });
   const answers = [
-    // History: updates from before the watch are not news. It ends only with an empty page.
-    { events: [byChat(profile("舊名", { profileImageObsHash: "0hOldPicture", revision: 1 }))], syncToken: "s0" },
+    // History only moves the sync token; it ends only with an empty page.
+    { events: [bySquare(profile("舊名", { profileImageObsHash: "0hOldPicture" }))], syncToken: "s0" },
     { events: [], syncToken: "s0" },
     { events: [
-      byChat(profile("小豬", { profileImageObsHash: "0hCrownBadge", role: "MEMBER", revision: 5 })),
-      // The same change announced community-wide too: reported once.
-      bySquare(profile("小豬", { profileImageObsHash: "0hCrownBadge", role: "MEMBER", revision: 5 }), 11),
-      byChat(profile("別處", { revision: 6 }), GROUP_A),
-      byChat(profile(5)),
-      byChat({ ...profile("x"), squareMemberMid: "../evil" }, SQUARE, 7),
-      // Leaving, removal and bans arrive as member updates too; they are not profile changes.
-      byChat({ ...profile("被踢", { membershipState: "KICK_OUT", revision: 6 }), squareMemberMid: `p${"k".repeat(32)}` }),
-      bySquare({ ...profile("離開", { membershipState: 4, revision: 6 }), squareMemberMid: member }, 11),
+      bySquare(profile("小豬", { profileImageObsHash: "0hCrownBadge", role: "MEMBER" })),
+      // Nothing visibly changed (a role or state update, or a replay): passed on all the same.
+      bySquare(profile("小豬", { profileImageObsHash: "0hCrownBadge", role: "CO_ADMIN" }), 11),
+      // The chat-level profile event is not the one 小語 chose; mismatched member ids are not trusted.
+      { type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", payload: { notifiedUpdateSquareMemberProfile: { squareChatMid: SQUARE, squareMember: profile("聊天室層級") } } },
+      bySquare(profile("冒名"), undefined, `p${"z".repeat(32)}`),
+      bySquare(profile(5)),
+      bySquare({ ...profile("x"), squareMemberMid: "../evil" }),
+      // Leaving, removal and bans arrive as the same event; they are not profile changes.
+      bySquare({ ...profile("被踢", { membershipState: "KICK_OUT" }), squareMemberMid: `p${"k".repeat(32)}` }),
+      bySquare(profile("離開", { membershipState: 4 })),
+      // A picture LINE gave no hash for is addressed by member id.
+      bySquare(profile("群管小豬", { membershipState: "JOINED" })),
     ], syncToken: "s1" },
-    // Nothing new, then a new name only, then a picture LINE gave no hash for.
-    { events: [byChat(profile("小豬", { profileImageObsHash: "0hCrownBadge", revision: 7 }))], syncToken: "s2" },
-    { events: [byChat(profile("群管小豬", { profileImageObsHash: "0hCrownBadge", role: "CO_ADMIN", revision: 8 }))], syncToken: "s3" },
-    { events: [byChat(profile("群管小豬", { revision: 9 }))], syncToken: "s4" },
   ];
   const base = fakeBase({ square: { async fetchSquareChatEvents() { return answers.shift() ?? { events: [], syncToken: "s9" }; } } });
   const { provider, updated, diagnostics, emit } = await activeProvider(base);
   provider.watchSquareJoins([SQUARE]);
   await settle();
-  for (let push = 0; push < 4; push++) {
-    emit("square:event", { type: "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", payload: {} });
-    await settle();
-  }
+  emit("square:event", { type: "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", payload: {} });
+  await settle();
+  const both = ["name", "picture"];
   assert.deepEqual(updated, [
-    [SQUARE, { userId: member, displayName: "小豬", pictureId: "avatar-o-0hCrownBadge", pictureUrl: "https://obs.line-scdn.net/0hCrownBadge", changes: ["name", "picture"] }],
-    [SQUARE, { userId: member, displayName: "群管小豬", pictureId: "avatar-o-0hCrownBadge", pictureUrl: "https://obs.line-scdn.net/0hCrownBadge", role: "coAdmin", changes: ["name"] }],
-    [SQUARE, { userId: member, displayName: "群管小豬", pictureUrl: `https://obs.line-scdn.net/r/g2/member/${member}`, changes: ["picture"] }],
+    [SQUARE, { userId: member, displayName: "小豬", pictureId: "avatar-o-0hCrownBadge", pictureUrl: "https://obs.line-scdn.net/0hCrownBadge", changes: both }],
+    [SQUARE, { userId: member, displayName: "小豬", pictureId: "avatar-o-0hCrownBadge", pictureUrl: "https://obs.line-scdn.net/0hCrownBadge", role: "coAdmin", changes: both }],
+    [SQUARE, { userId: member, displayName: "群管小豬", pictureUrl: `https://obs.line-scdn.net/r/g2/member/${member}`, changes: both }],
   ]);
   assert.equal(diagnostics.filter((line) => line.startsWith("LINE 社群成員更新：格式不符")).length, 2, "malformed updates are dropped with a shape-only diagnostic");
   assert.deepEqual(diagnostics.filter((line) => line.startsWith("LINE 社群成員更新：非現任成員")).map((line) => line.split(" state=")[1]), ["KICK_OUT", "4"]);
-  await provider.close();
-});
-
-test("a profile change is judged against that chat's own last report: a message under the new name or another chat's report cannot hide it", async () => {
-  const member = `p${"j".repeat(32)}`;
-  const second = `m${"t".repeat(32)}`;
-  const update = (squareChatMid, displayName, hash, revision) => ({ type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", payload: { notifiedUpdateSquareMemberProfile: {
-    squareChatMid, squareMember: { squareMemberMid: member, squareMid: `s${"q".repeat(32)}`, displayName, profileImageObsHash: hash, revision },
-  } } });
-  const pending = { [SQUARE]: [], [second]: [] };
-  const base = fakeBase({ square: { async fetchSquareChatEvents({ squareChatMid, syncToken }) {
-    // History (no sync token yet): the member's profile as it was before the watch began.
-    if (!syncToken) return { syncToken: "s", events: [update(squareChatMid, "小豬", "0hPlainPhoto", 1)] };
-    return { syncToken: "s", events: pending[squareChatMid].splice(0) };
-  } } });
-  const { provider, updated, emit } = await activeProvider(base);
-  provider.watchSquareJoins([SQUARE, second]);
-  await settle();
-  // A rename, then a message under the new name: the push that carries the message arrives before
-  // the chat's own events are read, so the adapter already knows the new name by then.
-  pending[SQUARE].push(update(SQUARE, "管理員小豬", "0hPlainPhoto", 2));
-  pending[second].push(update(second, "管理員小豬", "0hPlainPhoto", 2));
-  const message = { message: { id: "78", to: SQUARE, from: member, contentType: "NONE", text: "嗨", createdTime: String(1_700_000_000_078), contentMetadata: {} } };
-  emit("square:event", { type: "NOTIFICATION_MESSAGE", payload: { notificationMessage: { squareChatMid: SQUARE, senderDisplayName: "管理員小豬", squareMessage: message } } });
-  await settle();
-  assert.deepEqual(updated.map(([chatId, { displayName, changes }]) => [chatId, displayName, changes]), [
-    [SQUARE, "管理員小豬", ["name"]],
-    [second, "管理員小豬", ["name"]],
-  ]);
-  await provider.close();
-});
-
-test("a watched chat's current members are its baselines: a first rename is caught, a role-only update is not news, nothing is reported before seeding", async () => {
-  const member = `p${"j".repeat(32)}`;
-  const other = `p${"k".repeat(32)}`;
-  const squareMember = (displayName, revision, extra = {}) => ({ squareMemberMid: member, squareMid: `s${"q".repeat(32)}`, displayName, profileImageObsHash: "0hSamePhoto", revision, ...extra });
-  const update = (profile) => ({ type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", payload: { notifiedUpdateSquareMemberProfile: { squareChatMid: SQUARE, squareMember: profile } } });
-  let seeding = 0;
-  const pending = [];
-  const base = fakeBase({ square: {
-    async fetchSquareChatEvents() { return { syncToken: "s", events: pending.splice(0) }; },
-    async getSquareChatMembers({ continuationToken }) {
-      seeding += 1;
-      if (seeding === 1) throw new Error("busy");
-      // Two pages; the member never appeared in the chat's own history.
-      return continuationToken
-        ? { squareChatMembers: [{ squareMemberMid: other, displayName: "路人", revision: 1 }, { squareMemberMid: "../evil", displayName: "x" }] }
-        : { squareChatMembers: [squareMember("星語", 10, { role: "CO_ADMIN" })], continuationToken: "p2" };
-    },
-  } });
-  const { provider, updated, joined, diagnostics, emit } = await activeProvider(base);
-  provider.watchSquareJoins([SQUARE]);
-  await settle();
-  // The member list could not be read: an update waits behind the sync token instead of being judged
-  // without a baseline. The next push retries the list first.
-  pending.push(update(squareMember("星語", 11)));
-  emit("square:event", { type: "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", payload: {} });
-  await settle();
-  assert.deepEqual(updated, []);
-  // Then the waiting update (a role change only) and a rename are read.
-  await new Promise((resolve) => setTimeout(resolve, 2100));
-  pending.push(update(squareMember("星語貓", 12)));
-  emit("square:event", { type: "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", payload: {} });
-  await settle();
-  assert.deepEqual(updated.map(([chatId, { displayName, changes }]) => [chatId, displayName, changes]), [[SQUARE, "星語貓", ["name"]]]);
-  // LINE replays old events after catch-up, with names and pictures since changed (小語's restarts):
-  // anything no newer than the baseline's revision is one of those, joins included.
-  pending.push(
-    update(squareMember("改名前的舊名", 9, { profileImageObsHash: "0hOlderPhoto" })),
-    { type: "NOTIFIED_JOIN_SQUARE_CHAT", payload: { notifiedJoinSquareChat: { squareChatMid: SQUARE, joinedMember: squareMember("剛加入時", 1) } } },
-  );
-  emit("square:event", { type: "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", payload: {} });
-  await settle();
-  assert.equal(updated.length, 1);
-  assert.deepEqual(joined, []);
-  assert.deepEqual(diagnostics.filter((line) => line.includes("不比基準新")).map((line) => line.split(" revision=")[1]), ["9 baseline=12", "1 baseline=12"]);
-  assert.deepEqual(diagnostics.filter((line) => line.startsWith("社群成員基準：")), [`社群成員基準：chat=${SQUARE} members=2 pages=2`]);
-  assert.equal(diagnostics.filter((line) => line.startsWith("LINE 社群成員更新：名稱與大頭貼都沒變")).length, 1);
   await provider.close();
 });
 
@@ -280,8 +198,8 @@ test("watched OpenChat chats are also read every second without any push, and a 
   const base = fakeBase({ square: { async fetchSquareChatEvents({ squareChatMid }) {
     reads.push(squareChatMid);
     if (fail) throw new Error("throttled");
-    return { syncToken: "s", events: fresh ? [{ type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", payload: { notifiedUpdateSquareMemberProfile: {
-      squareChatMid, squareMember: { squareMemberMid: member, displayName: "管管.星語", profileImageObsHash: "0hNewPicture", revision: 2 },
+    return { syncToken: "s", events: fresh ? [{ type: "NOTIFIED_UPDATE_SQUARE_MEMBER", payload: { notifiedUpdateSquareMember: {
+      squareMid: `s${"q".repeat(32)}`, squareMemberMid: member, squareMember: { squareMemberMid: member, displayName: "管管.星語", profileImageObsHash: "0hNewPicture", revision: 2 },
     } } }] : [] };
   } } });
   const { provider, updated, diagnostics } = await activeProvider(base);
