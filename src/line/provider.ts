@@ -41,7 +41,7 @@ export interface ProviderEvents {
   onReactions: (chatId: string, messageId: string, reactions: Reactions | undefined) => void;
   /** Someone joined an OpenChat chat (NOTIFIED_JOIN_SQUARE_CHAT). */
   onMemberJoined: (chatId: string, member: JoinedMember) => void;
-  /** A member event of an OpenChat chat's community (NOTIFIED_UPDATE_SQUARE_MEMBER), passed on as LINE gives it. */
+  /** A member profile event of an OpenChat chat (NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE), passed on as LINE gives it. */
   onMemberUpdated: (chatId: string, member: UpdatedMember) => void;
   /** A new note in the OpenChat community of a watched chat (NOTIFIED_UPDATE_SQUARE_NOTE_STATUS), once per watched chat. */
   onNotePosted: (chatId: string, note: SquareNote) => void;
@@ -177,8 +177,11 @@ const QUIET_SQUARE_EVENTS: ReadonlySet<string> = new Set([
   // Counts and read positions, sent on almost every chat change; it still triggers the join reads like any push.
   "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", "13", "NOTIFICATION_MESSAGE", "29",
 ]);
-// Message take-backs and reactions in a watched chat's own stream: handled through the account-wide push.
-const CHAT_STREAM_MESSAGE_EVENTS: ReadonlySet<string> = new Set(["NOTIFIED_DESTROY_MESSAGE", "5", "NOTIFIED_UPDATE_MESSAGE_STATUS", "46"]);
+// Message take-backs, reactions and reply-thread counters in a watched chat's own stream: not member events,
+// and the thread counter arrives with every reply (小語's log).
+const CHAT_STREAM_MESSAGE_EVENTS: ReadonlySet<string> = new Set([
+  "NOTIFIED_DESTROY_MESSAGE", "5", "NOTIFIED_UPDATE_MESSAGE_STATUS", "46", "NOTIFIED_UPDATE_THREAD_ROOT_MESSAGE_STATUS", "60",
+]);
 
 /** Content types that may carry a note (記事本): post notifications and the older group board type. */
 const NOTE_CONTENT_TYPES: ReadonlySet<string> = new Set(["POSTNOTIFICATION", "16", "GROUPBOARD", "10"]);
@@ -700,13 +703,10 @@ export class EvexLineProvider implements LineProvider {
         for (const event of events) {
           const type = String(event?.type);
           if (type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2") this.memberJoined(chatId, event.payload?.notifiedJoinSquareChat);
-          else if (type === "NOTIFIED_UPDATE_SQUARE_MEMBER" || type === "11") {
-            // 小語's decision: the community-level member event, read from this chat's own stream. It names the
-            // community, not the chat, so only its two member ids are checked against each other.
-            const update = event.payload?.notifiedUpdateSquareMember;
-            if (typeof update?.squareMemberMid === "string" && update.squareMemberMid === update.squareMember?.squareMemberMid) {
-              this.memberUpdated(chatId, update.squareMember);
-            }
+          else if (type === "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE" || type === "7") {
+            // 小語's decision: the chat-level profile event, passed on as LINE gives it; it must name this chat.
+            const update = event.payload?.notifiedUpdateSquareMemberProfile;
+            if (update?.squareChatMid === chatId) this.memberUpdated(chatId, update.squareMember);
           } else if (!QUIET_SQUARE_EVENTS.has(type) && !CHAT_STREAM_MESSAGE_EVENTS.has(type)) {
             // Which event a rename or new picture brings is not documented; the type alone shows it (no parameters).
             this.events.onDiagnostic?.(`社群事件串其他事件：chat=${chatId} type=${type.slice(0, 60)}`);

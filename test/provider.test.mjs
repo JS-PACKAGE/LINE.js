@@ -149,28 +149,30 @@ test("a join with an empty or invalid photo hash still provides the member OBS U
   }
 });
 
-test("every community member event in a watched chat's own stream after the walk is passed on as LINE gives it; only non-members and malformed ones are dropped", async () => {
+test("every member profile event in a watched chat's own stream after the walk is passed on as LINE gives it; only non-members and malformed ones are dropped", async () => {
   const member = `p${"j".repeat(32)}`;
   const profile = (displayName, extra = {}) => ({ squareMemberMid: member, squareMid: `s${"q".repeat(32)}`, displayName, ...extra });
-  const bySquare = (squareMember, type = "NOTIFIED_UPDATE_SQUARE_MEMBER", squareMemberMid = squareMember.squareMemberMid) => ({ type, payload: { notifiedUpdateSquareMember: { squareMid: squareMember.squareMid, squareMemberMid, squareMember } } });
+  const byChat = (squareMember, chat = SQUARE, type = "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE") => ({ type, payload: { notifiedUpdateSquareMemberProfile: { squareChatMid: chat, squareMember } } });
   const answers = [
     // History only moves the sync token; it ends only with an empty page.
-    { events: [bySquare(profile("舊名", { profileImageObsHash: "0hOldPicture" }))], syncToken: "s0" },
+    { events: [byChat(profile("舊名", { profileImageObsHash: "0hOldPicture" }))], syncToken: "s0" },
     { events: [], syncToken: "s0" },
     { events: [
-      bySquare(profile("小豬", { profileImageObsHash: "0hCrownBadge", role: "MEMBER" })),
+      byChat(profile("小豬", { profileImageObsHash: "0hCrownBadge", role: "MEMBER" })),
       // Nothing visibly changed (a role or state update, or a replay): passed on all the same.
-      bySquare(profile("小豬", { profileImageObsHash: "0hCrownBadge", role: "CO_ADMIN" }), 11),
-      // The chat-level profile event is not the one 小語 chose; mismatched member ids are not trusted.
-      { type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", payload: { notifiedUpdateSquareMemberProfile: { squareChatMid: SQUARE, squareMember: profile("聊天室層級") } } },
-      bySquare(profile("冒名"), undefined, `p${"z".repeat(32)}`),
-      bySquare(profile(5)),
-      bySquare({ ...profile("x"), squareMemberMid: "../evil" }),
+      byChat(profile("小豬", { profileImageObsHash: "0hCrownBadge", role: "CO_ADMIN" }), SQUARE, 7),
+      // The community-level member event is not the one 小語 chose; another chat's event is not this chat's.
+      { type: "NOTIFIED_UPDATE_SQUARE_MEMBER", payload: { notifiedUpdateSquareMember: { squareMemberMid: member, squareMember: profile("社群層級") } } },
+      byChat(profile("別處"), GROUP_A),
+      byChat(profile(5)),
+      byChat({ ...profile("x"), squareMemberMid: "../evil" }),
       // Leaving, removal and bans arrive as the same event; they are not profile changes.
-      bySquare({ ...profile("被踢", { membershipState: "KICK_OUT" }), squareMemberMid: `p${"k".repeat(32)}` }),
-      bySquare(profile("離開", { membershipState: 4 })),
+      byChat({ ...profile("被踢", { membershipState: "KICK_OUT" }), squareMemberMid: `p${"k".repeat(32)}` }),
+      byChat(profile("離開", { membershipState: 4 })),
       // A picture LINE gave no hash for is addressed by member id.
-      bySquare(profile("群管小豬", { membershipState: "JOINED" })),
+      byChat(profile("群管小豬", { membershipState: "JOINED" })),
+      // A reply-thread counter, sent with every reply: not logged.
+      { type: "NOTIFIED_UPDATE_THREAD_ROOT_MESSAGE_STATUS", payload: {} },
     ], syncToken: "s1" },
   ];
   const base = fakeBase({ square: { async fetchSquareChatEvents() { return answers.shift() ?? { events: [], syncToken: "s9" }; } } });
@@ -188,7 +190,7 @@ test("every community member event in a watched chat's own stream after the walk
   assert.equal(diagnostics.filter((line) => line.startsWith("LINE 社群成員更新：格式不符")).length, 2, "malformed updates are dropped with a shape-only diagnostic");
   assert.deepEqual(diagnostics.filter((line) => line.startsWith("LINE 社群成員更新：非現任成員")).map((line) => line.split(" state=")[1]), ["KICK_OUT", "4"]);
   // Any other event type in the stream is logged by type only, so a rename's real event can be found.
-  assert.deepEqual(diagnostics.filter((line) => line.startsWith("社群事件串其他事件：")), [`社群事件串其他事件：chat=${SQUARE} type=NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE`]);
+  assert.deepEqual(diagnostics.filter((line) => line.startsWith("社群事件串其他事件：")), [`社群事件串其他事件：chat=${SQUARE} type=NOTIFIED_UPDATE_SQUARE_MEMBER`]);
   await provider.close();
 });
 
@@ -200,8 +202,8 @@ test("watched OpenChat chats are also read every second without any push, and a 
   const base = fakeBase({ square: { async fetchSquareChatEvents({ squareChatMid }) {
     reads.push(squareChatMid);
     if (fail) throw new Error("throttled");
-    return { syncToken: "s", events: fresh ? [{ type: "NOTIFIED_UPDATE_SQUARE_MEMBER", payload: { notifiedUpdateSquareMember: {
-      squareMid: `s${"q".repeat(32)}`, squareMemberMid: member, squareMember: { squareMemberMid: member, displayName: "管管.星語", profileImageObsHash: "0hNewPicture", revision: 2 },
+    return { syncToken: "s", events: fresh ? [{ type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", payload: { notifiedUpdateSquareMemberProfile: {
+      squareChatMid, squareMember: { squareMemberMid: member, displayName: "管管.星語", profileImageObsHash: "0hNewPicture", revision: 2 },
     } } }] : [] };
   } } });
   const { provider, updated, diagnostics } = await activeProvider(base);

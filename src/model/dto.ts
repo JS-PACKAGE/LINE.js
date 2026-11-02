@@ -63,7 +63,7 @@ export interface JoinedMember {
   pictureUrl?: string;
 }
 
-/** An OpenChat member event (NOTIFIED_UPDATE_SQUARE_MEMBER), passed on as LINE gives it. */
+/** An OpenChat member profile event (NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE), passed on as LINE gives it. */
 export interface UpdatedMember extends JoinedMember {
   /** Present when LINE reports the member as an administrator. */
   role?: MemberRole;
