@@ -26,7 +26,9 @@ function fakeBase(overrides = {}) {
       ...overrides.talk,
     },
     square: {
-      async getSquareChat({ squareChatMid }) { return { squareChatMember: { squareChatMid, squareMemberMid: OWN_MEMBER } }; },
+      async getSquareChat({ squareChatMid }) { return { squareChat: { squareChatMid }, squareChatMember: { squareChatMid, squareMemberMid: OWN_MEMBER } }; },
+      // Watching a chat reads its members as the profile cache; nobody by default.
+      async getSquareChatMembers() { return { squareChatMembers: [] }; },
       ...overrides.square,
     },
     relation: { ...overrides.relation },
@@ -60,19 +62,19 @@ async function activeProvider(base, client = {}) {
   return { provider, received, errors, reactions, joined, updated, notes, diagnostics, emit: (...args) => provider.client.emit(...args) };
 }
 
-test("every account-wide OpenChat push reads the watched chats' own events: history is skipped, new joins are reported once, malformed ones dropped", async () => {
+// linejs' SquareChat.listen reads a chat's stream only while the session holds an auth token.
+const listening = (overrides) => Object.assign(fakeBase(overrides), { authToken: "test-token" });
+
+test("a watched chat is read through linejs' listen: history is skipped, new joins are reported, malformed ones dropped, closing stops it", async () => {
   const member = `p${"j".repeat(32)}`;
   const joinEvent = (joined, type = "NOTIFIED_JOIN_SQUARE_CHAT") => ({ type, payload: { notifiedJoinSquareChat: joined } });
   const valid = (squareMemberMid, displayName, extra = {}) => joinEvent({ squareChatMid: SQUARE, joinedMember: { squareMemberMid, displayName, ...extra } });
   const requests = [];
-  // LINE's answers, in order: history pages (paged by continuation token and by sync token alike, ending
-  // only with an empty page), then whatever happened since the last sync token.
+  // LINE's answers, in order: history pages until an empty one (listen's walk), then what happened since.
   const answers = [
-    { events: [valid(`p${"o".repeat(32)}`, "老成員")], syncToken: "s0", continuationToken: "c1" },
+    { events: [valid(`p${"o".repeat(32)}`, "老成員")], syncToken: "s0" },
     { events: [valid(`p${"q".repeat(32)}`, "也很老")], syncToken: "s1" },
-    // No continuation token, yet still history: reporting it would replay old joins after every restart.
-    { events: [valid(`p${"r".repeat(32)}`, "還是舊的")], syncToken: "s1b" },
-    { events: [], syncToken: "s1b" },
+    { events: [], syncToken: "s1" },
     {
       events: [
         valid(member, "新朋友", { profileImageObsHash: "0hAbCdEfGh", role: "MEMBER" }),
@@ -86,60 +88,44 @@ test("every account-wide OpenChat push reads the watched chats' own events: hist
       ],
       syncToken: "s2",
     },
-    { events: [], syncToken: "s2" },
   ];
-  const base = fakeBase({ square: { async fetchSquareChatEvents(request) { requests.push(request); return answers.shift() ?? { events: [], syncToken: "s2" }; } } });
+  const base = listening({ square: { async fetchSquareChatEvents(request) { requests.push({ ...request }); return answers.shift() ?? { events: [], syncToken: "s2" }; } } });
   const { provider, joined, received, emit } = await activeProvider(base);
   // The account-wide stream never carries who joined; such an event there is ignored.
   emit("square:event", valid(member, "推播串"));
   provider.watchSquareJoins([SQUARE, GROUP_A]);
   await settle();
-  assert.deepEqual(joined, [], "joins from before the watch are history");
-  // Any push counts, whatever its type: here an unrelated status change of another chat.
-  emit("square:event", { type: "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", payload: {} });
-  await settle();
   assert.deepEqual(joined, [
     [SQUARE, { userId: member, displayName: "新朋友", pictureId: "avatar-o-0hAbCdEfGh", pictureUrl: "https://obs.line-scdn.net/0hAbCdEfGh" }],
     [SQUARE, { userId: OWN_MEMBER, displayName: "", pictureUrl: `https://obs.line-scdn.net/r/g2/member/${OWN_MEMBER}` }],
-  ]);
-  // linejs emits every push as "square:event" first; a message is one more push.
+  ], "joins from before the watch are history; the first read after the walk reports the new ones");
+  assert.deepEqual(requests.map(({ squareChatMid, syncToken }) => [squareChatMid, syncToken]), [
+    [SQUARE, undefined], [SQUARE, "s0"], [SQUARE, "s1"], [SQUARE, "s1"],
+  ], "only the OpenChat chat is read, by sync token alone");
   const message = { message: { id: "77", to: SQUARE, from: member, contentType: "NONE", text: "嗨", createdTime: String(1_700_000_000_077), contentMetadata: {} } };
-  emit("square:event", { type: "NOTIFICATION_MESSAGE", payload: { notificationMessage: { squareChatMid: SQUARE, squareMessage: message } } });
   emit("square:message", { raw: message });
   await settle();
   assert.deepEqual(received.map(({ message }) => [message.senderName, message.senderPictureId]), [["新朋友", "avatar-o-0hAbCdEfGh"]]);
-  assert.equal(joined.length, 2, "a later fetch reports nothing twice");
-  assert.deepEqual(requests.map(({ squareChatMid, syncToken, continuationToken }) => [squareChatMid, syncToken, continuationToken]), [
-    [SQUARE, undefined, undefined],
-    [SQUARE, "s0", "c1"],
-    [SQUARE, "s1", undefined],
-    [SQUARE, "s1b", undefined],
-    [SQUARE, "s1b", undefined],
-    [SQUARE, "s2", undefined],
-  ]);
-  const client = provider.client;
   await provider.close();
-  client.emit("square:event", { type: "NOTIFICATION_MESSAGE", payload: {} });
-  await settle();
-  assert.equal(requests.length, 6, "a closed session stops watching");
+  const closed = requests.length;
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(requests.length, closed, "a closed session stops listening");
 });
 
 test("a join with an empty or invalid photo hash still provides the member OBS URL without accepting URL injection", async () => {
   for (const hash of ["", "../untrusted?x=1"]) {
-    let fresh = false;
-    const base = fakeBase({ square: {
+    let reads = 0;
+    const base = listening({ square: {
       async fetchSquareChatEvents() {
-        return { syncToken: "latest", events: fresh ? [{
+        // The walk's empty page, then the join.
+        return { syncToken: "latest", events: ++reads === 2 ? [{
           type: "NOTIFIED_JOIN_SQUARE_CHAT",
           payload: { notifiedJoinSquareChat: { squareChatMid: SQUARE, joinedMember: { squareMemberMid: OWN_MEMBER, displayName: "新朋友", profileImageObsHash: hash } } },
         }] : [] };
       },
     } });
-    const { provider, joined, emit } = await activeProvider(base);
+    const { provider, joined } = await activeProvider(base);
     provider.watchSquareJoins([SQUARE]);
-    await settle();
-    fresh = true;
-    emit("square:event", { type: "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", payload: {} });
     await settle();
     assert.deepEqual(joined, [[SQUARE, {
       userId: OWN_MEMBER, displayName: "新朋友",
@@ -149,88 +135,97 @@ test("a join with an empty or invalid photo hash still provides the member OBS U
   }
 });
 
-test("every member profile event in a watched chat's own stream after the walk is passed on as LINE gives it; only non-members and malformed ones are dropped", async () => {
-  const member = `p${"j".repeat(32)}`;
-  const profile = (displayName, extra = {}) => ({ squareMemberMid: member, squareMid: `s${"q".repeat(32)}`, displayName, ...extra });
-  const byChat = (squareMember, chat = SQUARE, type = "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE") => ({ type, payload: { notifiedUpdateSquareMemberProfile: { squareChatMid: chat, squareMember } } });
-  const answers = [
-    // History only moves the sync token; it ends only with an empty page.
-    { events: [byChat(profile("舊名", { profileImageObsHash: "0hOldPicture" }))], syncToken: "s0" },
-    { events: [], syncToken: "s0" },
-    { events: [
-      byChat(profile("小豬", { profileImageObsHash: "0hCrownBadge", role: "MEMBER" })),
-      // Nothing visibly changed (a role or state update, or a replay): passed on all the same.
-      byChat(profile("小豬", { profileImageObsHash: "0hCrownBadge", role: "CO_ADMIN" }), SQUARE, 7),
-      // The community-level member event is not the one 小語 chose; another chat's event is not this chat's.
-      { type: "NOTIFIED_UPDATE_SQUARE_MEMBER", payload: { notifiedUpdateSquareMember: { squareMemberMid: member, squareMember: profile("社群層級") } } },
-      byChat(profile("別處"), GROUP_A),
-      byChat(profile(5)),
-      byChat({ ...profile("x"), squareMemberMid: "../evil" }),
-      // Leaving, removal and bans arrive as the same event; they are not profile changes.
-      byChat({ ...profile("被踢", { membershipState: "KICK_OUT" }), squareMemberMid: `p${"k".repeat(32)}` }),
-      byChat(profile("離開", { membershipState: 4 })),
-      // A picture LINE gave no hash for is addressed by member id.
-      byChat(profile("群管小豬", { membershipState: "JOINED" })),
-      // A reply-thread counter, sent with every reply: not logged.
-      { type: "NOTIFIED_UPDATE_THREAD_ROOT_MESSAGE_STATUS", payload: {} },
-    ], syncToken: "s1" },
-  ];
-  const base = fakeBase({ square: { async fetchSquareChatEvents() { return answers.shift() ?? { events: [], syncToken: "s9" }; } } });
-  const { provider, updated, diagnostics, emit } = await activeProvider(base);
+test("a member profile event is compared with the member cache: only a real change of name or picture is reported, with what changed", async () => {
+  const [cached, unseen, kicked, joiner] = ["j", "u", "k", "n"].map((c) => `p${c.repeat(32)}`);
+  const COMMUNITY = `s${"q".repeat(32)}`;
+  const profile = (squareMemberMid, displayName, extra = {}) => ({ squareMemberMid, squareMid: COMMUNITY, displayName, ...extra });
+  const update = (squareMember, chat = SQUARE) => ({ type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", payload: { notifiedUpdateSquareMemberProfile: { squareChatMid: chat, squareMember } } });
+  const pages = [];
+  const base = listening({ square: {
+    async getSquareChatMembers({ continuationToken }) {
+      pages.push(continuationToken);
+      // linejs pages through the whole list.
+      return continuationToken
+        ? { squareChatMembers: [profile(kicked, "路人", { profileImageObsHash: "0hPlainPhoto", revision: 1 }), { squareMemberMid: "../evil", displayName: "x" }] }
+        : { squareChatMembers: [profile(cached, "小豬", { profileImageObsHash: "0hPlainPhoto", revision: 5 })], continuationToken: "p2" };
+    },
+    async fetchSquareChatEvents({ syncToken }) {
+      if (!syncToken) return { syncToken: "s0", events: [] };
+      if (syncToken !== "s0") return { syncToken, events: [] };
+      return { syncToken: "s1", events: [
+        // LINE replays old events: not newer than the cache.
+        update(profile(cached, "改名前", { profileImageObsHash: "0hOlderPhoto", revision: 5 })),
+        update(profile(cached, "群管小豬", { profileImageObsHash: "0hPlainPhoto", role: "CO_ADMIN", revision: 6 })),
+        update(profile(cached, "群管小豬", { profileImageObsHash: "0hCrownBadge", revision: 7 })),
+        // A role or state change alone.
+        update(profile(cached, "群管小豬", { profileImageObsHash: "0hCrownBadge", revision: 8 })),
+        // Not cached: its first event only fills the cache; the next one is compared.
+        update(profile(unseen, "新人", { profileImageObsHash: "0hFirstPhoto", revision: 1 })),
+        update(profile(unseen, "管理員", { profileImageObsHash: "0hFirstPhoto", revision: 2 })),
+        // A join fills the cache too.
+        { type: "NOTIFIED_JOIN_SQUARE_CHAT", payload: { notifiedJoinSquareChat: { squareChatMid: SQUARE, joinedMember: profile(joiner, "剛來", { revision: 1 }) } } },
+        update(profile(joiner, "版主", { revision: 2 })),
+        // Leaving, removal and bans arrive as the same event; another chat's event is not this chat's.
+        update(profile(kicked, "路人", { membershipState: "KICK_OUT", revision: 2 })),
+        update(profile(cached, "別處", { revision: 9 }), GROUP_A),
+        update(profile(cached, 5)),
+        update({ ...profile(cached, "x"), squareMemberMid: "../evil" }),
+        // The community-level member event is only logged by type; reply-thread counters not at all.
+        { type: "NOTIFIED_UPDATE_SQUARE_MEMBER", payload: { notifiedUpdateSquareMember: { squareMemberMid: cached, squareMember: profile(cached, "社群層級") } } },
+        { type: "NOTIFIED_UPDATE_THREAD_ROOT_MESSAGE_STATUS", payload: {} },
+      ] };
+    },
+  } });
+  const { provider, updated, joined, diagnostics } = await activeProvider(base);
   provider.watchSquareJoins([SQUARE]);
   await settle();
-  emit("square:event", { type: "NOTIFIED_UPDATE_SQUARE_CHAT_STATUS", payload: {} });
-  await settle();
-  const both = ["name", "picture"];
+  assert.deepEqual(pages, [undefined, "p2"]);
   assert.deepEqual(updated, [
-    [SQUARE, { userId: member, displayName: "小豬", pictureId: "avatar-o-0hCrownBadge", pictureUrl: "https://obs.line-scdn.net/0hCrownBadge", changes: both }],
-    [SQUARE, { userId: member, displayName: "小豬", pictureId: "avatar-o-0hCrownBadge", pictureUrl: "https://obs.line-scdn.net/0hCrownBadge", role: "coAdmin", changes: both }],
-    [SQUARE, { userId: member, displayName: "群管小豬", pictureUrl: `https://obs.line-scdn.net/r/g2/member/${member}`, changes: both }],
+    [SQUARE, { userId: cached, displayName: "群管小豬", pictureId: "avatar-o-0hPlainPhoto", pictureUrl: "https://obs.line-scdn.net/0hPlainPhoto", role: "coAdmin", changes: ["name"] }],
+    [SQUARE, { userId: cached, displayName: "群管小豬", pictureId: "avatar-o-0hCrownBadge", pictureUrl: "https://obs.line-scdn.net/0hCrownBadge", changes: ["picture"] }],
+    [SQUARE, { userId: unseen, displayName: "管理員", pictureId: "avatar-o-0hFirstPhoto", pictureUrl: "https://obs.line-scdn.net/0hFirstPhoto", changes: ["name"] }],
+    [SQUARE, { userId: joiner, displayName: "版主", pictureUrl: `https://obs.line-scdn.net/r/g2/member/${joiner}`, changes: ["name"] }],
   ]);
-  assert.equal(diagnostics.filter((line) => line.startsWith("LINE 社群成員更新：格式不符")).length, 2, "malformed updates are dropped with a shape-only diagnostic");
-  assert.deepEqual(diagnostics.filter((line) => line.startsWith("LINE 社群成員更新：非現任成員")).map((line) => line.split(" state=")[1]), ["KICK_OUT", "4"]);
-  // Any other event type in the stream is logged by type only, so a rename's real event can be found.
-  assert.deepEqual(diagnostics.filter((line) => line.startsWith("社群事件串其他事件：")), [`社群事件串其他事件：chat=${SQUARE} type=NOTIFIED_UPDATE_SQUARE_MEMBER`]);
+  assert.equal(joined.length, 1);
+  const logged = (prefix) => diagnostics.filter((line) => line.startsWith(prefix));
+  assert.deepEqual(logged("社群成員快取："), [`社群成員快取：chat=${SQUARE} members=2`], "the malformed member is not cached");
+  assert.deepEqual(logged("LINE 社群成員更新：不比快取新").map((line) => line.split(" revision=")[1]), ["5 cached=5"]);
+  assert.equal(logged("LINE 社群成員更新：名稱與大頭貼都沒變").length, 1);
+  assert.deepEqual(logged("LINE 社群成員更新：快取沒有此成員"), [`LINE 社群成員更新：快取沒有此成員，只建立基準 chat=${SQUARE} member=${unseen}`]);
+  assert.deepEqual(logged("LINE 社群成員更新：非現任成員").map((line) => line.split(" state=")[1]), ["KICK_OUT"]);
+  assert.equal(logged("LINE 社群成員更新：格式不符").length, 2);
+  assert.deepEqual(logged("社群事件串其他事件："), [`社群事件串其他事件：chat=${SQUARE} type=NOTIFIED_UPDATE_SQUARE_MEMBER`]);
   await provider.close();
 });
 
-test("watched OpenChat chats are also read every second without any push, and a failing chat backs off", async () => {
+test("a watched chat whose start fails is started again with a new chat object, and the failure streak is logged once", async () => {
   const member = `p${"j".repeat(32)}`;
-  let fresh = false;
-  let fail = false;
-  const reads = [];
-  const base = fakeBase({ square: { async fetchSquareChatEvents({ squareChatMid }) {
-    reads.push(squareChatMid);
-    if (fail) throw new Error("throttled");
-    return { syncToken: "s", events: fresh ? [{ type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", payload: { notifiedUpdateSquareMemberProfile: {
-      squareChatMid, squareMember: { squareMemberMid: member, displayName: "管管.星語", profileImageObsHash: "0hNewPicture", revision: 2 },
-    } } }] : [] };
-  } } });
+  let lists = 0;
+  let renamed = false;
+  const base = listening({ square: {
+    async getSquareChatMembers() {
+      if (++lists === 1) throw new Error("busy token=secret");
+      return { squareChatMembers: [{ squareMemberMid: member, displayName: "星語", profileImageObsHash: "0hSamePhoto", revision: 1 }] };
+    },
+    async fetchSquareChatEvents({ syncToken }) {
+      if (!syncToken || !renamed) return { syncToken: "s0", events: [] };
+      renamed = false;
+      return { syncToken: "s1", events: [{ type: "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE", payload: { notifiedUpdateSquareMemberProfile: {
+        squareChatMid: SQUARE, squareMember: { squareMemberMid: member, displayName: "星語貓", profileImageObsHash: "0hSamePhoto", revision: 2 },
+      } } }] };
+    },
+  } });
   const { provider, updated, diagnostics } = await activeProvider(base);
   provider.watchSquareJoins([SQUARE]);
   await settle();
-  assert.equal(reads.length, 1, "the first read walks to the newest event");
-  // A rename pushes nothing to this account: only the timer can find it.
-  fresh = true;
-  await new Promise((resolve) => setTimeout(resolve, 1300));
-  assert.deepEqual(updated.map(([, update]) => update.displayName), ["管管.星語"]);
-  fresh = false;
-  fail = true;
-  const before = reads.length;
+  assert.deepEqual(diagnostics.filter((line) => line.startsWith("社群事件讀取")), [`社群事件讀取失敗：chat=${SQUARE} reason=LINE_ERROR name=Error`], "never LINE's message");
+  await new Promise((resolve) => setTimeout(resolve, 2100));
+  assert.equal(lists, 2, "started again after two seconds");
+  assert.deepEqual(diagnostics.filter((line) => line.startsWith("社群事件讀取")).at(-1), `社群事件讀取恢復：chat=${SQUARE} failures=1`);
+  renamed = true;
   await new Promise((resolve) => setTimeout(resolve, 1100));
-  assert.equal(reads.length, before + 1, "one timed read fails");
-  await new Promise((resolve) => setTimeout(resolve, 1100));
-  assert.equal(reads.length, before + 1, "the next timed read waits out the two-second backoff");
-  fail = false;
-  await new Promise((resolve) => setTimeout(resolve, 1100));
-  assert.deepEqual(diagnostics.filter((line) => line.startsWith("社群事件讀取")), [
-    `社群事件讀取失敗，改為退避重試：chat=${SQUARE} reason=LINE_ERROR name=Error`,
-    `社群事件讀取恢復：chat=${SQUARE} failures=1`,
-  ], "a failure streak is logged once when it starts and once when it ends, without LINE's message");
+  assert.deepEqual(updated.map(([, { displayName, changes }]) => [displayName, changes]), [["星語貓", ["name"]]]);
   await provider.close();
-  const closed = reads.length;
-  await new Promise((resolve) => setTimeout(resolve, 1100));
-  assert.equal(reads.length, closed, "a closed session stops the timer");
 });
 
 const talk = (id, to, from, text, extra = {}) => ({ raw: { id, to, from, toType: "GROUP", contentType: "NONE", text, createdTime: String(1_700_000_000_000 + Number(id)), contentMetadata: {}, ...extra } });
@@ -1949,6 +1944,8 @@ test("an OpenChat note status reports each new note of the watched chats' commun
   };
   const { provider, notes, emit } = await activeProvider(base);
   provider.watchSquareJoins([SQUARE, OTHER_CHAT]);
+  // Starting a watch reads its chat once, which names the community the note status refers to.
+  await settle();
   const start = provider.activatedAt;
   const post = (postId, createdTime, userInfo) => ({ postInfo: { postId, createdTime }, ...(userInfo ? { userInfo } : {}), contents: {} });
   list = { code: 0, result: { posts: [post("before-sign-in", start - 1000), post("p1", start + 10, { writerMid: WRITER, nickname: " 作者 " }), post("refused", start + 20), { postInfo: { postId: "../x", createdTime: start + 15 } }] } };

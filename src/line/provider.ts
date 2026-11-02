@@ -1,7 +1,7 @@
 import { Client } from "@evex/linejs";
 import { BaseClient, type Device, type FetchLike } from "@evex/linejs/base";
 import { LINEStruct } from "@evex/linejs/thrift";
-import type { Message as LineMessage, SquareMessage as LineSquareMessage } from "@evex/linejs-types";
+import type { Message as LineMessage, SquareEvent, SquareMessage as LineSquareMessage } from "@evex/linejs-types";
 import { avatarMediaId, mp4DurationMs, sniffImage, sniffMedia, type AvatarHost, type MediaBytes } from "../media/service.js";
 import type { Channel, ChannelRef, ChatAdmin, ChatAdmins, ChatMembership, HistoryPage, JoinedMember, MemberRole, Mention, Message, Profile, ReactionKind, Reactions, ReadPosition, SquareNote, StickerPackage, UpdatedMember } from "../model/dto.js";
 import { withMyReaction } from "../model/store.js";
@@ -206,9 +206,16 @@ const NOTE_TIMEOUT_MS = 15_000;
 // A burst of notes behind one status change: only the newest few are fetched.
 const MAX_NOTES_PER_STATUS = 5;
 const MAX_REPORTED_NOTES = 500;
-// Watched OpenChat chats are read this often (linejs' own SquareChat.listen reads every second), backing off on failures.
-const JOIN_POLL_MS = 1000;
-const JOIN_POLL_MAX_BACKOFF_MS = 60_000;
+// A watched chat whose start failed (chat, member list, or the walk to the newest event) is started again
+// after this pause, doubling up to the cap.
+const WATCH_RESTART_MS = 2000;
+const WATCH_RESTART_MAX_MS = 60_000;
+
+/** SquareMember.revision as a decimal string; anything else is treated as absent. */
+const memberRevision = (revision: unknown): string | undefined => {
+  const text = typeof revision === "number" || typeof revision === "bigint" || typeof revision === "string" ? String(revision) : undefined;
+  return text !== undefined && /^\d{1,20}$/.test(text) ? text : undefined;
+};
 
 interface SquareHistory {
   at: number;
@@ -236,20 +243,18 @@ interface SquareSummary {
   last?: { raw: LineSquareMessage; name?: string };
 }
 
-/** Where a watched OpenChat chat's event stream was read up to. */
+/** A watched OpenChat chat: linejs' own SquareChat.listen reads its event stream (小語's decision). */
 interface JoinWatch {
   client: Client;
-  syncToken?: string;
-  continuationToken?: string;
-  /** False while walking up to the newest event: everything seen then is history, not news. */
-  caughtUp: boolean;
-  running?: Promise<void>;
-  again: boolean;
+  /** Ends this chat's listen loop (linejs checks it before each read). */
+  stop: AbortController;
   /** The OpenChat community this chat belongs to, once LINE said so (note status events name the community). */
   squareMid?: string;
-  /** Reads failed in a row; timed reads pause until `retryAt` (performance.now()). */
+  /** Profiles as last seen: the member list read at start, then this chat's own events. */
+  members: Map<string, { name: string; hash: string; revision?: string }>;
+  /** Failures in a row (start or reads), logged once per streak. */
   failures: number;
-  retryAt: number;
+  restart?: NodeJS.Timeout;
 }
 
 // Let the lookup cap stop candidate preparation before traversing the remaining messages.
@@ -304,10 +309,8 @@ export class EvexLineProvider implements LineProvider {
   // E2EE messages linejs could not decrypt; they stay ciphertext and become placeholders.
   private undecryptable = new WeakSet<LineMessage>();
   // OpenChat chats watched for joins and profile changes: LINE reports them only in the chat's own event
-  // stream (fetchSquareChatEvents), never in the account-wide push stream that `listen` follows. Each chat
-  // is read on every account-wide push and on a one-second timer.
+  // stream, never in the account-wide push stream that `listen` follows. linejs' SquareChat.listen reads each.
   private joinWatches = new Map<string, JoinWatch>();
-  private joinPoller?: NodeJS.Timeout;
   // OpenChat notes: LINE only says a community's newest note time changed. Notes are new when created after
   // the newest one already handled (or, at first, after sign-in); each is reported once.
   private activatedAt = 0;
@@ -475,8 +478,6 @@ export class EvexLineProvider implements LineProvider {
     });
     client.on("square:event", (event) => {
       if (this.client !== client) return;
-      // Every account-wide push may follow a join: read each watched chat's own events right away.
-      for (const chatId of this.joinWatches.keys()) this.checkJoins(chatId);
       const type = String(event.type);
       if (type === "NOTIFICATION_MESSAGE" || type === "29") {
         // linejs re-emits this as square:message without the sender's name; keeping it here means the
@@ -524,28 +525,86 @@ export class EvexLineProvider implements LineProvider {
     const client = this.client;
     if (!client || this.stopped) return;
     const wanted = new Set(chatIds.filter((chatId) => SQUARE_CHAT_MID.test(chatId)));
-    for (const chatId of this.joinWatches.keys()) if (!wanted.has(chatId)) this.joinWatches.delete(chatId);
-    for (const chatId of wanted) {
-      if (this.joinWatches.get(chatId)?.client === client) continue;
-      this.joinWatches.set(chatId, { client, caughtUp: false, again: false, failures: 0, retryAt: 0 });
-      this.checkJoins(chatId);
+    for (const [chatId, watch] of this.joinWatches) {
+      if (!wanted.has(chatId) || watch.client !== client) this.unwatch(chatId, watch);
     }
-    // Profile changes reach no push of this account, so the watched chats are also read on a timer.
-    if (this.joinWatches.size === 0) {
-      clearInterval(this.joinPoller);
-      this.joinPoller = undefined;
-    } else if (!this.joinPoller) {
-      this.joinPoller = setInterval(() => this.pollJoins(), JOIN_POLL_MS);
-      this.joinPoller.unref();
+    for (const chatId of wanted) {
+      if (this.joinWatches.has(chatId)) continue;
+      const watch: JoinWatch = { client, stop: new AbortController(), members: new Map(), failures: 0 };
+      this.joinWatches.set(chatId, watch);
+      void this.startWatch(chatId, watch);
     }
   }
 
-  /** A chat whose last read failed waits out its backoff; one still being read is not asked again. */
-  private pollJoins(): void {
-    const now = performance.now();
-    for (const [chatId, watch] of this.joinWatches) {
-      if (watch.client === this.client && !watch.running && now >= watch.retryAt) this.checkJoins(chatId);
+  private unwatch(chatId: string, watch: JoinWatch): void {
+    watch.stop.abort();
+    clearTimeout(watch.restart);
+    if (this.joinWatches.get(chatId) === watch) this.joinWatches.delete(chatId);
+  }
+
+  private watching(chatId: string, watch: JoinWatch): boolean {
+    return !watch.stop.signal.aborted && this.client === watch.client && this.joinWatches.get(chatId) === watch;
+  }
+
+  /**
+   * 小語's decision, the way linejs is meant to be used: the chat object's "event" is registered, its member
+   * list is read (linejs pages through all of it) as the profile cache, then listen() walks to the newest
+   * event without emitting and reads the chat's stream every second. A failed start is retried with a new
+   * chat object, since listen() refuses a second start on the same one. A change made between reading the
+   * members and the end of the walk is already in the cache and so is not reported.
+   */
+  private async startWatch(chatId: string, watch: JoinWatch): Promise<void> {
+    try {
+      const chat = await watch.client.getSquareChat(chatId);
+      if (!this.watching(chatId, watch)) return;
+      if (typeof chat.raw?.squareMid === "string" && SQUARE_HOME.test(chat.raw.squareMid)) watch.squareMid = chat.raw.squareMid;
+      chat.on("event", (event) => {
+        if (this.watching(chatId, watch)) this.chatEvent(chatId, watch, event);
+      });
+      chat.on("update:syncToken", () => {
+        if (!this.watching(chatId, watch) || watch.failures === 0) return;
+        this.events.onDiagnostic?.(`社群事件讀取恢復：chat=${chatId} failures=${watch.failures}`);
+        watch.failures = 0;
+      });
+      const members = await chat.getMembers();
+      if (!this.watching(chatId, watch)) return;
+      this.seedMembers(chatId, watch, members);
+      await chat.listen({
+        signal: watch.stop.signal,
+        onError: (error) => {
+          if (this.watching(chatId, watch)) this.watchFailed(chatId, watch, error);
+        },
+      });
+    } catch (error) {
+      if (!this.watching(chatId, watch)) return;
+      this.watchFailed(chatId, watch, error);
+      watch.restart = setTimeout(() => {
+        if (this.watching(chatId, watch)) void this.startWatch(chatId, watch);
+      }, Math.min(WATCH_RESTART_MAX_MS, WATCH_RESTART_MS * 2 ** (watch.failures - 1)));
+      watch.restart.unref();
     }
+  }
+
+  /** Only streaks are logged: linejs retries a failed read every two seconds. */
+  private watchFailed(chatId: string, watch: JoinWatch, error: unknown): void {
+    if (watch.failures === 0) this.events.onDiagnostic?.(`社群事件讀取失敗：chat=${chatId} reason=${noteFailureReason(error)}`);
+    watch.failures += 1;
+  }
+
+  private seedMembers(chatId: string, watch: JoinWatch, members: readonly unknown[] | undefined): void {
+    watch.members.clear();
+    for (const entry of Array.isArray(members) ? members : []) {
+      const member = entry as Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "revision", unknown>> | undefined;
+      // A malformed member simply has no cache entry; their first event then only fills it.
+      if (typeof member?.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(member.squareMemberMid) || typeof member.displayName !== "string") continue;
+      this.cacheMember(watch, member.squareMemberMid, member.displayName, member.profileImageObsHash, member.revision);
+    }
+    this.events.onDiagnostic?.(`社群成員快取：chat=${chatId} members=${watch.members.size}`);
+  }
+
+  private cacheMember(watch: JoinWatch, mid: string, name: string, hash: unknown, revision: unknown): void {
+    const known = memberRevision(revision);
+    watch.members.set(mid, { name, hash: typeof hash === "string" ? hash : "", ...(known !== undefined ? { revision: known } : {}) });
   }
 
   /** LINE names the community and its newest note's creation time; posts and text are read from the note API. */
@@ -655,83 +714,28 @@ export class EvexLineProvider implements LineProvider {
     }
   }
 
-  /** One fetch per chat at a time; a trigger during a fetch runs one more right after it. */
-  private checkJoins(chatId: string): void {
-    const watch = this.joinWatches.get(chatId);
-    if (!watch || watch.client !== this.client) return;
-    if (watch.running) {
-      watch.again = true;
-      return;
-    }
-    watch.running = this.fetchJoins(chatId, watch)
-      .then(() => {
-        // Only streaks are logged: a read every second must not flood the log, but throttling has to show.
-        if (watch.failures > 0) this.events.onDiagnostic?.(`社群事件讀取恢復：chat=${chatId} failures=${watch.failures}`);
-        watch.failures = 0;
-        watch.retryAt = 0;
-      }, (error: unknown) => {
-        // The position is kept; the next push or poll retries from it, polls after a growing pause.
-        if (watch.failures === 0) this.events.onDiagnostic?.(`社群事件讀取失敗，改為退避重試：chat=${chatId} reason=${noteFailureReason(error)}`);
-        watch.failures += 1;
-        watch.retryAt = performance.now() + Math.min(JOIN_POLL_MAX_BACKOFF_MS, JOIN_POLL_MS * 2 ** watch.failures);
-      })
-      .finally(() => {
-        watch.running = undefined;
-        if (watch.again && this.joinWatches.get(chatId) === watch) {
-          watch.again = false;
-          this.checkJoins(chatId);
-        }
-      });
-  }
-
-  /**
-   * The first fetches only move the sync token from the chat's oldest event to the newest, reading
-   * nothing; after that every join and profile event is reported as LINE gives it. The walk ends only
-   * on an empty page, as linejs' own SquareChat.listen does: a page without a continuation token is not
-   * the end of it.
-   */
-  private async fetchJoins(chatId: string, watch: JoinWatch): Promise<void> {
-    for (let page = 0; page < SQUARE_MAX_PAGES; page += 1) {
-      const response = await watch.client.base.square.fetchSquareChatEvents({
-        squareChatMid: chatId, limit: SQUARE_PAGE_SIZE,
-        ...(watch.syncToken ? { syncToken: watch.syncToken } : {}),
-        ...(watch.continuationToken ? { continuationToken: watch.continuationToken } : {}),
-      } as Parameters<Client["base"]["square"]["fetchSquareChatEvents"]>[0]);
-      if (this.client !== watch.client || this.joinWatches.get(chatId) !== watch) return;
-      const events = Array.isArray(response?.events) ? response.events : [];
-      if (watch.caughtUp) {
-        for (const event of events) {
-          const type = String(event?.type);
-          if (type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2") this.memberJoined(chatId, event.payload?.notifiedJoinSquareChat);
-          else if (type === "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE" || type === "7") {
-            // 小語's decision: the chat-level profile event, passed on as LINE gives it; it must name this chat.
-            const update = event.payload?.notifiedUpdateSquareMemberProfile;
-            if (update?.squareChatMid === chatId) this.memberUpdated(chatId, update.squareMember);
-          } else if (!QUIET_SQUARE_EVENTS.has(type) && !CHAT_STREAM_MESSAGE_EVENTS.has(type)) {
-            // Which event a rename or new picture brings is not documented; the type alone shows it (no parameters).
-            this.events.onDiagnostic?.(`社群事件串其他事件：chat=${chatId} type=${type.slice(0, 60)}`);
-          }
-        }
-      }
-      if (typeof response?.syncToken === "string" && response.syncToken) watch.syncToken = response.syncToken;
-      const next = typeof response?.continuationToken === "string" && response.continuationToken ? response.continuationToken : undefined;
-      watch.continuationToken = events.length > 0 ? next : undefined;
-      if (events.length === 0) {
-        watch.caughtUp = true;
-        return;
-      }
-      // Caught up, the rest waits for the next push or poll unless LINE says more follows right away.
-      if (watch.caughtUp && !next) return;
+  /** One event of a watched chat's own stream, as linejs' listen emits it (only events after its walk). */
+  private chatEvent(chatId: string, watch: JoinWatch, event: SquareEvent): void {
+    const type = String(event?.type);
+    if (type === "NOTIFIED_JOIN_SQUARE_CHAT" || type === "2") this.memberJoined(chatId, watch, event.payload?.notifiedJoinSquareChat);
+    else if (type === "NOTIFIED_UPDATE_SQUARE_MEMBER_PROFILE" || type === "7") {
+      // Renames and new pictures share this event; it must name this chat.
+      const update = event.payload?.notifiedUpdateSquareMemberProfile;
+      if (update?.squareChatMid === chatId) this.memberUpdated(chatId, watch, update.squareMember);
+    } else if (!QUIET_SQUARE_EVENTS.has(type) && !CHAT_STREAM_MESSAGE_EVENTS.has(type)) {
+      // Which other events LINE sends here is not documented; the type alone shows it (no parameters).
+      this.events.onDiagnostic?.(`社群事件串其他事件：chat=${chatId} type=${type.slice(0, 60)}`);
     }
   }
 
   /** Typed payload, but still LINE input: anything off-shape is dropped, never guessed at. */
-  private memberJoined(chatId: string, joined: { squareChatMid?: unknown; joinedMember?: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role", unknown>> } | undefined): void {
+  private memberJoined(chatId: string, watch: JoinWatch, joined: { squareChatMid?: unknown; joinedMember?: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role" | "revision", unknown>> } | undefined): void {
     const member = joined?.joinedMember;
     if (joined?.squareChatMid !== chatId
       || typeof member?.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(member.squareMemberMid)
       || typeof member.displayName !== "string"
       || (member.profileImageObsHash !== undefined && typeof member.profileImageObsHash !== "string")) return;
+    this.cacheMember(watch, member.squareMemberMid, member.displayName, member.profileImageObsHash, member.revision);
     const pictureId = avatarMediaId("obs", member.profileImageObsHash);
     // An incomplete join payload must not mark the profile as fully resolved.
     this.rememberProfile(member.squareMemberMid, member.displayName, pictureId, !!pictureId, memberRole(member.role));
@@ -747,12 +751,11 @@ export class EvexLineProvider implements LineProvider {
   }
 
   /**
-   * 小語's decision: a member's profile event is reported as LINE gives it, with no history, member list or
-   * comparison (bots judge both name and picture every time; extra checks are cheap). LINE's events do not
-   * say what changed, so `changes` is always both. Leaving, removal and bans arrive as the same event and are
-   * not profile changes; they alone are dropped.
+   * The event carries only the member's current profile, never the old one or what changed, so the name and
+   * picture hash are compared with the cache (小語's guide). A member not in the cache only fills it; an event
+   * no newer than the cached revision (LINE replays old ones) and one changing neither field are not news.
    */
-  private memberUpdated(chatId: string, member: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role" | "membershipState", unknown>> | undefined): void {
+  private memberUpdated(chatId: string, watch: JoinWatch, member: Partial<Record<"squareMemberMid" | "displayName" | "profileImageObsHash" | "role" | "revision" | "membershipState", unknown>> | undefined): void {
     if (typeof member?.squareMemberMid !== "string" || !SQUARE_MEMBER_MID.test(member.squareMemberMid)
       || typeof member.displayName !== "string"
       || (member.profileImageObsHash !== undefined && typeof member.profileImageObsHash !== "string")) {
@@ -760,12 +763,33 @@ export class EvexLineProvider implements LineProvider {
       return;
     }
     const mid = member.squareMemberMid;
+    // Leaving, removal and bans arrive as the same event; they are not profile changes.
     const state = member.membershipState;
     if (state !== undefined && state !== "JOINED" && state !== 2) {
+      watch.members.delete(mid);
       this.events.onDiagnostic?.(`LINE 社群成員更新：非現任成員，略過 chat=${chatId} member=${mid} state=${String(state).slice(0, 30)}`);
       return;
     }
-    const pictureId = avatarMediaId("obs", member.profileImageObsHash);
+    const previous = watch.members.get(mid);
+    const revision = memberRevision(member.revision);
+    if (revision !== undefined && previous?.revision !== undefined && BigInt(revision) <= BigInt(previous.revision)) {
+      this.events.onDiagnostic?.(`LINE 社群成員更新：不比快取新，略過 chat=${chatId} member=${mid} revision=${revision} cached=${previous.revision}`);
+      return;
+    }
+    const hash = member.profileImageObsHash ?? "";
+    this.cacheMember(watch, mid, member.displayName, hash, member.revision);
+    if (!previous) {
+      this.events.onDiagnostic?.(`LINE 社群成員更新：快取沒有此成員，只建立基準 chat=${chatId} member=${mid}`);
+      return;
+    }
+    const changes: ("name" | "picture")[] = [];
+    if (previous.name !== member.displayName) changes.push("name");
+    if (previous.hash !== hash) changes.push("picture");
+    if (changes.length === 0) {
+      this.events.onDiagnostic?.(`LINE 社群成員更新：名稱與大頭貼都沒變，略過 chat=${chatId} member=${mid}`);
+      return;
+    }
+    const pictureId = avatarMediaId("obs", hash);
     const role = memberRole(member.role);
     this.rememberProfile(mid, member.displayName, pictureId, !!pictureId, role);
     this.events.onMemberUpdated(chatId, {
@@ -776,7 +800,7 @@ export class EvexLineProvider implements LineProvider {
         ? `https://obs.line-scdn.net/${pictureId.slice("avatar-o-".length)}`
         : `https://obs.line-scdn.net/r/g2/member/${mid}`,
       ...(role ? { role } : {}),
-      changes: ["name", "picture"],
+      changes,
     });
   }
 
@@ -2155,9 +2179,7 @@ export class EvexLineProvider implements LineProvider {
     this.stickerPackages = undefined;
     this.squareCache.clear();
     this.squareSummaries.clear();
-    this.joinWatches.clear();
-    clearInterval(this.joinPoller);
-    this.joinPoller = undefined;
+    for (const [chatId, watch] of this.joinWatches) this.unwatch(chatId, watch);
     this.noteBaselines.clear();
     this.reportedNotes.clear();
     this.noteChecks.clear();
