@@ -76,7 +76,7 @@ npm start
 
 在聊天室訊息上按右鍵（觸控長按），選「顯示寄件者 ID」可查看與複製其他人的 ID。機器人 API 從即時 `message`／`message:edit` 的 `message.senderId`，或 `history` 的 `messages[].senderId` 取得；仍限 `api.chats` 內的聊天室。社群回傳的是社群成員 ID，不是一般 LINE 帳號 ID；此功能不查詢未出現過的成員。
 
-`session.json` 包含憑證與 E2EE key material，必須以權限 `600` 保存，不得分享或提交。`config.yaml` 為個人設定，不入版本控制。`api-token.json`（機器人 Token 的 SHA-256 與建立時間，權限 `600`）與 `linejs.pid`（執行中服務的 PID，供 `stop`／`restart` 使用）同樣不入版本控制。
+`session.json` 包含憑證與 E2EE key material，必須以權限 `600` 保存，不得分享或提交。`config.yaml` 為個人設定，不入版本控制；設定機器人 Token 後它含有明文 Token（`api.token`），等同憑證，服務會把權限改為 `600`，不得分享或提交。舊版的 `api-token.json` 已停用，啟動時自動刪除。`linejs.pid`（執行中服務的 PID，供 `stop`／`restart` 使用）同樣不入版本控制。
 
 `src/line/session.ts` 的 SessionStorage 沿用 linejs FileStorage 契約，改以序列化、權限 `600` 的暫存檔與原子替換保存資料，避免併發寫入遺失 token／key。既有檔案會收緊權限；損壞 JSON 或 symlink 拒絕載入，不覆寫原資料。寫入失敗會使後續 `flush()` 失敗，不冒充 session 已保存。
 
@@ -153,7 +153,7 @@ HTTP：`GET /media/:mediaId`（貼圖、貼圖包圖示、大頭照與原圖、�
      sendsPerMinute: 20          # 所有機器人合計每分鐘最多發送幾則（1～120，可省略，預設 20）
    ```
    `enabled: true` 卻沒有有效的 `chats` 時，服務啟動會直接失敗（避免「空清單＝全部」的誤會）。
-2. 產生 API **連線用 Bearer Token**：`npm run cli -- token`（見 [CLI `token`](#token重新產生或撤銷機器人-api-token)）。Token 只顯示**一次**，伺服器只保存 SHA-256（`api-token.json`，權限 600，不入版控），之後無法再查看，忘記就重新產生。這種連線 Token 只能用 CLI 管理，與下述聊天室管理員權杖不同。
+2. 產生 API **連線用 Bearer Token**：`npm run cli -- token`（見 [CLI `token`](#token重新產生或撤銷機器人-api-token)）。Token 以明文寫入 `config.yaml` 的 `api.token`（權限 600，不入版控），之後可在該檔查看；也可以自己填寫（16～512 個可見 ASCII 字元，改完需重啟服務）。這種連線 Token 只能用 CLI 管理，與下述聊天室管理員權杖不同。
 3. 機器人連到 `ws://<host>:<port>/api/ws`（預設 `ws://127.0.0.1:3789/api/ws`），帶標頭 `Authorization: Bearer <Token>`。
 
 **連線規則**
@@ -266,12 +266,12 @@ npm run cli              # 不帶指令：顯示用法
 
 - 需先在 `config.yaml` 啟用 `api`（見[機器人 API](#機器人-apiapiws)），否則回「機器人 API 未啟用」。
 - 已有 Token 時先確認：「目前的 Token 會立即失效，使用它的機器人會被中斷連線。確定重新產生？」。
-- 新 Token **單獨印在標準輸出**，其餘訊息（說明、警告）印在標準錯誤，因此可以直接指派給變數；Token 只顯示這一次：
+- 新 Token **單獨印在標準輸出**，其餘訊息（說明、警告）印在標準錯誤，因此可以直接指派給變數；同一個 Token 也寫進 `config.yaml` 的 `api.token`：
 
   ```sh
   LINEJS_TOKEN=$(npm run -s cli -- token --yes)   # -s 讓 npm 不印自己的標頭，輸出才乾淨
   ```
-- `token --revoke`：撤銷目前的 Token、不產生新的。會先確認（「撤銷後機器人會被中斷連線，且在重新產生前無法再連線。確定撤銷？」），確認後立即中斷所有機器人連線並刪除 `api-token.json`；沒有 Token 時印「目前沒有 Token，不需撤銷。」並以 0 結束。
+- `token --revoke`：撤銷目前的 Token、不產生新的。會先確認（「撤銷後機器人會被中斷連線，且在重新產生前無法再連線。確定撤銷？」），確認後立即中斷所有機器人連線並自 `config.yaml` 移除 `api.token`；沒有 Token 時印「目前沒有 Token，不需撤銷。」並以 0 結束。
 - 只有取得瀏覽器 cookie 的一般 `/ws` 連線（也就是本機 CLI）能產生／撤銷；機器人連線自己不能換 Token。Token 只會送給發出要求的那一個連線。
 
 ### 結束碼與常見訊息
@@ -302,7 +302,7 @@ npm run cli              # 不帶指令：顯示用法
 ./linejs.sh update           # 更新到最新版（可加 --check、--verify）
 ./linejs.sh login            # 登入：在終端機顯示 QR code
 ./linejs.sh logout           # 登出並清除本機登入資料
-./linejs.sh token            # 重設機器人 API Token（新 Token 只顯示一次）
+./linejs.sh token            # 重設機器人 API Token（寫入 config.yaml）
 ./linejs.sh help             # 顯示用法
 ```
 
@@ -324,7 +324,7 @@ npm run cli              # 不帶指令：顯示用法
 - 這個機制從加入 `linejs.pid` 的版本開始：更新後第一次請手動停止舊的服務（Ctrl+C），之後用 `start` 啟動的服務才能被 `stop`／`restart` 找到；在 Windows 上沒有訊號機制，`stop` 會直接結束程序（`session.json` 的寫入是原子的，不會留下寫到一半的檔案）。
 - `stop` 在 20 秒內等不到服務結束時回報失敗並附上 PID，請自行檢查後手動終止，腳本不會強制殺掉。
 - `token` 與 `npm run cli -- token` 一樣只把新 Token 印在標準輸出，可以直接取用：`LINEJS_TOKEN=$(./linejs.sh token --yes)`（PowerShell：`$env:LINEJS_TOKEN = .\linejs.ps1 token --yes`）。因為腳本直接呼叫 `node`，不經 `npm run`，輸出不會夾帶 npm 的標頭。
-- 腳本只是上述指令的捷徑，不含任何額外權限；`session.json`、`config.yaml` 與 `api-token.json` 的處理方式完全不變。
+- 腳本只是上述指令的捷徑，不含任何額外權限；`session.json` 與 `config.yaml` 的處理方式完全不變。
 
 ## 建置與驗證
 
@@ -450,7 +450,7 @@ npm run update -- --verify      # 更新前額外要求最新 tag 通過 git ver
 `npm run update` 依序做這些事，任何一步失敗就中止並說明原因：
 
 1. 確認在 git 倉庫內、有 `origin` 遠端，且 `package.json` 的版本可辨識。
-2. 確認**已追蹤的檔案沒有未提交的修改**（未追蹤的 `config.yaml`、`session.json`、`api-token.json` 不受影響，也不會被動到）。
+2. 確認**已追蹤的檔案沒有未提交的修改**（未追蹤的 `config.yaml`、`session.json` 不受影響，也不會被動到）。
 3. `git fetch --tags origin`，在所有 `vX.Y.Z` tag 中找出最新的。
 4. 沒有比目前版本新的就結束（「已是最新版」）；`--check` 到這裡就結束。
 5. `--verify`：`git verify-tag` 必須通過。

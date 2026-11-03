@@ -76,7 +76,7 @@ PWA としてインストールできます（ブラウザーの「安裝」（�
 
 チャットのメッセージを右クリック（タッチ画面では長押し）して「顯示寄件者 ID」を選ぶと、相手の ID を表示・コピーできます。ボットはリアルタイムの `message`／`message:edit` の `message.senderId`、または `history` の `messages[].senderId` から取得できます。引き続き `api.chats` 内のみが対象です。OpenChat では通常の LINE アカウント ID ではなく、その社群のメンバー ID を返します。メッセージに登場していないメンバーは検索しません。
 
-`session.json` には認証情報と E2EE key material が含まれるため、必ず権限 `600` で保存し、共有・コミットしてはいけません。`config.yaml` は個人設定であり、バージョン管理には含めません。`api-token.json`（ボット Token の SHA-256 と作成時刻、権限 `600`）と `linejs.pid`（実行中のサービスの PID。`stop`／`restart` で使用）もバージョン管理には含めません。
+`session.json` には認証情報と E2EE key material が含まれるため、必ず権限 `600` で保存し、共有・コミットしてはいけません。`config.yaml` は個人設定であり、バージョン管理には含めません。ボット Token を設定すると平文の Token（`api.token`）を含む認証情報となるため、サービスが権限を `600` に変更します。共有・コミットしてはいけません。旧版の `api-token.json` は使用されなくなり、起動時に自動で削除します。`linejs.pid`（実行中のサービスの PID。`stop`／`restart` で使用）もバージョン管理には含めません。
 
 `src/line/session.ts` の SessionStorage は linejs FileStorage の契約を引き継ぎ、書き込みを直列化し、権限 `600` の一時ファイルとアトミックな置換で保存することで、並行書き込みによる token／key の消失を防ぎます。既存ファイルの権限も制限します。破損した JSON や symlink は読み込みを拒否し、元のデータを上書きしません。書き込みに失敗すると後続の `flush()` も失敗し、session を保存したと偽ることはありません。
 
@@ -153,7 +153,7 @@ HTTP：`GET /media/:mediaId`（スタンプ、スタンプパックのアイコ�
      sendsPerMinute: 20          # 全ボット合計の毎分最大送信数（1～120、省略可能、既定 20）
    ```
    `enabled: true` でも有効な `chats` がない場合、サービスは起動に失敗します（「空の一覧＝すべて」という誤解を防ぐためです）。
-2. API **接続用 Bearer Token** を `npm run cli -- token` で生成します（[CLI `token`](#tokenボット-api-token-を再生成または取り消し)を参照）。表示は**1 回限り**で、サーバーは SHA-256 のみ保存します（`api-token.json`、権限 600、バージョン管理対象外）。後から確認できないため、紛失した場合は再生成してください。この接続用 Token は CLI のみで管理し、後述のチャット別管理者トークンとは異なります。
+2. API **接続用 Bearer Token** を `npm run cli -- token` で生成します（[CLI `token`](#tokenボット-api-token-を再生成または取り消し)を参照）。Token は `config.yaml` の `api.token` に平文で書き込まれ（権限 600、バージョン管理対象外）、後からそのファイルで確認できます。自分で記入することもできます（可視 ASCII 16～512 文字。変更後はサービスの再起動が必要）。この接続用 Token は CLI のみで管理し、後述のチャット別管理者トークンとは異なります。
 3. ボットを `ws://<host>:<port>/api/ws`（既定 `ws://127.0.0.1:3789/api/ws`）に接続し、`Authorization: Bearer <Token>` ヘッダーを付けます。
 
 **接続ルール**
@@ -266,12 +266,12 @@ npm run cli              # 不帶指令：顯示用法
 
 - 先に `config.yaml` で `api` を有効にする必要があります（[ボット API](#ボット-apiapiws)を参照）。無効な場合は「機器人 API 未啟用」（ボット API が有効になっていません）を返します。
 - Token がすでにある場合は先に確認します：「目前的 Token 會立即失效，使用它的機器人會被中斷連線。確定重新產生？」（現在の Token は即座に無効となり、使用中のボットは切断されます。再生成しますか？）。
-- 新しい Token は**単独で標準出力に出力**し、そのほかのメッセージ（説明、警告）は標準エラーに出力するため、変数に直接代入できます。Token の表示は今回限りです。
+- 新しい Token は**単独で標準出力に出力**し、そのほかのメッセージ（説明、警告）は標準エラーに出力するため、変数に直接代入できます。同じ Token は `config.yaml` の `api.token` にも書き込まれます。
 
   ```sh
   LINEJS_TOKEN=$(npm run -s cli -- token --yes)   # -s 讓 npm 不印自己的標頭，輸出才乾淨
   ```
-- `token --revoke`：現在の Token を取り消し、新しい Token は生成しません。先に確認し（「撤銷後機器人會被中斷連線，且在重新產生前無法再連線。確定撤銷？」：取り消すとボットは切断され、再生成するまで接続できません。取り消しますか？）、確認後にすべてのボット接続を即座に切断して `api-token.json` を削除します。Token がない場合は「目前沒有 Token，不需撤銷。」（Token がないため取り消す必要はありません）と表示し、終了コード 0 で終了します。
+- `token --revoke`：現在の Token を取り消し、新しい Token は生成しません。先に確認し（「撤銷後機器人會被中斷連線，且在重新產生前無法再連線。確定撤銷？」：取り消すとボットは切断され、再生成するまで接続できません。取り消しますか？）、確認後にすべてのボット接続を即座に切断して `config.yaml` から `api.token` を削除します。Token がない場合は「目前沒有 Token，不需撤銷。」（Token がないため取り消す必要はありません）と表示し、終了コード 0 で終了します。
 - 生成・取り消しができるのは、ブラウザー cookie を持つ通常の `/ws` 接続（つまりローカル CLI）のみです。ボット接続自身は Token を変更できません。Token は要求した接続にのみ送信します。
 
 ### 終了コードとよくあるメッセージ
@@ -302,7 +302,7 @@ npm run cli              # 不帶指令：顯示用法
 ./linejs.sh update           # 更新到最新版（可加 --check、--verify）
 ./linejs.sh login            # 登入：在終端機顯示 QR code
 ./linejs.sh logout           # 登出並清除本機登入資料
-./linejs.sh token            # 重設機器人 API Token（新 Token 只顯示一次）
+./linejs.sh token            # 重設機器人 API Token（寫入 config.yaml）
 ./linejs.sh help             # 顯示用法
 ```
 
@@ -324,7 +324,7 @@ npm run cli              # 不帶指令：顯示用法
 - この仕組みは `linejs.pid` を追加したバージョンから有効です。更新後の初回は古いサービスを手動で停止してください（Ctrl+C）。以後 `start` で起動したサービスは `stop`／`restart` で見つけられます。Windows ではシグナル機構がないため、`stop` はプロセスを直接終了します（`session.json` の書き込みはアトミックなので、書きかけのファイルは残りません）。
 - `stop` は 20 秒以内にサービスが終了しない場合、PID を添えて失敗を報告します。自分で確認して手動で終了してください。スクリプトは強制終了しません。
 - `token` は `npm run cli -- token` と同じく、新しい Token だけを標準出力に出すため、直接取得できます：`LINEJS_TOKEN=$(./linejs.sh token --yes)`（PowerShell：`$env:LINEJS_TOKEN = .\linejs.ps1 token --yes`）。スクリプトは `npm run` を経由せず `node` を直接呼び出すため、npm のヘッダーは出力に混ざりません。
-- スクリプトは上記コマンドのショートカットにすぎず、追加の権限はありません。`session.json`、`config.yaml`、`api-token.json` の扱いはまったく変わりません。
+- スクリプトは上記コマンドのショートカットにすぎず、追加の権限はありません。`session.json`、`config.yaml` の扱いはまったく変わりません。
 
 ## ビルドと検証
 
@@ -450,7 +450,7 @@ npm run update -- --verify      # 更新前額外要求最新 tag 通過 git ver
 `npm run update` は次の手順を順番に実行し、いずれかが失敗すると中止して理由を説明します。
 
 1. git リポジトリ内にいて、`origin` リモートがあり、`package.json` のバージョンを認識できることを確認します。
-2. **追跡中のファイルに未コミットの変更がない**ことを確認します（未追跡の `config.yaml`、`session.json`、`api-token.json` には影響せず、変更もしません）。
+2. **追跡中のファイルに未コミットの変更がない**ことを確認します（未追跡の `config.yaml`、`session.json` には影響せず、変更もしません）。
 3. `git fetch --tags origin` を実行し、すべての `vX.Y.Z` tag から最新を探します。
 4. 現在より新しいバージョンがなければ終了します（「已是最新版」（すでに最新版です））。`--check` もここで終了します。
 5. `--verify`：`git verify-tag` に成功する必要があります。

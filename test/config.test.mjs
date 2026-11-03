@@ -56,7 +56,11 @@ test("the bot API is off by default and, once on, needs a non-empty list of vali
   };
   assert.deepEqual((await loadConfig(root)).api, { enabled: false, chats: [], sendsPerMinute: 20 });
   assert.deepEqual(await load({ enabled: true, chats: [chat, chat], sendsPerMinute: 5 }).then((c) => c.api), { enabled: true, chats: [chat], sendsPerMinute: 5 });
-  for (const bad of [{ enabled: "yes" }, { enabled: true }, { enabled: true, chats: [] }, { enabled: true, chats: ["nope"] }, { enabled: true, chats: [chat], sendsPerMinute: 121 }]) {
+  // The bot token is stored in clear; any Bearer-safe value of 16+ characters works, empty means none.
+  assert.equal(await load({ enabled: true, chats: [chat], token: "my-own-bot-secret-42" }).then((c) => c.api.token), "my-own-bot-secret-42");
+  assert.equal(await load({ enabled: true, chats: [chat], token: null }).then((c) => c.api.token), undefined);
+  for (const bad of [{ enabled: "yes" }, { enabled: true }, { enabled: true, chats: [] }, { enabled: true, chats: ["nope"] }, { enabled: true, chats: [chat], sendsPerMinute: 121 },
+    { enabled: true, chats: [chat], token: "short" }, { enabled: true, chats: [chat], token: "has a space in it!!" }, { enabled: true, chats: [chat], token: 12345678901234567890 }]) {
     await assert.rejects(load(bad), /CONFIG_INVALID/);
   }
 });

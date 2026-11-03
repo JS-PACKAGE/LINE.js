@@ -4,7 +4,7 @@ import { loadConfig } from "./config.js";
 import { SessionStorage } from "./line/session.js";
 import { EvexLineProvider } from "./line/provider.js";
 import { LoginController } from "./line/login.js";
-import { ApiTokenStore } from "./http/apiToken.js";
+import { ApiTokenStore, protectConfig } from "./http/apiToken.js";
 import { createWebServer } from "./http/server.js";
 import { MediaService } from "./media/service.js";
 import { ChatStore } from "./model/store.js";
@@ -57,8 +57,10 @@ async function main(): Promise<void> {
   }, undefined, config.limits.downloadMaxBytes);
   const login = new LoginController(provider);
   const media = new MediaService(config.cache.mediaMaxBytes, provider);
-  const apiTokens = new ApiTokenStore(resolve("api-token.json"));
-  await apiTokens.load();
+  const apiTokens = new ApiTokenStore(resolve("config.yaml"), config.api.token);
+  if (config.api.token !== undefined) await protectConfig(resolve("config.yaml"));
+  // The token used to live only as a hash in api-token.json; that file is obsolete now.
+  await rm(resolve("api-token.json"), { force: true });
   const web = createWebServer(config, resolve("dist/web"), media, apiTokens);
   const hub = createHub({
     server: web.server,

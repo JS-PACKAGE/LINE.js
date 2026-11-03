@@ -329,7 +329,7 @@ export function createHub(options: HubOptions): Hub {
   }
 
   function apiState(): ServerFrame {
-    return { type: "api:state", enabled: config.api.enabled, chats: config.api.chats, ...(apiTokens.createdAt !== undefined ? { createdAt: apiTokens.createdAt } : {}) };
+    return { type: "api:state", enabled: config.api.enabled, chats: config.api.chats, hasToken: apiTokens.exists };
   }
 
   function readFrame(socket: WebSocket, data: RawData, isBinary: boolean): Partial<ClientFrame> | undefined {

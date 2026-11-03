@@ -3,6 +3,7 @@ import { copyFile, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parse } from "yaml";
 import { CHAT_ID } from "./ws/requests.js";
+import { API_TOKEN } from "./http/apiToken.js";
 import type { Device } from "@evex/linejs/base";
 
 export interface Config {
@@ -12,8 +13,8 @@ export interface Config {
   cache: { messagesPerChannel: number; mediaMaxBytes: number };
   chat: { sendReadReceipts: boolean };
   update: { check: boolean };
-  /** Bot endpoint (/api/ws). Off unless enabled; the token is created from the web page, never stored here. */
-  api: { enabled: boolean; chats: string[]; sendsPerMinute: number };
+  /** Bot endpoint (/api/ws). Off unless enabled; `token` is the bot credential in clear (written by `npm run cli -- token` or by hand). */
+  api: { enabled: boolean; chats: string[]; sendsPerMinute: number; token?: string };
   limits: {
     frameMaxBytes: number;
     textMaxLength: number;
@@ -82,6 +83,7 @@ export async function loadConfig(root = process.cwd()): Promise<Config> {
     // A bot only ever reaches the chats listed here, so an empty list is a mistake, not "everything".
     if (!Array.isArray(api.chats) || api.chats.length === 0 || api.chats.length > 100 || !api.chats.every((id) => typeof id === "string" && CHAT_ID.test(id))) throw new Error("CONFIG_INVALID");
   }
+  if (api.token !== undefined && api.token !== null && (typeof api.token !== "string" || !API_TOKEN.test(api.token))) throw new Error("CONFIG_INVALID");
   // Any address is allowed, and the file is authoritative; the default stays loopback-only.
   if (typeof server.host !== "string" || !SERVER_HOST.test(server.host)) throw new Error("CONFIG_INVALID");
   const devices: readonly string[] = [
@@ -102,6 +104,7 @@ export async function loadConfig(root = process.cwd()): Promise<Config> {
       enabled: apiEnabled,
       chats: apiEnabled ? [...new Set(api.chats as string[])] : [],
       sendsPerMinute: api.sendsPerMinute === undefined ? DEFAULT_API_SENDS_PER_MINUTE : integer(api.sendsPerMinute, 120),
+      ...(typeof api.token === "string" ? { token: api.token } : {}),
     },
     limits: {
       frameMaxBytes: integer(limits.frameMaxBytes, 256 * 1024),

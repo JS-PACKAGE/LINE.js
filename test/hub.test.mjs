@@ -167,7 +167,7 @@ async function start(t, { restore = true, readReceipts = true, api = {} } = {}) 
   const login = new LoginController(provider);
   const store = new ChatStore(500);
   const media = new MediaService(1024, provider);
-  const apiTokens = new ApiTokenStore(join(root, "api-token.json"));
+  const apiTokens = new ApiTokenStore(join(root, "config.yaml"), config.api.token);
   const web = createWebServer(config, root, media, apiTokens);
   const hub = createHub({ server: web.server, authorizeUpgrade: web.authorizeUpgrade, authorizeApiUpgrade: web.authorizeApiUpgrade, apiTokens, config, login, provider, store, media, serverVersion: "test" });
   await new Promise((resolve) => web.server.listen(port, "127.0.0.1", resolve));
@@ -1474,33 +1474,48 @@ test("the bot endpoint stays closed unless the config enables it", async (t) => 
   const page = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
   t.after(() => page.socket.close());
   await page.opened;
-  assert.deepEqual(await page.until((frame) => frame.type === "api:state"), { type: "api:state", enabled: false, chats: [] });
+  assert.deepEqual(await page.until((frame) => frame.type === "api:state"), { type: "api:state", enabled: false, chats: [], hasToken: false });
   page.socket.send(JSON.stringify({ type: "api:token:create", requestId: "k1" }));
   const refused = await page.until((frame) => frame.type === "error");
   assert.equal(refused.code, "API_UNAVAILABLE");
   assert.equal(page.frames.some((frame) => frame.type === "api:token"), false);
 });
 
-test("a token is created from the page, shown once and kept only as a hash", async (t) => {
-  const env = await botEnv(t);
-  assert.match(env.token, /^linejs_[A-Za-z0-9_-]{43}$/);
-  const state = await env.page.until((frame) => frame.type === "api:state" && frame.createdAt !== undefined);
-  assert.deepEqual(state.chats, [CHAT]);
-  assert.ok(Number.isSafeInteger(state.createdAt));
-  const stored = await readFile(join(env.root, "api-token.json"), "utf8");
-  assert.equal(stored.includes(env.token), false);
-  assert.equal((await stat(join(env.root, "api-token.json"))).mode & 0o777, 0o600);
-  // A later connection of the page learns that a token exists, never what it is.
+test("a created token is written in clear to config.yaml, keeping the rest of the file, and survives a restart", async (t) => {
+  const env = await start(t, { api: { enabled: true, chats: [CHAT] } });
+  const path = join(env.root, "config.yaml");
+  await writeFile(path, `# 我的設定\nserver:\n  port: 1 # 埠\napi:\n  enabled: true\n  token: old-token-0123456789\n`, { mode: 0o644 });
+  await env.login.restore();
+  const page = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
+  t.after(() => page.socket.close());
+  await page.opened;
+  page.socket.send(JSON.stringify({ type: "api:token:create" }));
+  const { token } = await page.until((frame) => frame.type === "api:token");
+  assert.match(token, /^linejs_[A-Za-z0-9_-]{43}$/);
+  await page.until((frame) => frame.type === "api:state" && frame.hasToken === true);
+  assert.equal(await readFile(path, "utf8"), `# 我的設定\nserver:\n  port: 1 # 埠\napi:\n  enabled: true\n  token: ${token}\n`);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  // A later page connection learns that a token exists, never what it is.
   const later = connect(env.port, { Origin: `http://127.0.0.1:${env.port}`, Cookie: env.cookie });
   t.after(() => later.socket.close());
   await later.opened;
-  await later.until((frame) => frame.type === "api:state" && frame.createdAt === state.createdAt);
-  assert.equal(JSON.stringify(later.frames).includes(env.token), false);
-  // And it survives a restart through the stored hash alone.
-  const reloaded = new ApiTokenStore(join(env.root, "api-token.json"));
-  await reloaded.load();
-  assert.equal(reloaded.verify(env.token), true);
-  assert.equal(reloaded.verify(`linejs_${"A".repeat(43)}`), false);
+  await later.until((frame) => frame.type === "api:state" && frame.hasToken === true);
+  assert.equal(JSON.stringify(later.frames).includes(token), false);
+  // A restart reads it back from the file.
+  const reloaded = new ApiTokenStore(path, token);
+  assert.equal(reloaded.verify(token), true);
+  assert.equal(reloaded.verify("old-token-0123456789"), false);
+});
+
+test("a hand-written token from config.yaml authenticates bots", async (t) => {
+  const handWritten = "my-own-bot-secret-42";
+  const env = await start(t, { api: { enabled: true, chats: [CHAT], token: handWritten } });
+  await env.login.restore();
+  await assert.rejects(connect(env.port, { Authorization: "Bearer my-own-bot-secret-43" }, "/api/ws").opened, (error) => error.status === 403);
+  const bot = connect(env.port, { Authorization: `Bearer ${handWritten}` }, "/api/ws");
+  t.after(() => bot.socket.close());
+  await bot.opened;
+  await bot.until((frame) => frame.type === "channels");
 });
 
 test("only a connection with no Origin and the exact token gets through /api/ws", async (t) => {
@@ -2385,9 +2400,9 @@ test("regenerating or revoking the token disconnects bots at once and invalidate
   const freshClosed = new Promise((resolve) => fresh.socket.once("close", resolve));
   env.page.socket.send(JSON.stringify({ type: "api:token:revoke" }));
   assert.equal(await freshClosed, 1008);
-  await env.page.until((frame) => frame.type === "api:state" && frame.createdAt === undefined);
+  await env.page.until((frame) => frame.type === "api:state" && frame.hasToken === false);
   await assert.rejects(connect(env.port, { Authorization: `Bearer ${next.token}` }, "/api/ws").opened, (error) => error.status === 403);
-  await assert.rejects(readFile(join(env.root, "api-token.json"), "utf8"), /ENOENT/);
+  assert.equal((await readFile(join(env.root, "config.yaml"), "utf8")).includes("token"), false);
 });
 
 test("at most four bots stay connected at once", async (t) => {
@@ -2458,7 +2473,7 @@ test("cli token --revoke asks first, cuts bots off and leaves no token; without 
   assert.match(io.err.join("\n"), /已撤銷/);
   assert.equal(await closed, 1008);
   assert.equal(env.apiTokens.verify(env.token), false);
-  assert.equal(env.apiTokens.createdAt, undefined);
+  assert.equal(env.apiTokens.exists, false);
   await assert.rejects(env.bot().opened, (error) => error.status === 403);
 
   const nothing = cliIo();

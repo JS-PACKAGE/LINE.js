@@ -58,9 +58,9 @@ export type ServerFrame =
   | { type: "sent"; requestId: string; messageId: string }
   | { type: "read"; chatId: string; positions: ReadPosition[] }
   | { type: "stickers"; requestId: string; packages: StickerPackage[] }
-  /** Bot API status; sent to /ws connections (page and CLI) only. `chats` is the allow-list from config.yaml, `createdAt` the active token's age. */
-  | { type: "api:state"; enabled: boolean; chats: string[]; createdAt?: number }
-  /** A freshly made bot token: shown once, only to the connection that asked (the CLI), never repeated or stored in clear. */
+  /** Bot API status; sent to /ws connections (page and CLI) only. `chats` is the allow-list from config.yaml, `hasToken` whether `api.token` is set. */
+  | { type: "api:state"; enabled: boolean; chats: string[]; hasToken: boolean }
+  /** A freshly made bot token (also written to config.yaml): sent only to the connection that asked (the CLI). */
   | { type: "api:token"; token: string }
   /** Answer to a client `ping`: lets the page tell a silent connection from a dead one. */
   | { type: "pong" }

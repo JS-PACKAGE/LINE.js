@@ -67,7 +67,8 @@ update:
   check: true
 
 # 機器人 API：讓你自己的程式經 WebSocket 連到 ws://<host>:<port>/api/ws 收發訊息。預設關閉。
-# 啟用後，用 `npm run cli -- token` 產生 Token（只顯示一次；伺服器只保存雜湊，存於 api-token.json），`token --revoke` 撤銷。
+# 啟用後，用 `npm run cli -- token` 產生 Token（明文寫入下方 api.token，並把本檔權限改為 0600），`token --revoke` 撤銷；也可以自己填（16～512 個可見 ASCII 字元，改完重啟服務）。
+# config.yaml 因此等同憑證：不要提交、分享或放進備份同步。
 # 機器人連線時帶標頭 Authorization: Bearer <Token>，不可帶 Origin。可用的影格：
 # message:send（僅文字）、history:fetch、profile:get、chat:admins:get、chat:admin-token:get／consume、ping；會收到 chats 內聊天室的即時訊息，不重播舊訊息。
 api:
@@ -77,3 +78,5 @@ api:
   #   - c0123456789abcdef0123456789abcdef
   # 所有機器人連線合計每分鐘最多發送的訊息數（1～120）。自動發送可能觸發 LINE 風控，請保守設定。可省略，預設 20。
   sendsPerMinute: 20
+  # 機器人 Token（明文）。可省略；由 `npm run cli -- token` 寫入。
+  # token: linejs_...

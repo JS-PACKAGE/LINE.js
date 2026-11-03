@@ -422,7 +422,7 @@
 | `history` | `{ requestId, chatId, messages: Message[], hasMore, cursor? }`（`cursor` 傳回 `before` 取更早一頁） |
 | `read` | `{ chatId, positions: { readerId, messageId }[] }`（他人已讀到哪則；開啟聊天時送快照，之後即時增量；社群無已讀） |
 | `sent` | `{ requestId, messageId }` |
-| `api:state` | `{ enabled, chats: string[], createdAt? }`（只給網頁連線；`createdAt` 為目前 Token 的建立時間，無 Token 則省略） |
+| `api:state` | `{ enabled, chats: string[], hasToken }`（只給網頁／CLI 連線；`hasToken` 表示 `config.yaml` 是否設有 `api.token`，2026-10 取代原 `createdAt`） |
 | `api:token` | `{ token }`（新 Token；**只送給發起 `api:token:create` 的連線、僅此一次**，不入日誌） |
 | `error` | `{ requestId?, code, message }`（generic） |
 | `status` | `{ state: "starting"｜"listening"｜"reconnecting" }` |
@@ -493,7 +493,7 @@ Media   { mediaId, mime, size, kind: "image"｜"sticker"｜"video"｜"audio" }
 8. 對外一律 generic 錯誤；本地日誌只記固定操作錯誤碼，上游錯誤名稱、訊息或物件也可能含憑證，不得寫入。
 9. 依賴釘選版本；`npm audit` 無 high 以上（Gate 4 驗收）。
 10. 解密／解析失敗 **fail-closed**：顯示佔位，不降級猜測內容。
-11. 機器人 API（v1.11）：預設關閉；Bearer Token（只存雜湊、一次性顯示）、不得帶 `Origin`、影格白名單、`api.chats` 範圍、全域每分鐘發送上限、最多 4 連線、換／撤銷 Token 立即斷線。
+11. 機器人 API（v1.11）：預設關閉；Bearer Token（2026-10 起明文存於 `config.yaml` 的 `api.token`，檔案 0600；原先只存雜湊、一次性顯示）、不得帶 `Origin`、影格白名單、`api.chats` 範圍、全域每分鐘發送上限、最多 4 連線、換／撤銷 Token 立即斷線。
 
 錯誤日誌修正：移除 WS 各操作與程序例外處理的上游錯誤文字，沿用管理員查詢的固定碼模式。歷史失敗回歸測試確認錯誤名稱與訊息不進日誌；typecheck、build、314 項測試通過。正式 HTTP／WS 隔離失敗回 generic `HISTORY_FAILED`，日誌只有該碼；另在暫存設定、無 session、停用更新的環境啟動實際 `dist/main.js`，未處理 rejection 後仍可接受 HTTP，未捕捉 exception 記固定碼後 exit 1 並移除 pid，兩者均未輸出注入的假敏感文字。不接觸真實帳號，也不改既有錯誤回應或關閉流程。
 

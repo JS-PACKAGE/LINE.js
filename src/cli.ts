@@ -27,7 +27,7 @@ export const USAGE = `用法：npm run cli -- <指令> [--yes] [--revoke]
 指令：
   login    在終端機顯示 QR code，用次要帳號的 LINE 掃描登入
   logout   登出 LINE，清除本機登入資料與快取
-  token    重新產生機器人 API Token（只顯示一次）；加 --revoke 則撤銷目前的 Token
+  token    重新產生機器人 API Token 並寫入 config.yaml 的 api.token；加 --revoke 則撤銷（自 config.yaml 移除）
 
 選項：
   --yes, -y   略過確認（非互動環境必須加上）
@@ -209,12 +209,12 @@ async function logout(connection: Connection, io: CliIo, yes: boolean): Promise<
 async function token(connection: Connection, io: CliIo, yes: boolean, revoke: boolean): Promise<void> {
   const state = (await connection.until((frame) => frame.type === "api:state", WAIT_MS)) as Frame<"api:state">;
   if (!state.enabled) throw new CliError("機器人 API 未啟用：請在 config.yaml 設定 api.enabled: true 與 api.chats，重啟服務後再試。");
-  if (revoke && state.createdAt === undefined) {
+  if (revoke && !state.hasToken) {
     io.err("目前沒有 Token，不需撤銷。");
     return;
   }
   const question = revoke ? "撤銷後機器人會被中斷連線，且在重新產生前無法再連線。確定撤銷？" : "目前的 Token 會立即失效，使用它的機器人會被中斷連線。確定重新產生？";
-  if (state.createdAt !== undefined && !yes && !(await io.confirm(question))) {
+  if (state.hasToken && !yes && !(await io.confirm(question))) {
     io.err("已取消。");
     return;
   }
@@ -222,16 +222,16 @@ async function token(connection: Connection, io: CliIo, yes: boolean, revoke: bo
   if (revoke) {
     connection.send({ type: "api:token:revoke" });
     // The service answers a revoke with the new api:state (no token) rather than a dedicated frame.
-    const reply = await connection.until((frame) => (frame.type === "api:state" && frame.createdAt === undefined) || (frame.type === "error" && frame.code.startsWith("API_")), WAIT_MS, from);
+    const reply = await connection.until((frame) => (frame.type === "api:state" && !frame.hasToken) || (frame.type === "error" && frame.code.startsWith("API_")), WAIT_MS, from);
     if (reply.type === "error") throw new CliError(reply.message);
-    io.err("已撤銷 Token；機器人已斷線，需要時請重新執行 token 產生新的。");
+    io.err("已撤銷 Token（已自 config.yaml 移除）；機器人已斷線，需要時請重新執行 token 產生新的。");
     return;
   }
   connection.send({ type: "api:token:create" });
   const reply = await connection.until((frame) => frame.type === "api:token" || (frame.type === "error" && frame.code.startsWith("API_")), WAIT_MS, from);
   if (reply.type === "error") throw new CliError(reply.message);
   if (reply.type !== "api:token") return;
-  io.err("新的 Token（只顯示這一次，伺服器只保存雜湊，之後無法再查看；舊 Token 已失效）：");
+  io.err("新的 Token（已寫入 config.yaml 的 api.token，舊 Token 已失效）：");
   io.out(reply.token);
 }
 

@@ -76,7 +76,7 @@ The app can be installed as a PWA (the browser's 「安裝」 (Install) action; 
 
 Right-click a chat message (long-press on touch screens) and choose 「顯示寄件者 ID」 to view and copy another person's ID. Bots read `message.senderId` in live `message`/`message:edit` frames, or `messages[].senderId` in `history`, still restricted to `api.chats`. OpenChat returns the OpenChat member ID, not the ordinary LINE account ID; this feature does not look up members who have not appeared in messages.
 
-`session.json` contains credentials and E2EE key material. It must be saved with permissions `600` and must not be shared or committed. `config.yaml` contains personal configuration and is excluded from version control. `api-token.json` (the bot Token's SHA-256 and creation time, permissions `600`) and `linejs.pid` (the running service's PID, used by `stop`/`restart`) are also excluded from version control.
+`session.json` contains credentials and E2EE key material. It must be saved with permissions `600` and must not be shared or committed. `config.yaml` contains personal configuration and is excluded from version control; once a bot Token is set it holds that Token in clear (`api.token`), so it is a credential: the service sets its permissions to `600`, and it must not be shared or committed. The former `api-token.json` is no longer used and is deleted at startup. `linejs.pid` (the running service's PID, used by `stop`/`restart`) is also excluded from version control.
 
 SessionStorage in `src/line/session.ts` follows the linejs FileStorage contract, but saves data through serialized writes, temporary files with permissions `600`, and atomic replacement to prevent concurrent writes from losing tokens/keys. Existing files have their permissions tightened. Corrupt JSON and symlinks are refused without overwriting the original data. A write failure causes subsequent `flush()` calls to fail rather than falsely claiming the session was saved.
 
@@ -153,7 +153,7 @@ Lets your own programs (bots) send and receive messages. **Disabled by default**
      sendsPerMinute: 20          # Maximum total sends per minute across all bots (1～120, optional, default 20)
    ```
    If `enabled: true` has no valid `chats`, service startup fails outright (to avoid treating “an empty list” as “all chats”).
-2. Generate the API **connection Bearer Token** with `npm run cli -- token` (see [CLI `token`](#token-regenerate-or-revoke-the-bot-api-token)). It is shown **once**; the server stores only its SHA-256 (`api-token.json`, permissions 600, excluded from version control). It cannot be viewed again; generate a new one if lost. Only the CLI manages this connection token; it is distinct from the per-chat administrator tokens below.
+2. Generate the API **connection Bearer Token** with `npm run cli -- token` (see [CLI `token`](#token-regenerate-or-revoke-the-bot-api-token)). The Token is written in clear to `api.token` in `config.yaml` (permissions 600, excluded from version control), where it can be looked up later; you may also write one yourself (16–512 visible ASCII characters; restart the service afterwards). Only the CLI manages this connection token; it is distinct from the per-chat administrator tokens below.
 3. Connect your bot to `ws://<host>:<port>/api/ws` (default `ws://127.0.0.1:3789/api/ws`) with the header `Authorization: Bearer <Token>`.
 
 **Connection rules**
@@ -266,12 +266,12 @@ npm run cli              # 不帶指令：顯示用法
 
 - Enable `api` in `config.yaml` first (see [Bot API](#bot-apiapiws)); otherwise it returns 「機器人 API 未啟用」 (Bot API is not enabled).
 - If a Token exists, first confirm: 「目前的 Token 會立即失效，使用它的機器人會被中斷連線。確定重新產生？」 (The current Token will immediately become invalid, and bots using it will be disconnected. Regenerate?).
-- The new Token is **printed alone to standard output**; all other messages (instructions, warnings) go to standard error, so it can be assigned directly to a variable. The Token is shown only once:
+- The new Token is **printed alone to standard output**; all other messages (instructions, warnings) go to standard error, so it can be assigned directly to a variable. The same Token is also written to `api.token` in `config.yaml`:
 
   ```sh
   LINEJS_TOKEN=$(npm run -s cli -- token --yes)   # -s 讓 npm 不印自己的標頭，輸出才乾淨
   ```
-- `token --revoke`: revokes the current Token without issuing a new one. It first confirms (「撤銷後機器人會被中斷連線，且在重新產生前無法再連線。確定撤銷？」: Revoking disconnects bots, and they cannot reconnect until a new Token is generated. Revoke?), then immediately disconnects all bots and deletes `api-token.json`. With no Token it prints 「目前沒有 Token，不需撤銷。」 (There is no Token; nothing to revoke.) and exits 0.
+- `token --revoke`: revokes the current Token without issuing a new one. It first confirms (「撤銷後機器人會被中斷連線，且在重新產生前無法再連線。確定撤銷？」: Revoking disconnects bots, and they cannot reconnect until a new Token is generated. Revoke?), then immediately disconnects all bots and removes `api.token` from `config.yaml`. With no Token it prints 「目前沒有 Token，不需撤銷。」 (There is no Token; nothing to revoke.) and exits 0.
 - Only ordinary `/ws` connections that hold the browser cookie (that is, the local CLI) can generate or revoke Tokens; bot connections cannot replace their own Token. The Token is sent only to the requesting connection.
 
 ### Exit codes and common messages
@@ -302,7 +302,7 @@ The root-level `linejs.sh` and `linejs.ps1` provide equivalent functionality, gr
 ./linejs.sh update           # 更新到最新版（可加 --check、--verify）
 ./linejs.sh login            # 登入：在終端機顯示 QR code
 ./linejs.sh logout           # 登出並清除本機登入資料
-./linejs.sh token            # 重設機器人 API Token（新 Token 只顯示一次）
+./linejs.sh token            # 重設機器人 API Token（寫入 config.yaml）
 ./linejs.sh help             # 顯示用法
 ```
 
@@ -324,7 +324,7 @@ The root-level `linejs.sh` and `linejs.ps1` provide equivalent functionality, gr
 - This mechanism applies from the version that introduced `linejs.pid`: after updating for the first time, stop the old service manually (Ctrl+C). Only services subsequently launched with `start` can be found by `stop`/`restart`. Windows has no signal mechanism, so `stop` terminates the process directly (`session.json` writes are atomic and never leave a partially written file).
 - If `stop` cannot observe the service exiting within 20 seconds, it reports failure with the PID. Inspect it and terminate it manually; the script does not force-kill it.
 - Like `npm run cli -- token`, `token` prints only the new Token to standard output, so you can capture it directly: `LINEJS_TOKEN=$(./linejs.sh token --yes)` (PowerShell: `$env:LINEJS_TOKEN = .\linejs.ps1 token --yes`). The scripts call `node` directly rather than through `npm run`, so npm headers do not contaminate the output.
-- The scripts are only shortcuts for the commands above, with no additional privileges; handling of `session.json`, `config.yaml`, and `api-token.json` is unchanged.
+- The scripts are only shortcuts for the commands above, with no additional privileges; handling of `session.json` and `config.yaml` is unchanged.
 
 ## Build and verification
 
@@ -450,7 +450,7 @@ npm run update -- --verify      # 更新前額外要求最新 tag 通過 git ver
 `npm run update` performs these steps in order, aborting with an explanation if any step fails:
 
 1. Confirm that this is a git repository with an `origin` remote and a recognizable version in `package.json`.
-2. Confirm that **tracked files have no uncommitted changes** (untracked `config.yaml`, `session.json`, and `api-token.json` are unaffected and never touched).
+2. Confirm that **tracked files have no uncommitted changes** (untracked `config.yaml` and `session.json` are unaffected and never touched).
 3. Run `git fetch --tags origin` and find the newest of all `vX.Y.Z` tags.
 4. Exit if none is newer than the current version (「已是最新版」 (Already up to date)); `--check` stops here.
 5. With `--verify`, `git verify-tag` must pass.
